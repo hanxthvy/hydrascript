@@ -1,15 +1,15 @@
 <!-- [xihanzu-NR] -->
-# Serpent — Pythonic Syntax for React & Modern JavaScript
+# HydraScript — Pythonic Syntax for React & Modern JavaScript
 
 > **The Zen of Python, running at the speed of native React & Node.js.**
-> Write React components (`.hsx`) and Node scripts (`.hx`) with clean, indentation-based syntax without JSX curly braces or semicolon fatigue. Compiles in **~1.2ms** via a standalone native Rust binary (~600KB). Zero runtime overhead in the browser.
+> Write React components (`.hsx`) and Node scripts (`.hs`) with clean, indentation-based syntax without JSX curly braces or semicolon fatigue. Compiles in **~1.2ms** via a standalone native Rust binary (~600KB). Zero runtime overhead in the browser.
 
-```serpent
+```python
 # App.hsx
-from serpent import state, fetch_json
+from hydrascript import state, fetch_json
 
 component TodoApp():
-    todos, set_todos = state(["Belajar Serpent", "Bikin Frontend"])
+    todos, set_todos = state(["Belajar HydraScript", "Bikin Frontend"])
     text, set_text = state("")
     count = len(todos)
 
@@ -18,7 +18,7 @@ component TodoApp():
             set_todos(todos + [text])
             set_text("")
 
-    h1(className="text-2xl font-bold"): "Todo Serpent"
+    h1(className="text-2xl font-bold"): "Todo HydraScript"
     p(className="text-sm text-gray-500"): f"Total: {count} tasks"
 
     # Event modifier: on_submit_prevent auto preventDefault()
@@ -51,9 +51,9 @@ component TodoApp():
 
 ## 🚀 Keunggulan `.hsx` Dibanding TSX Standar
 
-Serpent bukan sekadar sintaks baru, melainkan penyempurna dari kekurangan dan *pain points* terbesar di TSX:
+HydraScript bukan sekadar sintaks baru, melainkan penyempurna dari kekurangan dan *pain points* terbesar di TSX:
 
-| Fitur | TSX Standar | Serpent (`.hsx`) |
+| Fitur | TSX Standar | HydraScript (`.hsx`) |
 |---|---|---|
 | **Conditional Rendering** | Rantai ternary bersarang (`a ? b : c ? d : e`) atau bug angka nol (`count && <div/>` merender `0`). | Blok `if` / `elif` / `else` atau `match / case` berbasis indentasi. Bersih dan aman. |
 | **Pattern Matching** | Tidak ada. Terpaksa membuat IIFE `(() => { switch(x)... })()` atau ternary bertingkat. | `match status:` dengan `case "loading":`, `case _:`. Di-compile ke ekspresi reaktif instan. |
@@ -66,20 +66,20 @@ Serpent bukan sekadar sintaks baru, melainkan penyempurna dari kekurangan dan *p
 
 ## ⚡ Dua Target dalam Satu Compiler
 
-Compiler Serpent otomatis mendeteksi target berdasarkan ekstensi file:
+Compiler HydraScript otomatis mendeteksi target berdasarkan ekstensi file:
 
 ```
-.hsx  ──►  React TSX    (komponen, pohon JSX, state, hooks)
-.hx   ──►  JavaScript   (skrip umum, Node.js, CLI, backend service)
+.hsx        ──►  React TSX    (komponen, pohon JSX, state, hooks)
+.hs / .hx   ──►  JavaScript   (skrip umum, Node.js, CLI, backend service)
 ```
 
-### Scripting dengan `.hx` (Plain ES Module)
+### Scripting dengan `.hs` (Plain ES Module)
 
 Untuk kode non-UI / Node.js tanpa React atau JSX:
 
-```serpent
-# fib.hx
-from serpent_js import range
+```python
+# fib.hs
+from hydrascript_js import range
 
 def fib(n: int) -> int:
     if n < 2:
@@ -92,7 +92,7 @@ def fib_list(count: int) -> list:
 print(f"10 Fibonacci pertama: {fib_list(10)}")
 ```
 
-Dukungan lengkap statement di `.hx`:
+Dukungan lengkap statement di `.hs`:
 - `while`, `break`, `continue`, `pass`
 - `try` / `except ValueError as e:` / `finally` (dengan class exception Python nyata)
 - `async def` dan `await`
@@ -105,7 +105,7 @@ Dukungan lengkap statement di `.hx`:
 
 ### 1. Scaffold Project Baru
 ```bash
-serpent init my-app
+hydra init my-app
 cd my-app
 bun install
 bun run dev
@@ -114,16 +114,16 @@ bun run dev
 ### 2. Kompilasi Manual CLI
 ```bash
 # Kompilasi React component ke stdout atau file
-serpent App.hsx -o App.tsx
+hydra App.hsx -o App.tsx
 
 # Kompilasi Node script
-serpent script.hx -o script.mjs
+hydra script.hs -o script.mjs
 node script.mjs
 ```
 
 ### 3. Ekstensi VS Code
-Ekstensi resmi sudah tersedia di `editors/vscode/serpent-hsx-0.1.0.vsix`:
-- Syntax highlighting lengkap untuk `.hsx` dan `.hx`
+Ekstensi resmi sudah tersedia di `editors/vscode/hydrascript-0.1.0.vsix`:
+- Syntax highlighting lengkap untuk `.hsx` dan `.hs`
 - Validasi diagnostik real-time langsung dari native binary
 - Konfigurasi auto-indentasi dan bracket closing
 
@@ -132,10 +132,10 @@ Ekstensi resmi sudah tersedia di `editors/vscode/serpent-hsx-0.1.0.vsix`:
 ## 📐 Arsitektur Sistem
 
 ```
-.hsx / .hx (Pythonic source)
+.hsx / .hs (HydraScript source)
         │
         ▼  [~1.2ms compile time]
-Standalone Native Rust Compiler (603KB binary)
+Standalone Native Rust Compiler (603KB binary: `hydra`)
         │
    ┌────┴────────────────────────┐
    ▼                             ▼

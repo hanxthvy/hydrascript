@@ -1,12 +1,12 @@
 [package]
-name = "serpent"
+name = "hydra"
 version = "0.1.0"
 edition = "2021"
-description = "Serpent compiler: Pythonic syntax to React TSX"
+description = "HydraScript compiler: Pythonic syntax for React (.hsx) and Node (.hs)"
 license = "MIT"
 
 [[bin]]
-name = "serpent"
+name = "hydra"
 path = "src/main.rs"
 
 [profile.release]

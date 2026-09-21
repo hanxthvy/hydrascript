@@ -1,5 +1,5 @@
 {
-  "name": "serpent-monorepo",
+  "name": "hydrascript-monorepo",
   "private": true,
   "version": "0.1.0",
   "workspaces": [
@@ -9,7 +9,7 @@
     "demo2"
   ],
   "scripts": {
-    "build:compiler": "cd compiler-rs && cargo build --release && cp target/release/serpent ../vite-plugin/bin/serpent && cp target/release/serpent ../editors/vscode/bin/serpent",
+    "build:compiler": "cd compiler-rs && cargo build --release && cp target/release/hydra ../vite-plugin/bin/hydra && cp target/release/hydra ../editors/vscode/bin/hydra",
     "test": "python3 test_compiler.py && python3 parity.py && node --test runtime-js/",
     "test:rust": "cd compiler-rs && cargo test",
     "test:js": "node --test runtime-js/"

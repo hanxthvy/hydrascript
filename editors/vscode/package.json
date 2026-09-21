@@ -1,29 +1,29 @@
 {
-  "name": "serpent-hsx",
-  "displayName": "Serpent (HSX)",
-  "description": "Syntax highlighting and inline compiler diagnostics for .hsx — Pythonic syntax for React",
+  "name": "hydrascript",
+  "displayName": "HydraScript (HSX / HS)",
+  "description": "Syntax highlighting and inline compiler diagnostics for HydraScript (.hsx and .hs)",
   "version": "0.1.0",
-  "publisher": "serpent",
+  "publisher": "hydrascript",
   "license": "MIT",
   "engines": {
     "vscode": "^1.80.0"
   },
   "categories": ["Programming Languages", "Linters"],
-  "keywords": ["react", "python", "hsx", "serpent", "jsx"],
+  "keywords": ["react", "python", "hydrascript", "hsx", "hs", "jsx"],
   "main": "./extension.js",
-  "activationEvents": ["onLanguage:hsx"],
+  "activationEvents": ["onLanguage:hsx", "onLanguage:hs"],
   "contributes": {
     "languages": [
       {
         "id": "hsx",
-        "aliases": ["Serpent (React)", "hsx"],
+        "aliases": ["HydraScript (React)", "hsx"],
         "extensions": [".hsx"],
         "configuration": "./language-configuration.json"
       },
       {
-        "id": "hx",
-        "aliases": ["Serpent (Script)", "hx"],
-        "extensions": [".hx"],
+        "id": "hs",
+        "aliases": ["HydraScript (Script)", "hs", "hx"],
+        "extensions": [".hs", ".hx"],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -34,7 +34,7 @@
         "path": "./syntaxes/hsx.tmLanguage.json"
       },
       {
-        "language": "hx",
+        "language": "hs",
         "scopeName": "source.hsx",
         "path": "./syntaxes/hsx.tmLanguage.json"
       }

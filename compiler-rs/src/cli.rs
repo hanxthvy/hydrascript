@@ -17,12 +17,12 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("check") => check(&args[1..]),
         Some("init") => init(&args[1..]),
         Some(other) => {
-            eprintln!("serpent: unknown command {:?}", other);
-            eprintln!("try: serpent build | check | init | --help");
+            eprintln!("hydra: unknown command {:?}", other);
+            eprintln!("try: hydra build | check | init | --help");
             ExitCode::from(2)
         }
         None => {
-            eprintln!("serpent: missing command");
+            eprintln!("hydra: missing command");
             ExitCode::from(2)
         }
     }
@@ -50,9 +50,13 @@ fn targets(args: &[String]) -> Vec<PathBuf> {
         return files;
     }
     let mut found = Vec::new();
-    collect(Path::new("src"), "hsx", &mut found);
+    for ext in &["hsx", "hs", "hx"] {
+        collect(Path::new("src"), ext, &mut found);
+    }
     if found.is_empty() {
-        collect(Path::new("."), "hsx", &mut found);
+        for ext in &["hsx", "hs", "hx"] {
+            collect(Path::new("."), ext, &mut found);
+        }
     }
     found.sort();
     found
@@ -62,7 +66,7 @@ fn build(args: &[String]) -> ExitCode {
     let verbose = args.iter().any(|a| a == "-v" || a == "--verbose");
     let files = targets(args);
     if files.is_empty() {
-        eprintln!("serpent: no .hsx files found");
+        eprintln!("hydra: no .hsx, .hs, or .hx files found");
         return ExitCode::from(1);
     }
 
@@ -71,27 +75,27 @@ fn build(args: &[String]) -> ExitCode {
 
     for path in &files {
         let Ok(src) = fs::read_to_string(path) else {
-            eprintln!("serpent: cannot read {}", path.display());
+            eprintln!("hydra: cannot read {}", path.display());
             errors += 1;
             continue;
         };
         let name = path.file_name().map_or_else(|| "out.hsx".into(), |n| n.to_string_lossy().to_string());
         match compile(&src, &name) {
             Ok((code, map)) => {
-                // Write the TSX plus a sibling .map so bundlers and editors can
-                // resolve the mapping without inflating the file.
-                let tsx = path.with_extension("tsx");
-                let map_path = path.with_extension("tsx.map");
-                let map_name = map_path.file_name().map_or_else(|| "out.tsx.map".into(), |n| n.to_string_lossy().to_string());
+                let is_js = path.extension().map_or(false, |x| x == "hs" || x == "hx");
+                let out_ext = if is_js { "mjs" } else { "tsx" };
+                let out_file = path.with_extension(out_ext);
+                let map_path = path.with_extension(format!("{}.map", out_ext));
+                let map_name = map_path.file_name().map_or_else(|| "out.map".into(), |n| n.to_string_lossy().to_string());
                 let with_ref = format!("{}\n//# sourceMappingURL={}\n", code, map_name);
-                if let Err(e) = fs::write(&tsx, with_ref) {
-                    eprintln!("serpent: cannot write {}: {}", tsx.display(), e);
+                if let Err(e) = fs::write(&out_file, with_ref) {
+                    eprintln!("hydra: cannot write {}: {}", out_file.display(), e);
                     errors += 1;
                     continue;
                 }
                 let _ = fs::write(&map_path, map);
                 if verbose {
-                    println!("  \x1b[32mcompiled\x1b[0m {} -> {}", path.display(), tsx.display());
+                    println!("  \x1b[32mcompiled\x1b[0m {} -> {}", path.display(), out_file.display());
                 }
             }
             Err(e) => {

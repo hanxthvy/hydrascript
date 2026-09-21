@@ -1,12 +1,15 @@
 {
-  "name": "serpent",
+  "name": "hydrascript",
   "version": "0.1.0",
-  "description": "Serpent runtime — state, computed, effect, ref, context and Python-flavoured builtins for React",
+  "description": "HydraScript runtime — Pythonic batteries for React (.hsx) and modern JavaScript (.hs)",
   "type": "module",
   "main": "./serpent.ts",
   "types": "./serpent.ts",
-  "exports": { ".": "./serpent.ts" },
+  "exports": {
+    ".": "./serpent.ts",
+    "./js": "../runtime-js/serpent-js.js"
+  },
   "peerDependencies": { "react": ">=18" },
-  "keywords": ["react", "python", "dsl", "compiler", "serpent"],
+  "keywords": ["react", "python", "hydrascript", "hsx", "compiler"],
   "license": "MIT"
 }
