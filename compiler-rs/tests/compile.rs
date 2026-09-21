@@ -514,7 +514,7 @@ fn test_edge_case_very_long_attribute_list() {
     let src = "component A():\n    div(cls=\"a\", id=\"b\", title=\"c\", role=\"d\", tab_index=1, on_click=go, data_x=\"e\", aria_label=\"f\"):\n        span: \"z\"\n";
     let out = comp(src);
     assert_contains(&out, &[
-        "<div className=\"a\" id=\"b\" title=\"c\" role=\"d\" tabIndex={1} onClick={go} data_x=\"e\" aria_label=\"f\"><span>z</span></div>",
+        "<div className=\"a\" id=\"b\" title=\"c\" role=\"d\" tabIndex={1} onClick={go} data-x=\"e\" aria-label=\"f\"><span>z</span></div>",
     ]);
 }
 
@@ -830,4 +830,112 @@ fn test_feature_cli_run() {
     let code = hydra::cli::run_script(&[script_path.to_string_lossy().to_string()]);
     assert_eq!(code, std::process::ExitCode::SUCCESS);
     let _ = std::fs::remove_file(&script_path);
+}
+
+#[test]
+fn test_feature_opt_chaining_and_nullish() {
+    let src = "component A():\n    name = user?.name\n    item = items?.[0]\n    val = a ?? b\n    div: name\n";
+    let out = comp(src);
+    assert_contains(&out, &[
+        "const name = user?.name;",
+        "const item = items?.[0];",
+        "const val = (a ?? b);",
+    ]);
+}
+
+#[test]
+fn test_feature_destructuring_assignment() {
+    let src = "component A():\n    { title, content } = props\n    div: title\n";
+    let out = comp(src);
+    assert_contains(&out, &["const { title, content } = props;"]);
+    assert_not_contains(&out, &["const ({ title, content })"]);
+}
+
+#[test]
+fn test_feature_in_operator() {
+    let src = "component A():\n    if \"admin\" in roles:\n        span: \"Admin\"\n";
+    let out = comp(src);
+    assert_contains(&out, &["(\"admin\" in roles)"]);
+}
+
+#[test]
+fn test_feature_jsx_spread_and_svg_and_compound() {
+    let src = r#"component Icon(*props):
+    svg(className="icon", *props):
+        path(d="M0 0 L10 10", stroke_width=2)
+    Tabs.List(className="tab-list"):
+        Tabs.Trigger(value="1"): "Tab 1"
+"#;
+    let out = comp(src);
+    assert_contains(&out, &[
+        "<svg {...props} className=\"icon\">",
+        "<path d=\"M0 0 L10 10\"",
+        "<Tabs.List className=\"tab-list\">",
+        "<Tabs.Trigger value=\"1\">Tab 1</Tabs.Trigger>",
+    ]);
+}
+
+#[test]
+fn test_feature_hsx_slice_and_await() {
+    let src = "component A():\n    sub = items[1:3]\n    res = await fetchData()\n    div: \"ok\"\n";
+    let out = comp(src);
+    assert_contains(&out, &[
+        "const sub = items.slice(1, 3);",
+        "const res = await fetchData();",
+    ]);
+}
+
+#[test]
+fn test_feature_aria_and_data_attributes() {
+    let src = r#"component Button():
+    button(aria_label="Close", aria_expanded=True, data_testid="btn-close", data_custom_val="123"): "X"
+"#;
+    let out = comp(src);
+    assert_contains(&out, &[
+        "aria-label=\"Close\"",
+        "aria-expanded={true}",
+        "data-testid=\"btn-close\"",
+        "data-custom-val=\"123\"",
+    ]);
+}
+
+#[test]
+fn test_feature_jsx_double_star_spread() {
+    let src = r#"component Wrapper(**props):
+    div(**props): "content"
+"#;
+    let out = comp(src);
+    assert_contains(&out, &[
+        "<div {...props}>content</div>",
+    ]);
+}
+
+#[test]
+fn test_feature_comprehension_tuple_target() {
+    let src = "component A():\n    vals = [v for k, v in items]\n    div: \"ok\"\n";
+    let out = comp(src);
+    assert_contains(&out, &[
+        "const vals = items.map(([k, v]) => v);",
+    ]);
+}
+
+#[test]
+fn test_error_tab_indentation() {
+    let src = "component A():\n\tdiv: \"tab\"\n";
+    let err = compile(src, "App.hsx").expect_err("should reject tabs");
+    assert_contains(&err.msg, &["tab indentation is not allowed"]);
+}
+
+#[test]
+fn test_error_unclosed_brace_fstring() {
+    let src = "component A():\n    div: f\"hello {world\"\n";
+    let err = compile(src, "App.hsx").expect_err("should reject unclosed brace");
+    assert_contains(&err.msg, &["unclosed '{' in f-string"]);
+}
+
+#[test]
+fn test_error_recursion_depth_limit() {
+    let nested = format!("component A():\n    x = {}1{}\n", "(".repeat(270), ")".repeat(270));
+    let err = compile(&nested, "App.hsx").expect_err("should reject deep nesting");
+    assert_contains(&err.msg, &["maximum recursion depth exceeded"]);
 }

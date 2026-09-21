@@ -12,13 +12,27 @@ pub struct Parser {
     toks: Vec<Token>,
     i: usize,
     src: Vec<String>,
+    depth: usize,
 }
 
 type PResult<T> = Result<T, CompileError>;
 
 impl Parser {
     pub fn new(toks: Vec<Token>, src: Vec<String>) -> Self {
-        Self { toks, i: 0, src }
+        Self { toks, i: 0, src, depth: 0 }
+    }
+
+    fn enter_depth(&mut self) -> PResult<()> {
+        if self.depth >= 256 {
+            return Err(self.err("maximum recursion depth exceeded (256)".into())
+                .with_hint("simplify deeply nested structure"));
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
+    fn leave_depth(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
     }
 
     fn cur(&self) -> &Token {
@@ -123,6 +137,13 @@ impl Parser {
     }
 
     fn stmt(&mut self) -> PResult<Node> {
+        self.enter_depth()?;
+        let res = self.stmt_inner();
+        self.leave_depth();
+        res
+    }
+
+    fn stmt_inner(&mut self) -> PResult<Node> {
         let t = self.cur().clone();
         match &t.ty {
             TokType::Kw("component") => return self.component(),
@@ -243,7 +264,14 @@ impl Parser {
         self.eat(TokType::LParen)?;
         let mut out = Vec::new();
         while self.cur().ty != TokType::RParen {
-            let name = self.ident()?;
+            let prefix = if self.cur().ty == TokType::Op && (self.cur().value == "*" || self.cur().value == "**") {
+                self.i += 1;
+                "..."
+            } else {
+                ""
+            };
+            let ident = self.ident()?;
+            let name = format!("{}{}", prefix, ident);
             let mut ty = None;
             if self.cur().ty == TokType::Colon {
                 self.i += 1;
@@ -393,6 +421,15 @@ impl Parser {
                         }
                         j += 1;
                     }
+                    if depth != 0 {
+                        return Err(CompileError::new(
+                            "unclosed '{' in f-string",
+                            tok.line,
+                            tok.col,
+                            self.src.clone(),
+                        )
+                        .with_hint("close the expression with '}'"));
+                    }
                     if !lit.is_empty() {
                         parts.push(FPart::Lit(std::mem::take(&mut lit)));
                     }
@@ -400,6 +437,7 @@ impl Parser {
                     let sub_lines: Vec<String> = expr_src.split('\n').map(|s| s.to_string()).collect();
                     let sub_toks = crate::lexer::lex(&expr_src)?;
                     let mut sub = Parser::new(sub_toks, sub_lines);
+                    sub.depth = self.depth;
                     let e = sub.expr()?;
                     parts.push(FPart::Expr(e));
                     i = j + 1;
@@ -609,14 +647,18 @@ impl Parser {
     // ----------------------------------------------------------- expressions
 
     pub fn expr(&mut self) -> PResult<Node> {
-        self.ternary()
+        self.enter_depth()?;
+        let res = self.ternary();
+        self.leave_depth();
+        res
     }
 
+    #[inline(always)]
     fn ternary(&mut self) -> PResult<Node> {
-        let n = self.or()?;
+        let n = self.coalesce()?;
         if self.cur().ty == TokType::Kw("if") {
             self.i += 1;
-            let test = self.or()?;
+            let test = self.coalesce()?;
             self.eat(TokType::Kw("else"))?;
             let orelse = self.ternary()?;
             let (line, col) = (n.line, n.col);
@@ -629,6 +671,19 @@ impl Parser {
         Ok(n)
     }
 
+    #[inline(always)]
+    fn coalesce(&mut self) -> PResult<Node> {
+        let mut n = self.or()?;
+        while self.cur().ty == TokType::Op && self.cur().value == "??" {
+            self.i += 1;
+            let r = self.or()?;
+            let (line, col) = (n.line, n.col);
+            n = Node::new(Kind::Bin { op: "??".into(), left: Box::new(n), right: Box::new(r) }, line, col);
+        }
+        Ok(n)
+    }
+
+    #[inline(always)]
     fn or(&mut self) -> PResult<Node> {
         let mut n = self.and()?;
         while self.cur().ty == TokType::Kw("or") {
@@ -640,6 +695,7 @@ impl Parser {
         Ok(n)
     }
 
+    #[inline(always)]
     fn and(&mut self) -> PResult<Node> {
         let mut n = self.not()?;
         while self.cur().ty == TokType::Kw("and") {
@@ -651,6 +707,7 @@ impl Parser {
         Ok(n)
     }
 
+    #[inline(always)]
     fn not(&mut self) -> PResult<Node> {
         if self.cur().ty == TokType::Kw("not") {
             let t = self.cur().clone();
@@ -661,15 +718,21 @@ impl Parser {
         self.comparison()
     }
 
+    #[inline(always)]
     fn comparison(&mut self) -> PResult<Node> {
         let mut n = self.additive()?;
-        while self.cur().ty == TokType::Op
-            && matches!(self.cur().value.as_str(), "==" | "!=" | "<" | ">" | "<=" | ">=")
+        while (self.cur().ty == TokType::Op
+            && matches!(self.cur().value.as_str(), "==" | "!=" | "<" | ">" | "<=" | ">="))
+            || self.cur().ty == TokType::Kw("in")
         {
-            let op = match self.cur().value.as_str() {
-                "==" => "===".to_string(),
-                "!=" => "!==".to_string(),
-                other => other.to_string(),
+            let op = if self.cur().ty == TokType::Kw("in") {
+                "in".to_string()
+            } else {
+                match self.cur().value.as_str() {
+                    "==" => "===".to_string(),
+                    "!=" => "!==".to_string(),
+                    other => other.to_string(),
+                }
             };
             self.i += 1;
             let r = self.additive()?;
@@ -679,6 +742,7 @@ impl Parser {
         Ok(n)
     }
 
+    #[inline(always)]
     fn additive(&mut self) -> PResult<Node> {
         let mut n = self.multiplicative()?;
         while self.cur().ty == TokType::Op && matches!(self.cur().value.as_str(), "+" | "-") {
@@ -691,6 +755,7 @@ impl Parser {
         Ok(n)
     }
 
+    #[inline(always)]
     fn multiplicative(&mut self) -> PResult<Node> {
         let mut n = self.unary()?;
         while self.cur().ty == TokType::Op && matches!(self.cur().value.as_str(), "*" | "/" | "%") {
@@ -703,22 +768,28 @@ impl Parser {
         Ok(n)
     }
 
+    #[inline(always)]
     fn unary(&mut self) -> PResult<Node> {
         if self.cur().ty == TokType::Kw("await") {
+            self.enter_depth()?;
             let t = self.cur().clone();
             self.i += 1;
-            let v = self.unary()?;
-            return Ok(Node::new(Kind::Await(Box::new(v)), t.line, t.col));
+            let v = self.unary();
+            self.leave_depth();
+            return Ok(Node::new(Kind::Await(Box::new(v?)), t.line, t.col));
         }
         if self.cur().ty == TokType::Op && self.cur().value == "-" {
+            self.enter_depth()?;
             let t = self.cur().clone();
             self.i += 1;
-            let v = self.unary()?;
-            return Ok(Node::new(Kind::Unary { op: "-".into(), operand: Box::new(v) }, t.line, t.col));
+            let v = self.unary();
+            self.leave_depth();
+            return Ok(Node::new(Kind::Unary { op: "-".into(), operand: Box::new(v?) }, t.line, t.col));
         }
         self.postfix()
     }
 
+    #[inline(always)]
     fn postfix(&mut self) -> PResult<Node> {
         let mut n = self.atom()?;
         loop {
@@ -729,6 +800,20 @@ impl Parser {
                     let name = self.ident()?;
                     let (line, col) = (n.line, n.col);
                     n = Node::new(Kind::Attr { obj: Box::new(n), name }, line, col);
+                }
+                TokType::Op if self.cur().value == "?." => {
+                    self.i += 1;
+                    if self.cur().ty == TokType::LBrack {
+                        self.i += 1;
+                        let idx = self.expr()?;
+                        self.eat(TokType::RBrack)?;
+                        let (line, col) = (n.line, n.col);
+                        n = Node::new(Kind::OptIndex { obj: Box::new(n), index: Box::new(idx) }, line, col);
+                    } else {
+                        let name = self.ident()?;
+                        let (line, col) = (n.line, n.col);
+                        n = Node::new(Kind::OptAttr { obj: Box::new(n), name }, line, col);
+                    }
                 }
                 TokType::LBrack => {
                     self.i += 1;
@@ -777,7 +862,7 @@ impl Parser {
             if self.cur().ty == TokType::RParen {
                 break;
             }
-            if self.cur().ty == TokType::Op && self.cur().value == "*" {
+            if self.cur().ty == TokType::Op && (self.cur().value == "*" || self.cur().value == "**") {
                 self.i += 1;
                 args.push(Node::new(Kind::Spread(Box::new(self.expr()?)), line, col));
             } else if self.cur().ty == TokType::Ident
@@ -882,14 +967,36 @@ impl Parser {
                 // list comprehension
                 if self.cur().ty == TokType::Kw("for") {
                     self.i += 1;
-                    let target = self.ident()?;
+                    let mut targets = Vec::new();
+                    let has_paren = if self.cur().ty == TokType::LParen {
+                        self.i += 1;
+                        true
+                    } else {
+                        false
+                    };
+                    targets.push(self.ident()?);
+                    while self.cur().ty == TokType::Comma {
+                        self.i += 1;
+                        if has_paren && self.cur().ty == TokType::RParen {
+                            break;
+                        }
+                        targets.push(self.ident()?);
+                    }
+                    if has_paren {
+                        self.eat(TokType::RParen)?;
+                    }
+                    let target = if targets.len() == 1 {
+                        targets.into_iter().next().unwrap()
+                    } else {
+                        format!("[{}]", targets.join(", "))
+                    };
                     self.eat(TokType::Kw("in"))?;
-                    // `or()` not `expr()`: an `if` here filters, it is not a ternary.
-                    let iter = self.or()?;
+                    // `coalesce()` not `expr()`: an `if` here filters, it is not a ternary.
+                    let iter = self.coalesce()?;
                     let mut cond = None;
                     if self.cur().ty == TokType::Kw("if") {
                         self.i += 1;
-                        cond = Some(Box::new(self.or()?));
+                        cond = Some(Box::new(self.coalesce()?));
                     }
                     self.skip_bracket_newlines(&mut depth);
                     self.eat(TokType::RBrack)?;
@@ -1683,5 +1790,65 @@ mod tests {
             Kind::Tree { body, .. } => assert!(matches!(body[0].kind, Kind::For { .. })),
             other => panic!("got {:?}", other),
         }
+    }
+
+    #[test]
+    fn optional_chaining_and_nullish_coalescing_parse() {
+        let e = first_expr("component A():\n    x = user?.profile?.name ?? \"anon\"\n");
+        match e.kind {
+            Kind::Bin { op, left, right } => {
+                assert_eq!(op, "??");
+                match left.kind {
+                    Kind::OptAttr { obj, name } => {
+                        assert_eq!(name, "name");
+                        assert!(matches!(obj.kind, Kind::OptAttr { .. }));
+                    }
+                    other => panic!("expected OptAttr, got {:?}", other),
+                }
+                assert!(matches!(right.kind, Kind::Str { .. }));
+            }
+            other => panic!("expected Bin with ??, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn in_comparison_parses() {
+        let e = first_expr("component A():\n    x = item in items\n");
+        match e.kind {
+            Kind::Bin { op, left, right } => {
+                assert_eq!(op, "in");
+                assert!(matches!(left.kind, Kind::Name(ref n) if n == "item"));
+                assert!(matches!(right.kind, Kind::Name(ref n) if n == "items"));
+            }
+            other => panic!("expected Bin with in, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn comprehension_tuple_target_parses() {
+        let e = first_expr("component A():\n    x = [v for k, v in items]\n");
+        match e.kind {
+            Kind::Comprehension { target, .. } => {
+                assert_eq!(target, "[k, v]");
+            }
+            other => panic!("expected Comprehension, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn unclosed_brace_in_fstring_rejected() {
+        let err = parse_err("component A():\n    x = f\"hello {world\"\n");
+        assert!(err.msg.contains("unclosed '{' in f-string"), "got {:?}", err.msg);
+    }
+
+    #[test]
+    fn recursion_depth_limit_enforced() {
+        let nested = format!("component A():\n    x = {}1{}\n", "(".repeat(270), ")".repeat(270));
+        let builder = std::thread::Builder::new().stack_size(8 * 1024 * 1024);
+        let handler = builder.spawn(move || {
+            let err = parse_err(&nested);
+            assert!(err.msg.contains("maximum recursion depth exceeded"), "got {:?}", err.msg);
+        }).unwrap();
+        handler.join().unwrap();
     }
 }

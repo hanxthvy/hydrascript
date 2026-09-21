@@ -15,33 +15,44 @@ pub static HTML_TAGS: &[&str] = &[
     "main", "section", "article", "aside", "table", "thead", "tbody", "tr", "td", "th", "br",
     "hr", "pre", "code", "em", "strong", "small", "figure", "figcaption", "video", "audio",
     "canvas", "svg", "iframe", "dialog",
+    // SVG elements
+    "path", "g", "circle", "rect", "line", "polyline", "polygon", "text", "tspan", "defs",
+    "clipPath", "symbol", "use", "ellipse", "mask", "pattern", "marker", "linearGradient",
+    "radialGradient", "stop", "foreignObject",
+    // HTML5 elements
+    "details", "summary", "picture", "source", "track", "time", "slot", "template",
+    "mark", "progress", "meter", "fieldset", "legend", "optgroup", "caption",
+    "colgroup", "col", "tfoot", "kbd", "blockquote", "address",
 ];
 
-pub fn prop_map(k: &str) -> &str {
+pub fn prop_map(k: &str) -> String {
+    if k.starts_with("aria_") || k.starts_with("data_") {
+        return k.replace('_', "-");
+    }
     match k {
-        "class" | "cls" => "className",
-        "for" => "htmlFor",
-        "on_click" => "onClick",
-        "on_change" => "onChange",
-        "on_input" => "onInput",
-        "on_submit" => "onSubmit",
-        "on_key_down" => "onKeyDown",
-        "on_key_up" => "onKeyUp",
-        "on_blur" => "onBlur",
-        "on_focus" => "onFocus",
-        "on_mouse_enter" => "onMouseEnter",
-        "on_mouse_leave" => "onMouseLeave",
-        "on_double_click" => "onDoubleClick",
-        "read_only" => "readOnly",
-        "auto_focus" => "autoFocus",
-        "auto_complete" => "autoComplete",
-        "tab_index" => "tabIndex",
-        "max_length" => "maxLength",
-        "col_span" => "colSpan",
-        "row_span" => "rowSpan",
-        "src_set" => "srcSet",
-        "type_" => "type",
-        other => other,
+        "class" | "cls" => "className".into(),
+        "for" => "htmlFor".into(),
+        "on_click" => "onClick".into(),
+        "on_change" => "onChange".into(),
+        "on_input" => "onInput".into(),
+        "on_submit" => "onSubmit".into(),
+        "on_key_down" => "onKeyDown".into(),
+        "on_key_up" => "onKeyUp".into(),
+        "on_blur" => "onBlur".into(),
+        "on_focus" => "onFocus".into(),
+        "on_mouse_enter" => "onMouseEnter".into(),
+        "on_mouse_leave" => "onMouseLeave".into(),
+        "on_double_click" => "onDoubleClick".into(),
+        "read_only" => "readOnly".into(),
+        "auto_focus" => "autoFocus".into(),
+        "auto_complete" => "autoComplete".into(),
+        "tab_index" => "tabIndex".into(),
+        "max_length" => "maxLength".into(),
+        "col_span" => "colSpan".into(),
+        "row_span" => "rowSpan".into(),
+        "src_set" => "srcSet".into(),
+        "type_" => "type".into(),
+        other => other.into(),
     }
 }
 
@@ -125,6 +136,16 @@ impl Emitter {
             Kind::Name(id) => {
                 HTML_TAGS.contains(&id.as_str()) || id.chars().next().map_or(false, |c| c.is_uppercase())
             }
+            Kind::Attr { obj, name } => {
+                match &obj.kind {
+                    Kind::Name(id) => {
+                        id.chars().next().map_or(false, |c| c.is_uppercase())
+                            || name.chars().next().map_or(false, |c| c.is_uppercase())
+                            || id == "motion"
+                    }
+                    _ => name.chars().next().map_or(false, |c| c.is_uppercase()),
+                }
+            }
             _ => false,
         }
     }
@@ -166,10 +187,19 @@ impl Emitter {
                 let o = self.js(obj)?;
                 Ok(format!("{}.{}", o, str_method(name)))
             }
+            Kind::OptAttr { obj, name } => {
+                let o = self.js(obj)?;
+                Ok(format!("{}?.{}", o, str_method(name)))
+            }
             Kind::Index { obj, index } => {
                 let o = self.js(obj)?;
                 let i = self.js(index)?;
                 Ok(format!("{}[{}]", o, i))
+            }
+            Kind::OptIndex { obj, index } => {
+                let o = self.js(obj)?;
+                let i = self.js(index)?;
+                Ok(format!("{}?.[{}]", o, i))
             }
             Kind::Bin { op, left, right } => {
                 let l = self.js(left)?;
@@ -302,6 +332,19 @@ impl Emitter {
                 }
                 Ok(format!("{}({})", fn_str, all.join(", ")))
             }
+            Kind::Slice { obj, start, stop } => {
+                let o = self.js(obj)?;
+                let a = match start {
+                    Some(s) => self.js(s)?,
+                    None => "0".into(),
+                };
+                let b = match stop {
+                    Some(s) => format!(", {}", self.js(s)?),
+                    None => String::new(),
+                };
+                Ok(format!("{}.slice({}{})", o, a, b))
+            }
+            Kind::Await(v) => Ok(format!("await {}", self.js(v)?)),
             _ => Err(CompileError::new(
                 format!("cannot compile expression {:?}", n.kind),
                 n.line,
@@ -311,8 +354,16 @@ impl Emitter {
         }
     }
 
-    fn attr_str(&self, kwargs: &[(String, Node)]) -> Result<String, CompileError> {
+    fn attr_str(&self, args: &[Node], kwargs: &[(String, Node)]) -> Result<String, CompileError> {
         let mut attrs = Vec::new();
+
+        // 0. Spread attributes in args: div(*props): or div(**props):
+        for arg in args {
+            if let Kind::Spread(v) = &arg.kind {
+                attrs.push(format!("{{...{}}}", self.js(v)?));
+            }
+        }
+
         for (k, v) in kwargs {
             // 1. Native conditional styling (cls / class shorthand)
             if k == "cls" || k == "class" || k == "className" {
@@ -351,7 +402,12 @@ impl Emitter {
                 }
             }
 
-            let pk = if k == "key" { "key" } else { prop_map(k) };
+            let pk = if k == "key" {
+                "key".to_string()
+            } else {
+                prop_map(k)
+            };
+
             if let Kind::Str { value, is_f: false } = &v.kind {
                 // String literal: className="foo", not className={"foo"}.
                 attrs.push(format!("{}={}", pk, value));
@@ -373,12 +429,13 @@ impl Emitter {
         kwargs: &[(String, Node)],
     ) -> Result<String, CompileError> {
         let tag = self.js(func)?;
-        let a = self.attr_str(kwargs)?;
-        if args.is_empty() {
+        let a = self.attr_str(args, kwargs)?;
+        let non_spread_args: Vec<_> = args.iter().filter(|a| !matches!(a.kind, Kind::Spread(_))).collect();
+        if non_spread_args.is_empty() {
             return Ok(format!("<{}{} />", tag, a));
         }
         let mut inner = String::new();
-        for k in args {
+        for k in non_spread_args {
             match &k.kind {
                 Kind::Str { value, is_f: false } => {
                     // Strip quotes for plain text children inside JSX.
@@ -403,8 +460,9 @@ impl Emitter {
 
         let (tag, a) = match &head.kind {
             Kind::Name(id) => (id.clone(), String::new()),
-            Kind::Call { func, kwargs, .. } if Self::is_element(func) => {
-                (self.js(func)?, self.attr_str(kwargs)?)
+            Kind::Attr { .. } if Self::is_element(head) => (self.js(head)?, String::new()),
+            Kind::Call { func, args, kwargs } if Self::is_element(func) => {
+                (self.js(func)?, self.attr_str(args, kwargs)?)
             }
             _ => {
                 return Err(CompileError::new(
@@ -535,6 +593,17 @@ impl Emitter {
                     Kind::Tuple(items) => {
                         let bits: Result<Vec<_>, _> = items.iter().map(|i| self.js(i)).collect();
                         format!("[{}]", bits?.join(", "))
+                    }
+                    Kind::Dict(pairs) => {
+                        let mut ps = Vec::new();
+                        for (k, v) in pairs {
+                            if let Some(key) = k {
+                                ps.push(format!("{}: {}", self.js(key)?, self.js(v)?));
+                            } else {
+                                ps.push(self.js(v)?);
+                            }
+                        }
+                        format!("{{ {} }}", ps.join(", "))
                     }
                     _ => self.js(target)?,
                 };
@@ -690,9 +759,13 @@ impl Emitter {
             self.w(&format!("export interface {}Props {{", name));
             self.depth += 1;
             for p in params {
-                let opt = if p.has_default { "?" } else { "" };
-                let ty = p.ty.as_deref().unwrap_or("any");
-                self.w(&format!("{}{}: {};", p.name, opt, ty));
+                if p.name.starts_with("...") {
+                    self.w("[key: string]: any;");
+                } else {
+                    let opt = if p.has_default { "?" } else { "" };
+                    let ty = p.ty.as_deref().unwrap_or("any");
+                    self.w(&format!("{}{}: {};", p.name, opt, ty));
+                }
             }
             self.depth -= 1;
             self.w("}");
@@ -852,7 +925,9 @@ mod tests {
         assert_eq!(prop_map("on_change"), "onChange");
         assert_eq!(prop_map("tab_index"), "tabIndex");
         assert_eq!(prop_map("type_"), "type");
-        assert_eq!(prop_map("data_custom"), "data_custom");
+        assert_eq!(prop_map("data_custom"), "data-custom");
+        assert_eq!(prop_map("aria_label"), "aria-label");
+        assert_eq!(prop_map("data_test_id"), "data-test-id");
     }
 
     // ------------------------------------------------------------ string method
@@ -1033,6 +1108,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(non_snake_case)]
     fn class_and_cls_become_className() {
         let out = emit_tsx("component A():\n    div(cls=\"x\"):\n        span: \"y\"\n");
         has_all(&out, &["className=\"x\""]);
@@ -1176,7 +1252,7 @@ mod tests {
         assert!(smap.contains("\"sourcesContent\":"));
 
         // Exactly one segment per generated code line.
-        let m: serde_json_lite = parse_json_lite(&smap);
+        let m: SerdeJsonLite = parse_json_lite(&smap);
         let segs = m.mappings.split(';').count();
         let code_lines = code.split('\n').count();
         assert_eq!(segs, code_lines);
@@ -1194,15 +1270,15 @@ mod tests {
         assert!(map.contains("\"sources\":[\"C:\\\\Users\\\\test\\\\App.hsx\"]"));
     }
 
-    struct serde_json_lite {
+    struct SerdeJsonLite {
         mappings: String,
     }
 
-    fn parse_json_lite(s: &str) -> serde_json_lite {
+    fn parse_json_lite(s: &str) -> SerdeJsonLite {
         let marker = "\"mappings\":\"";
         let start = s.find(marker).unwrap() + marker.len();
         let end = s[start..].find('"').unwrap() + start;
-        serde_json_lite { mappings: s[start..end].to_string() }
+        SerdeJsonLite { mappings: s[start..end].to_string() }
     }
 
     // ---------------------------------------------------------------- edge cases
