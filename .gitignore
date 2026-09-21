@@ -3,6 +3,10 @@
 target/
 dist/
 *.vsix
+*.map
+demo2/src/App.tsx
+demo2/src/TodoApp.tsx
+demo2/src/StatCard.tsx
 
 # Node dependencies
 node_modules/

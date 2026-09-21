@@ -83,10 +83,19 @@ impl JsEmitter {
                 let o = self.js(obj)?;
                 Ok(format!("{}.{}", o, str_method(name)))
             }
+            Kind::OptAttr { obj, name } => {
+                let o = self.js(obj)?;
+                Ok(format!("{}?.{}", o, str_method(name)))
+            }
             Kind::Index { obj, index } => {
                 let o = self.js(obj)?;
                 let i = self.js(index)?;
                 Ok(format!("{}[{}]", o, i))
+            }
+            Kind::OptIndex { obj, index } => {
+                let o = self.js(obj)?;
+                let i = self.js(index)?;
+                Ok(format!("{}?.[{}]", o, i))
             }
             Kind::Bin { op, left, right } => {
                 let l = self.js(left)?;
@@ -247,6 +256,17 @@ impl JsEmitter {
                         let bits: Result<Vec<_>, _> = items.iter().map(|i| self.js(i)).collect();
                         format!("[{}]", bits?.join(", "))
                     }
+                    Kind::Dict(pairs) => {
+                        let mut ps = Vec::new();
+                        for (k, v) in pairs {
+                            if let Some(key) = k {
+                                ps.push(format!("{}: {}", self.js(key)?, self.js(v)?));
+                            } else {
+                                ps.push(self.js(v)?);
+                            }
+                        }
+                        format!("{{ {} }}", ps.join(", "))
+                    }
                     _ => self.js(target)?,
                 };
                 let rhs = self.js(value)?;
@@ -355,7 +375,24 @@ impl JsEmitter {
                         self.w("}");
                     }
                     Kind::Assign { target, value } => {
-                        let lhs = self.js(target)?;
+                        let lhs = match &target.kind {
+                            Kind::Tuple(items) => {
+                                let bits: Result<Vec<_>, _> = items.iter().map(|i| self.js(i)).collect();
+                                format!("[{}]", bits?.join(", "))
+                            }
+                            Kind::Dict(pairs) => {
+                                let mut ps = Vec::new();
+                                for (k, v) in pairs {
+                                    if let Some(key) = k {
+                                        ps.push(format!("{}: {}", self.js(key)?, self.js(v)?));
+                                    } else {
+                                        ps.push(self.js(v)?);
+                                    }
+                                }
+                                format!("{{ {} }}", ps.join(", "))
+                            }
+                            _ => self.js(target)?,
+                        };
                         let rhs = self.js(value)?;
                         self.w(&format!("export const {} = {};", lhs, rhs));
                     }

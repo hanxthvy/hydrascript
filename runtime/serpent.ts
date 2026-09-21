@@ -8,7 +8,9 @@
  */
 import {
   useState, useEffect, useMemo, useRef, useCallback, useContext,
-  createContext, useReducer, type DependencyList,
+  createContext, useReducer, Fragment, useId, useTransition,
+  useDeferredValue, useLayoutEffect, Suspense, forwardRef,
+  type DependencyList,
 } from 'react'
 
 /* ------------------------------------------------------------------ state */
@@ -155,7 +157,10 @@ export function safe<A extends any[]>(fn: (...a: A) => void): (...a: A) => void 
 
 /* ---------------------------------------------------------------- re-exports */
 
-export { useState, useEffect, useMemo, useRef, useCallback, useContext, createContext }
+export {
+  useState, useEffect, useMemo, useRef, useCallback, useContext, createContext,
+  Fragment, useId, useTransition, useDeferredValue, useLayoutEffect, Suspense, forwardRef,
+}
 
 /* ------------------------------------------------------------- string helpers
  *

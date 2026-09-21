@@ -98,6 +98,18 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
             continue;
         }
 
+        let leading_ws_len = raw.len() - raw.trim_start_matches(|c: char| c == ' ' || c == '\t').len();
+        let leading_ws = &raw[..leading_ws_len];
+        if let Some(tab_pos) = leading_ws.find('\t') {
+            return Err(CompileError::new(
+                "tab indentation is not allowed",
+                line_no,
+                tab_pos,
+                lines.iter().map(|s| s.to_string()).collect(),
+            )
+            .with_hint("use spaces for indentation"));
+        }
+
         let indent = raw.len() - raw.trim_start_matches(' ').len();
         let top = *stack.last().unwrap();
         if indent > top {
@@ -202,7 +214,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
             let three = raw[pos..].chars().take(3).collect::<String>();
             let (ty, len) = if three == "**=" || three == "//=" {
                 (TokType::Op, 3)
-            } else if matches!(two.as_str(), "==" | "!=" | "<=" | ">=" | "+=" | "-=" | "*=" | "/=" | "**" | "//" | "&&" | "||" | "->") {
+            } else if matches!(two.as_str(), "==" | "!=" | "<=" | ">=" | "+=" | "-=" | "*=" | "/=" | "**" | "//" | "&&" | "||" | "->" | "?." | "??") {
                 if two == "->" {
                     (TokType::Arrow, 2)
                 } else {
@@ -219,7 +231,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
                     b']' => (TokType::RBrack, 1),
                     b'{' => (TokType::LBrace, 1),
                     b'}' => (TokType::RBrace, 1),
-                    b'=' | b'+' | b'-' | b'*' | b'/' | b'%' | b'<' | b'>' | b'!' | b'&' | b'|' => {
+                    b'=' | b'+' | b'-' | b'*' | b'/' | b'%' | b'<' | b'>' | b'!' | b'&' | b'|' | b'?' => {
                         (TokType::Op, 1)
                     }
                     _ => {
@@ -313,6 +325,14 @@ mod tests {
         // A tab after the indent is skipped as whitespace, not counted.
         let toks = lex("a:\n    b\tc\n").unwrap();
         assert!(toks.iter().any(|t| t.ty == TokType::Ident && t.value == "c"));
+    }
+
+    #[test]
+    fn tabs_in_indentation_are_disallowed() {
+        let err = lex("a:\n\tb\n").unwrap_err();
+        assert!(err.msg.contains("tab indentation is not allowed"), "msg was {:?}", err.msg);
+        let err2 = lex("a:\n  \tb\n").unwrap_err();
+        assert!(err2.msg.contains("tab indentation is not allowed"), "msg was {:?}", err2.msg);
     }
 
     // ---------------------------------------------------------------- skipping
@@ -431,7 +451,7 @@ mod tests {
 
     #[test]
     fn two_char_operators_lex_as_one_token() {
-        for op in ["==", "!=", "<=", ">=", "+=", "-=", "*=", "/=", "**", "//", "&&", "||"] {
+        for op in ["==", "!=", "<=", ">=", "+=", "-=", "*=", "/=", "**", "//", "&&", "||", "?.", "??"] {
             let toks = lex(&format!("a {} b\n", op)).unwrap();
             assert!(
                 toks.iter().any(|t| t.ty == TokType::Op && t.value == op),
@@ -476,7 +496,7 @@ mod tests {
 
     #[test]
     fn single_char_operators_are_recognised() {
-        for op in ["=", "+", "-", "*", "/", "%", "<", ">", "!", "&", "|"] {
+        for op in ["=", "+", "-", "*", "/", "%", "<", ">", "!", "&", "|", "?"] {
             let toks = lex(&format!("a {} b\n", op)).unwrap();
             assert!(toks.iter().any(|t| t.ty == TokType::Op && t.value == op), "{} failed", op);
         }
