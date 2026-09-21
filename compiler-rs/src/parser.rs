@@ -657,10 +657,12 @@ impl Parser {
     fn ternary(&mut self) -> PResult<Node> {
         let n = self.coalesce()?;
         if self.cur().ty == TokType::Kw("if") {
+            self.enter_depth()?;
             self.i += 1;
             let test = self.coalesce()?;
             self.eat(TokType::Kw("else"))?;
             let orelse = self.ternary()?;
+            self.leave_depth();
             let (line, col) = (n.line, n.col);
             return Ok(Node::new(
                 Kind::Ternary { test: Box::new(test), body: Box::new(n), orelse: Box::new(orelse) },
@@ -710,9 +712,11 @@ impl Parser {
     #[inline(always)]
     fn not(&mut self) -> PResult<Node> {
         if self.cur().ty == TokType::Kw("not") {
+            self.enter_depth()?;
             let t = self.cur().clone();
             self.i += 1;
             let v = self.not()?;
+            self.leave_depth();
             return Ok(Node::new(Kind::Unary { op: "!".into(), operand: Box::new(v) }, t.line, t.col));
         }
         self.comparison()
