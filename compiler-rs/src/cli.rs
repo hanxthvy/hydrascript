@@ -15,17 +15,16 @@ pub fn run(args: &[String]) -> ExitCode {
     match args.first().map(|s| s.as_str()) {
         Some("run") => run_script(&args[1..]),
         Some("build") => build(&args[1..]),
+        Some("watch") => watch(&args[1..]),
         Some("check") => check(&args[1..]),
         Some("init") => init(&args[1..]),
+        Some("repl") => repl(),
         Some(other) => {
             eprintln!("hydra: unknown command {:?}", other);
-            eprintln!("try: hydra run | build | check | init | --help");
+            eprintln!("try: hydra run | build | watch | repl | check | init | --help");
             ExitCode::from(2)
         }
-        None => {
-            eprintln!("hydra: missing command");
-            ExitCode::from(2)
-        }
+        None => repl(),
     }
 }
 
@@ -142,6 +141,14 @@ fn targets(args: &[String]) -> Vec<PathBuf> {
 }
 
 fn build(args: &[String]) -> ExitCode {
+    if args.iter().any(|a| a == "-w" || a == "--watch") {
+        let stripped: Vec<String> = args
+            .iter()
+            .filter(|a| a.as_str() != "-w" && a.as_str() != "--watch")
+            .cloned()
+            .collect();
+        return watch(&stripped);
+    }
     let verbose = args.iter().any(|a| a == "-v" || a == "--verbose");
     let files = targets(args);
     if files.is_empty() {
@@ -190,6 +197,158 @@ fn build(args: &[String]) -> ExitCode {
         return ExitCode::from(1);
     }
     println!("\x1b[32mOK\x1b[0m: compiled {} file(s) in {:.1}ms", files.len(), ms);
+    ExitCode::SUCCESS
+}
+
+pub fn watch(args: &[String]) -> ExitCode {
+    use std::collections::HashMap;
+    use std::thread::sleep;
+    use std::time::{Duration, SystemTime};
+
+    println!("\x1b[36m🐉 HydraScript\x1b[0m watching for changes (press Ctrl+C to exit)...");
+
+    let mut mtimes: HashMap<PathBuf, SystemTime> = HashMap::new();
+
+    let files = targets(args);
+    for path in &files {
+        if let Ok(meta) = fs::metadata(path) {
+            if let Ok(m) = meta.modified() {
+                mtimes.insert(path.clone(), m);
+            }
+        }
+    }
+    let _ = build(args);
+
+    loop {
+        sleep(Duration::from_millis(200));
+        let current_files = targets(args);
+        for path in &current_files {
+            let Ok(meta) = fs::metadata(path) else { continue };
+            let Ok(m) = meta.modified() else { continue };
+            let is_changed = match mtimes.get(path) {
+                Some(&prev) => m > prev,
+                None => true,
+            };
+            if is_changed {
+                mtimes.insert(path.clone(), m);
+                let t0 = Instant::now();
+                if let Ok(src) = fs::read_to_string(path) {
+                    let name = path.file_name().map_or_else(|| "out.hsx".into(), |n| n.to_string_lossy().to_string());
+                    match compile(&src, &name) {
+                        Ok((code, map)) => {
+                            let is_js = path.extension().map_or(false, |x| x == "hs" || x == "hx");
+                            let out_ext = if is_js { "mjs" } else { "tsx" };
+                            let out_file = path.with_extension(out_ext);
+                            let map_path = path.with_extension(format!("{}.map", out_ext));
+                            let map_name = map_path.file_name().map_or_else(|| "out.map".into(), |n| n.to_string_lossy().to_string());
+                            let with_ref = format!("{}\n//# sourceMappingURL={}\n", code, map_name);
+                            let _ = fs::write(&out_file, with_ref);
+                            let _ = fs::write(&map_path, map);
+                            let ms = t0.elapsed().as_secs_f64() * 1000.0;
+                            println!("  \x1b[32mrecompiled\x1b[0m {} -> {} ({:.1}ms)", path.display(), out_file.display(), ms);
+                        }
+                        Err(e) => {
+                            eprintln!("{}", e.pretty());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn repl() -> ExitCode {
+    use std::io::{self, BufRead, Write};
+
+    println!("\x1b[36m🐉 HydraScript 0.1.0 REPL\x1b[0m");
+    println!("Type HydraScript expressions or statements. Type 'exit' to quit.\n");
+
+    let stdin = io::stdin();
+    let mut handle = stdin.lock();
+
+    loop {
+        print!(">>> ");
+        let _ = io::stdout().flush();
+        let mut line = String::new();
+        match handle.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if trimmed == "exit" || trimmed == "quit" || trimmed == "exit()" {
+                    break;
+                }
+
+                // Statement first: if it compiles as-is, run it directly.
+                // Otherwise wrap in print() to auto-display expression results.
+                let as_stmt = format!("{}\n", trimmed);
+                let to_compile = match compile(&as_stmt, "repl.hs") {
+                    Ok(_) => {
+                        // Check if it's a pure expression (not assignment/import/def/etc)
+                        // by also trying print() — if both work, prefer print() for display
+                        let as_expr = format!("print({})\n", trimmed);
+                        match compile(&as_expr, "repl.hs") {
+                            Ok(_) => {
+                                // Both compile. Use print() only if stmt was ExprStmt
+                                // (no `=` outside strings, no keywords at start)
+                                let is_pure_expr = !trimmed.starts_with("import ")
+                                    && !trimmed.starts_with("from ")
+                                    && !trimmed.starts_with("def ")
+                                    && !trimmed.starts_with("async ")
+                                    && !trimmed.starts_with("for ")
+                                    && !trimmed.starts_with("while ")
+                                    && !trimmed.starts_with("if ")
+                                    && !trimmed.starts_with("try")
+                                    && !trimmed.starts_with("print(")
+                                    && !trimmed.contains(" = ")
+                                    && !trimmed.starts_with("export ");
+                                if is_pure_expr {
+                                    as_expr
+                                } else {
+                                    as_stmt
+                                }
+                            }
+                            Err(_) => as_stmt,
+                        }
+                    }
+                    Err(_) => {
+                        // Not a valid statement — try as expression
+                        format!("print({})\n", trimmed)
+                    }
+                };
+
+                match compile(&to_compile, "repl.hs") {
+                    Ok((code, _)) => {
+                        let node_res = std::process::Command::new("node")
+                            .arg("--input-type=module")
+                            .arg("-e")
+                            .arg(&code)
+                            .output();
+                        match node_res {
+                            Ok(output) => {
+                                if !output.stdout.is_empty() {
+                                    print!("{}", String::from_utf8_lossy(&output.stdout));
+                                }
+                                if !output.stderr.is_empty() {
+                                    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("node execution error: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("{}", e.pretty());
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
     ExitCode::SUCCESS
 }
 

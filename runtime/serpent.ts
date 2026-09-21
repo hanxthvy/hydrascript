@@ -58,6 +58,76 @@ export function reducer<S, A>(fn: (s: S, a: A) => S, initial: S) {
   return useReducer(fn, initial)
 }
 
+/**
+ * `is_open, toggle_open = toggle(False)`
+ * Toggle boolean state without repetitive `set_open(lambda o: not o)` ceremony.
+ */
+export function toggle(initial: boolean = false): [boolean, () => void, (v: boolean) => void] {
+  const [val, setVal] = useState<boolean>(initial)
+  const flip = useCallback(() => setVal((v) => !v), [])
+  return [val, flip, setVal]
+}
+
+/**
+ * `debounced_query = debounce(query, 300)`
+ * Delay state updates until typing or actions pause.
+ */
+export function debounce<T>(value: T, delay_ms: number = 300): T {
+  const [debounced, setDebounced] = useState<T>(value)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delay_ms)
+    return () => clearTimeout(timer)
+  }, [value, delay_ms])
+  return debounced
+}
+
+/**
+ * `theme, set_theme = local_storage("app_theme", "dark")`
+ * Syncs state with browser localStorage including JSON serialization.
+ */
+export function local_storage<T>(key: string, initial: T): [T, (v: T | ((prev: T) => T)) => void] {
+  const [stored, setStored] = useState<T>(() => {
+    if (typeof window === 'undefined') return initial
+    try {
+      const item = window.localStorage.getItem(key)
+      return item ? JSON.parse(item) : initial
+    } catch {
+      return initial
+    }
+  })
+
+  const setValue = useCallback(
+    (val: T | ((prev: T) => T)) => {
+      setStored((prev) => {
+        const next = typeof val === 'function' ? (val as (p: T) => T)(prev) : val
+        if (typeof window !== 'undefined') {
+          try {
+            window.localStorage.setItem(key, JSON.stringify(next))
+          } catch (e) {
+            console.error(`[hydrascript] localStorage error for key "${key}":`, e)
+          }
+        }
+        return next
+      })
+    },
+    [key]
+  )
+
+  return [stored, setValue]
+}
+
+/**
+ * `mounted = use_mounted()`
+ * Avoids React hydration mismatch when rendering client-only UI.
+ */
+export function use_mounted(): boolean {
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => {
+    setMounted(true)
+  }, [])
+  return mounted
+}
+
 /* ---------------------------------------------------------------- context */
 
 /**

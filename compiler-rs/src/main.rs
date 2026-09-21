@@ -20,13 +20,15 @@ fn usage() -> String {
          \n\
          USAGE:\n\
          \x20 hydra run <file.hs> [args]  execute script directly in memory\n\
+         \x20 hydra repl                  interactive Pythonic REPL\n\
+         \x20 hydra watch [dir]           watch directory & recompile on change\n\
          \x20 hydra <file.hsx>            compile to stdout\n\
          \x20 hydra <file.hs> -o out.mjs  compile to output file\n\
          \x20 hydra --json <file.hsx>     emit {{code, map}} JSON\n\
          \x20 hydra --check <file.hsx>    parse only; exit 1 on error\n\
          \x20 hydra --stdin [filename]    read source from stdin\n\
          \x20 hydra --version\n\
-         \x20 hydra run|build|check|init  project commands\n"
+         \x20 hydra run|build|watch|repl|check|init  project commands\n"
     )
 }
 
@@ -34,8 +36,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.is_empty() {
-        eprint!("{}", usage());
-        return ExitCode::from(2);
+        return hydra::cli::run(&["repl".to_string()]);
     }
     if args[0] == "--version" || args[0] == "-v" {
         println!("hydra {}", VERSION);
@@ -45,7 +46,7 @@ fn main() -> ExitCode {
         print!("{}", usage());
         return ExitCode::SUCCESS;
     }
-    if matches!(args[0].as_str(), "build" | "check" | "init" | "run") {
+    if matches!(args[0].as_str(), "build" | "check" | "init" | "run" | "watch" | "repl") {
         return hydra::cli::run(&args);
     }
 

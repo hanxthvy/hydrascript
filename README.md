@@ -219,6 +219,34 @@ HydraScript is not just for UI. The compiler automatically dispatches code based
         React 18 Engine             Direct Execution
 ```
 
+### Interactive REPL
+
+Explore HydraScript interactively without creating any files:
+
+```bash
+$ hydra repl
+🐉 HydraScript 0.1.0 REPL
+Type HydraScript expressions or statements. Type 'exit' to quit.
+
+>>> sorted([3, 1, 4, 1, 5, 9])
+[ 1, 1, 3, 4, 5, 9 ]
+>>> "hello world".upper()
+HELLO WORLD
+>>> [x * 2 for x in range(5)]
+[ 0, 2, 4, 6, 8 ]
+>>> f"2 + 2 = {2 + 2}"
+2 + 2 = 4
+```
+
+### Watch Mode
+
+Auto-recompile on every file save — no Vite needed for standalone builds:
+
+```bash
+hydra watch              # watches src/ for .hsx/.hs/.hx changes
+hydra build -w           # equivalent shortcut
+```
+
 ### Scripting with `.hs` (Node.js / Backend)
 
 Write general-purpose scripts with Python syntax, executed directly in Node.js via `hydra run`:
@@ -305,6 +333,10 @@ hydra run script.hs
 
 # Pass arguments directly to your script
 hydra run server.hs --port 8080
+
+# Interactive REPL — no file needed
+hydra repl
+# or just `hydra` with no args
 ```
 
 ### 3. Compile for React Project
@@ -381,6 +413,10 @@ HydraScript automatically transforms idiomatic Python calls into optimized JavaS
 - `ref(init)`: React `useRef` adapter.
 - `callback(fn, deps)`: React `useCallback` adapter.
 - `reducer(fn, init)`: React `useReducer` adapter.
+- `toggle(init)`: Boolean toggle with `[value, flip, set]` — no more `set_open(lambda o: not o)`.
+- `debounce(value, ms)`: Debounced state for search inputs & rapid changes.
+- `local_storage(key, init)`: Persistent state synced with `localStorage`.
+- `use_mounted()`: Client-only rendering guard for SSR/hydration safety.
 - `cx(...classes)`: Built-in conditional class combiner.
 
 ---
