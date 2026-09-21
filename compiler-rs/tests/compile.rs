@@ -716,6 +716,20 @@ fn test_hx_rejects_component_and_tree() {
     assert_contains(&err2.msg, &["a tree block is not available in a .hx file"]);
 }
 
+#[test]
+fn test_hx_modern_js_features() {
+    let src = "def test_modern():\n    name = user?.name\n    item = items?.[0]\n    val = a ?? b\n    { title, content } = props\n    if \"admin\" in roles:\n        return True\n";
+    let out = comp_hx(src);
+    assert_contains(&out, &[
+        "const name = user?.name;",
+        "const item = items?.[0];",
+        "const val = (a ?? b);",
+        "const { title, content } = props;",
+        "(\"admin\" in roles)",
+    ]);
+    assert_not_contains(&out, &["const ({ title, content })"]);
+}
+
 // =========================================================================
 // 9. SUPERIOR HSX FEATURES (MATCH/CASE, CLS SHORTHAND, EVENT MODIFIERS, AUTO-FRAGMENT)
 // =========================================================================
@@ -907,6 +921,31 @@ fn test_feature_jsx_double_star_spread() {
     let out = comp(src);
     assert_contains(&out, &[
         "<div {...props}>content</div>",
+    ]);
+}
+
+// [xihanzu-NR]
+#[test]
+fn test_react_capabilities_svg_namespaced_spread_aria() {
+    let src = r#"component ReactCapabilities(*svg_props, **tab_props):
+    svg(viewBox="0 0 100 100", *svg_props, aria_label="Chart graphic"):
+        g(className="chart-group", aria_hidden=False):
+            circle(cx=50, cy=50, r=40, aria_label="Outer circle")
+            path(d="M 10 10 L 90 90", stroke_width=2)
+    Tabs.List(className="tab-nav", aria_label="Main tabs", **tab_props):
+        Tabs.Trigger(value="1", aria_selected=True, aria_controls="panel-1"): "Tab 1"
+        Tabs.Trigger(value="2", aria_selected=False, aria_controls="panel-2"): "Tab 2"
+"#;
+    let out = comp(src);
+    assert_contains(&out, &[
+        "export function ReactCapabilities({ ...svg_props, ...tab_props }: ReactCapabilitiesProps) {",
+        "<svg {...svg_props} viewBox=\"0 0 100 100\" aria-label=\"Chart graphic\">",
+        "<g className=\"chart-group\" aria-hidden={false}>",
+        "<circle cx={50} cy={50} r={40} aria-label=\"Outer circle\" />",
+        "<path d=\"M 10 10 L 90 90\" stroke_width={2} />",
+        "<Tabs.List {...tab_props} className=\"tab-nav\" aria-label=\"Main tabs\">",
+        "<Tabs.Trigger value=\"1\" aria-selected={true} aria-controls=\"panel-1\">Tab 1</Tabs.Trigger>",
+        "<Tabs.Trigger value=\"2\" aria-selected={false} aria-controls=\"panel-2\">Tab 2</Tabs.Trigger>",
     ]);
 }
 
