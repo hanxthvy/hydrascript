@@ -1,13 +1,14 @@
 // [xihanzu-NR]
-//! Serpent compiler — Pythonic syntax to React TSX.
+//! Hydra compiler — Pythonic syntax for React (HSX) and Node (HX).
 //!
-//! One binary, no runtime dependencies. Three ways to call it:
-//!   serpent <file.hsx>              compile to stdout
-//!   serpent --json <file.hsx>       {code, map} JSON for editor/plugin use
-//!   serpent --check <file.hsx>      parse only, exit 1 on error
-//!   serpent --stdin                 read source from stdin (used by the Vite plugin)
+//! One binary, no runtime dependencies.
+//!   hydra <file.hsx>            compile to stdout
+//!   hydra <file.hsx> -o out.tsx compile to file
+//!   hydra --json <file.hsx>     emit {code, map} JSON for editor/plugin use
+//!   hydra --check <file.hsx>    parse only, exit 1 on error
+//!   hydra --stdin               read source from stdin (used by the Vite plugin)
 
-use serpent::compile;
+use hydra::compile;
 use std::io::{Read, Write};
 use std::process::ExitCode;
 
@@ -15,15 +16,16 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn usage() -> String {
     format!(
-        "serpent {VERSION} — Pythonic syntax for React\n\
+        "hydra {VERSION} — Pythonic syntax for React (HSX) & Node (HX)\n\
          \n\
          USAGE:\n\
-         \x20 serpent <file.hsx>            compile to stdout\n\
-         \x20 serpent --json <file.hsx>     emit {{code, map}} JSON\n\
-         \x20 serpent --check <file.hsx>    parse only; exit 1 on error\n\
-         \x20 serpent --stdin [filename]    read source from stdin\n\
-         \x20 serpent --version\n\
-         \x20 serpent build|check|init      project commands\n"
+         \x20 hydra <file.hsx>            compile to stdout\n\
+         \x20 hydra <file.hx> -o out.mjs  compile to output file\n\
+         \x20 hydra --json <file.hsx>     emit {{code, map}} JSON\n\
+         \x20 hydra --check <file.hsx>    parse only; exit 1 on error\n\
+         \x20 hydra --stdin [filename]    read source from stdin\n\
+         \x20 hydra --version\n\
+         \x20 hydra build|check|init      project commands\n"
     )
 }
 
@@ -35,7 +37,7 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
     if args[0] == "--version" || args[0] == "-v" {
-        println!("serpent {}", VERSION);
+        println!("hydra {}", VERSION);
         return ExitCode::SUCCESS;
     }
     if args[0] == "--help" || args[0] == "-h" {
@@ -43,7 +45,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if matches!(args[0].as_str(), "build" | "check" | "init") {
-        return serpent::cli::run(&args);
+        return hydra::cli::run(&args);
     }
 
     let json_mode = args.iter().any(|a| a == "--json");

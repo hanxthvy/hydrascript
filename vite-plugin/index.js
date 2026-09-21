@@ -1,9 +1,9 @@
 // [xihanzu-NR]
 /**
- * vite-plugin-serpent — compile `.hsx` (Pythonic syntax) to React TSX.
+ * vite-plugin-hydrascript — compile `.hsx` (Pythonic syntax) to React TSX.
  *
  * The compiler is a native Rust binary: one process spawn per file, cached.
- * Cold compile is ~2ms, so the spawn cost dominates — see `compilerPath` to
+ * Cold compile is ~1ms, so the spawn cost dominates — see `compilerPath` to
  * point at a prebuilt binary, and `--json` mode which returns code + map in
  * one round trip.
  */
@@ -19,22 +19,26 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 function findCompiler(explicit) {
   const candidates = [
     explicit,
+    process.env.HYDRA_COMPILER,
     process.env.SERPENT_COMPILER,
+    path.join(HERE, 'bin', 'hydra'),
     path.join(HERE, 'bin', 'serpent'),
+    path.join(HERE, '..', 'compiler-rs', 'target', 'release', 'hydra'),
     path.join(HERE, '..', 'compiler-rs', 'target', 'release', 'serpent'),
+    path.join(HERE, '..', 'compiler-rs', 'target', 'debug', 'hydra'),
     path.join(HERE, '..', 'compiler-rs', 'target', 'debug', 'serpent'),
   ].filter(Boolean)
   for (const c of candidates) {
     if (existsSync(c)) return c
   }
   throw new Error(
-    `[serpent] native compiler not found. Build it with:\n` +
+    `[hydrascript] native compiler not found. Build it with:\n` +
     `  cd compiler-rs && cargo build --release\n` +
-    `or set compilerPath / $SERPENT_COMPILER.`,
+    `or set compilerPath / $HYDRA_COMPILER.`,
   )
 }
 
-export function serpent(opts = {}) {
+export function hydrascript(opts = {}) {
   const bin = findCompiler(opts.compilerPath)
   const cache = new Map()
 
@@ -94,4 +98,5 @@ export function serpent(opts = {}) {
   }
 }
 
-export default serpent
+export const serpent = hydrascript
+export default hydrascript

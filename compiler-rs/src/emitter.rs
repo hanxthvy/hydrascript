@@ -311,45 +311,6 @@ impl Emitter {
         }
     }
 
-    fn fstring(&self, s: &str) -> String {
-        let body = if s.starts_with("f\"\"\"") || s.starts_with("f'''") {
-            &s[4..s.len() - 3]
-        } else if s.starts_with("f\"") || s.starts_with("f'") {
-            &s[2..s.len() - 1]
-        } else {
-            s
-        };
-        let mut out = String::from("`");
-        let mut chars = body.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '{' {
-                if chars.peek() == Some(&'{') {
-                    chars.next();
-                    out.push('{');
-                } else {
-                    out.push_str("${");
-                    while let Some(inner) = chars.next() {
-                        if inner == '}' {
-                            break;
-                        }
-                        out.push(inner);
-                    }
-                    out.push('}');
-                }
-            } else if c == '}' && chars.peek() == Some(&'}') {
-                chars.next();
-                out.push('}');
-            } else if c == '`' || (c == '$' && chars.peek() == Some(&'{')) {
-                out.push('\\');
-                out.push(c);
-            } else {
-                out.push(c);
-            }
-        }
-        out.push('`');
-        out
-    }
-
     fn attr_str(&self, kwargs: &[(String, Node)]) -> Result<String, CompileError> {
         let mut attrs = Vec::new();
         for (k, v) in kwargs {

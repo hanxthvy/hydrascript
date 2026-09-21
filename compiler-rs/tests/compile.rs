@@ -5,7 +5,7 @@
 //! edge cases: Unicode identifiers, Windows paths, CRLF line endings, nested
 //! lambdas, deep trees, and f-string escapes.
 
-use serpent::{compile, CompileError};
+use hydra::{compile, CompileError};
 
 fn comp(src: &str) -> String {
     let (code, _) = compile(src, "test.hsx").expect("compilation failed");

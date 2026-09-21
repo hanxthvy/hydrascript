@@ -23,10 +23,10 @@ pub enum Target {
     Js,
 }
 
-/// Pick the target from a filename's extension. `.hx` is JS; everything else
-/// (including `.hsx`) is React, which keeps the default forgiving.
+/// Pick the target from a filename's extension. `.hs` and `.hx` are JS;
+/// `.hsx` is React TSX. Everything else defaults to React.
 pub fn target_for(filename: &str) -> Target {
-    if filename.ends_with(".hx") {
+    if filename.ends_with(".hs") || filename.ends_with(".hx") {
         Target::Js
     } else {
         Target::React
