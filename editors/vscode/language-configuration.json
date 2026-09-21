@@ -1,0 +1,39 @@
+{
+  "comments": {
+    "lineComment": "#"
+  },
+  "brackets": [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"]
+  ],
+  "autoClosingPairs": [
+    { "open": "{", "close": "}" },
+    { "open": "[", "close": "]" },
+    { "open": "(", "close": ")" },
+    { "open": "\"", "close": "\"", "notIn": ["string"] },
+    { "open": "'", "close": "'", "notIn": ["string", "comment"] }
+  ],
+  "surroundingPairs": [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"],
+    ["\"", "\""],
+    ["'", "'"]
+  ],
+  "indentationRules": {
+    "increaseIndentPattern": "^\\s*(component|def|if|elif|else|for|while|try|except|finally)\\b.*:\\s*$|^\\s*[a-z][a-zA-Z0-9]*(\\s*\\(.*\\))?\\s*:\\s*$",
+    "decreaseIndentPattern": "^\\s*(elif|else|except|finally)\\b"
+  },
+  "onEnterRules": [
+    {
+      "beforeText": "^\\s*(component|def|if|elif|else|for|while)\\b.*:\\s*$",
+      "action": { "indent": "indent" }
+    },
+    {
+      "beforeText": "^\\s*[a-z][a-zA-Z0-9]*(\\s*\\(.*\\))?\\s*:\\s*$",
+      "action": { "indent": "indent" }
+    }
+  ],
+  "wordPattern": "[A-Za-z_][A-Za-z0-9_]*"
+}

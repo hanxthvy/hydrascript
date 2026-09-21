@@ -1,0 +1,5 @@
+# [xihanzu-NR]
+component StatCard(label: str, value: str, accent: str = "indigo"):
+    div(className="bg-white rounded-xl p-4 shadow-sm border border-slate-100"):
+        p(className="text-xs uppercase tracking-wide text-slate-400"): label
+        p(className=f"text-2xl font-bold text-{accent}-600 mt-1"): value

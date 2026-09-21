@@ -1,0 +1,44 @@
+{
+  "name": "serpent-hsx",
+  "displayName": "Serpent (HSX)",
+  "description": "Syntax highlighting and inline compiler diagnostics for .hsx — Pythonic syntax for React",
+  "version": "0.1.0",
+  "publisher": "serpent",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": ["Programming Languages", "Linters"],
+  "keywords": ["react", "python", "hsx", "serpent", "jsx"],
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:hsx"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "hsx",
+        "aliases": ["Serpent (React)", "hsx"],
+        "extensions": [".hsx"],
+        "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "hx",
+        "aliases": ["Serpent (Script)", "hx"],
+        "extensions": [".hx"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "hsx",
+        "scopeName": "source.hsx",
+        "path": "./syntaxes/hsx.tmLanguage.json"
+      },
+      {
+        "language": "hx",
+        "scopeName": "source.hsx",
+        "path": "./syntaxes/hsx.tmLanguage.json"
+      }
+    ]
+  },
+  "files": ["extension.js", "language-configuration.json", "syntaxes/", "bin/"]
+}

@@ -1,0 +1,25 @@
+# [xihanzu-NR]
+# Build artifacts
+target/
+dist/
+*.vsix
+
+# Node dependencies
+node_modules/
+.npm/
+.bun/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.ruff_cache/
+
+# Vite / IDE cache
+.vite/
+.vscode/.ropeproject
+.idea/
+.DS_Store
+
+# Temporary / logs
+*.log
