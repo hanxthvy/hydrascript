@@ -1,0 +1,121 @@
+# [xihanzu-NR]
+# A richer demo: exercises every construct the language has.
+# This file is the acceptance test for the syntax.
+from serpent import state, computed, effect, ref
+
+component TodoApp():
+    # ---- state
+    todos, set_todos = state([
+        {"id": 1, "text": "Belajar sintaks Serpent", "done": True},
+        {"id": 2, "text": "Bikin komponen React", "done": False},
+        {"id": 3, "text": "Ship ke production", "done": False},
+    ])
+    draft, set_draft = state("")
+    filter_mode, set_filter = state("all")
+    next_id = ref(4)
+
+    # ---- derived values (explicit deps, no magic)
+    total = len(todos)
+    done_count = len([t for t in todos if t["done"]])
+    remaining = total - done_count
+    progress = computed(lambda: (done_count / total * 100) if total > 0 else 0, [done_count, total])
+
+    visible = computed(
+        lambda: [t for t in todos if (filter_mode == "all" or (filter_mode == "done") == t["done"])],
+        [todos, filter_mode],
+    )
+
+    # ---- effects
+    effect(lambda: print(f"[serpent] {remaining} task tersisa"), [remaining])
+
+    # ---- handlers
+    def add_todo():
+        if draft.strip():
+            set_todos(todos + [{"id": next_id.current, "text": draft.strip(), "done": False}])
+            next_id.current += 1
+            set_draft("")
+
+    def toggle(todo_id: int):
+        set_todos([{**t, "done": (not t["done"]) if t["id"] == todo_id else t["done"]} for t in todos])
+
+    def remove(todo_id: int):
+        set_todos([t for t in todos if t["id"] != todo_id])
+
+    def clear_done():
+        set_todos([t for t in todos if not t["done"]])
+
+    # ---- the tree
+    div(className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-200 py-12 px-4"):
+        div(className="max-w-lg mx-auto bg-white rounded-2xl shadow-xl overflow-hidden"):
+
+            # header
+            div(className="px-6 py-5 bg-gradient-to-r from-indigo-600 to-violet-600"):
+                h1(className="text-2xl font-bold text-white"): "Serpent Todo"
+                p(className="text-indigo-100 text-sm mt-1"):
+                    f"{remaining} dari {total} tugas tersisa"
+
+            # progress bar
+            div(className="h-1.5 bg-slate-100"):
+                div(
+                    className="h-full bg-indigo-500 transition-all duration-300",
+                    style={"width": f"{progress}%"},
+                ):
+
+            # input row
+            div(className="p-4 flex gap-2 border-b border-slate-100"):
+                input(
+                    value=draft,
+                    on_change=lambda e: set_draft(e.target.value),
+                    on_key_down=lambda e: add_todo() if e.key == "Enter" else None,
+                    placeholder="Apa yang mau dikerjakan?",
+                    className="flex-1 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500",
+                )
+                button(
+                    on_click=add_todo,
+                    className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-xl transition-colors",
+                ): "Tambah"
+
+            # filter row
+            div(className="px-4 py-3 flex gap-1 border-b border-slate-100 bg-slate-50"):
+                for mode in ["all", "active", "done"]:
+                    button(
+                        key=mode,
+                        on_click=lambda m=mode: set_filter(m),
+                        className=f"px-3 py-1.5 text-sm rounded-lg {'bg-indigo-100 text-indigo-700 font-medium' if filter_mode == mode else 'text-slate-500 hover:bg-slate-100'}",
+                    ): mode.capitalize()
+
+            # list
+            if total == 0:
+                div(className="py-16 text-center"):
+                    p(className="text-4xl"): "📝"
+                    p(className="text-slate-400 mt-2"): "Belum ada tugas. Tambahkan satu!"
+            elif len(visible) == 0:
+                div(className="py-16 text-center"):
+                    p(className="text-slate-400"): f"Tidak ada tugas dengan filter '{filter_mode}'"
+            else:
+                ul(className="divide-y divide-slate-100"):
+                    for todo in visible:
+                        li(key=todo["id"], className="group px-4 py-3 flex items-center gap-3 hover:bg-slate-50"):
+                            input(
+                                type="checkbox",
+                                checked=todo["done"],
+                                on_change=lambda t=todo: toggle(t["id"]),
+                                className="w-5 h-5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500",
+                            )
+                            span(
+                                className=f"flex-1 {'line-through text-slate-400' if todo['done'] else 'text-slate-700'}"
+                            ): todo["text"]
+                            button(
+                                on_click=lambda t=todo: remove(t["id"]),
+                                className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-500 transition-opacity text-sm px-2",
+                            ): "Hapus"
+
+            # footer
+            if done_count > 0:
+                div(className="px-4 py-3 bg-slate-50 flex justify-between items-center text-sm"):
+                    span(className="text-slate-500"):
+                        f"{done_count} selesai"
+                    button(
+                        on_click=clear_done,
+                        className="text-red-500 hover:text-red-700 font-medium",
+                    ): "Hapus yang selesai"

@@ -1,0 +1,12 @@
+{
+  "name": "serpent",
+  "version": "0.1.0",
+  "description": "Serpent runtime — state, computed, effect, ref, context and Python-flavoured builtins for React",
+  "type": "module",
+  "main": "./serpent.ts",
+  "types": "./serpent.ts",
+  "exports": { ".": "./serpent.ts" },
+  "peerDependencies": { "react": ">=18" },
+  "keywords": ["react", "python", "dsl", "compiler", "serpent"],
+  "license": "MIT"
+}

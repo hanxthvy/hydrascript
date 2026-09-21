@@ -1,0 +1,12 @@
+# [xihanzu-NR]
+from serpent import state
+from './StatCard.hsx' import StatCard
+from './TodoApp.hsx' import TodoApp
+
+component App():
+    div(className="py-10 px-4 bg-slate-100 min-h-screen"):
+        div(className="max-w-2xl mx-auto grid grid-cols-3 gap-3 mb-6"):
+            StatCard(label="Total", value="3")
+            StatCard(label="Selesai", value="1", accent="green")
+            StatCard(label="Tersisa", value="2", accent="amber")
+        TodoApp()

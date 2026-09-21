@@ -1,0 +1,25 @@
+{
+  "name": "vite-plugin-serpent",
+  "version": "0.1.0",
+  "description": "Vite plugin: compile .hsx (Pythonic syntax) to React TSX via the native serpent compiler",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "bin/"
+  ],
+  "peerDependencies": {
+    "vite": ">=5"
+  },
+  "keywords": [
+    "vite",
+    "vite-plugin",
+    "react",
+    "python",
+    "compiler"
+  ],
+  "license": "MIT"
+}

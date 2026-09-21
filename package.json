@@ -1,0 +1,17 @@
+{
+  "name": "serpent-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "runtime",
+    "runtime-js",
+    "vite-plugin",
+    "demo2"
+  ],
+  "scripts": {
+    "build:compiler": "cd compiler-rs && cargo build --release && cp target/release/serpent ../vite-plugin/bin/serpent && cp target/release/serpent ../editors/vscode/bin/serpent",
+    "test": "python3 test_compiler.py && python3 parity.py && node --test runtime-js/",
+    "test:rust": "cd compiler-rs && cargo test",
+    "test:js": "node --test runtime-js/"
+  }
+}

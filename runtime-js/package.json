@@ -1,0 +1,10 @@
+{
+  "name": "serpent-js",
+  "version": "0.1.0",
+  "description": "Runtime for .hx — Serpent's plain-JavaScript target",
+  "type": "module",
+  "main": "./serpent-js.js",
+  "exports": { ".": "./serpent-js.js" },
+  "keywords": ["javascript", "python", "hx", "serpent", "compiler"],
+  "license": "MIT"
+}
