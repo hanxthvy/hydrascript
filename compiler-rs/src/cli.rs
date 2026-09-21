@@ -13,17 +13,96 @@ use crate::compile;
 
 pub fn run(args: &[String]) -> ExitCode {
     match args.first().map(|s| s.as_str()) {
+        Some("run") => run_script(&args[1..]),
         Some("build") => build(&args[1..]),
         Some("check") => check(&args[1..]),
         Some("init") => init(&args[1..]),
         Some(other) => {
             eprintln!("hydra: unknown command {:?}", other);
-            eprintln!("try: hydra build | check | init | --help");
+            eprintln!("try: hydra run | build | check | init | --help");
             ExitCode::from(2)
         }
         None => {
             eprintln!("hydra: missing command");
             ExitCode::from(2)
+        }
+    }
+}
+
+pub fn run_script(args: &[String]) -> ExitCode {
+    let file_arg = match args.iter().find(|a| !a.starts_with('-')) {
+        Some(f) => PathBuf::from(f),
+        None => {
+            eprintln!("hydra: run requires a script file (e.g. hydra run script.hs)");
+            return ExitCode::from(2);
+        }
+    };
+    let Ok(src) = fs::read_to_string(&file_arg) else {
+        eprintln!("hydra: cannot read {}", file_arg.display());
+        return ExitCode::from(1);
+    };
+
+    let filename = file_arg
+        .file_name()
+        .map_or_else(|| "script.hs".into(), |n| n.to_string_lossy().to_string());
+    let (code, _map) = match compile(&src, &filename) {
+        Ok(res) => res,
+        Err(e) => {
+            eprintln!("{}", e.pretty());
+            return ExitCode::from(1);
+        }
+    };
+
+    let file_str = file_arg.to_string_lossy();
+    let file_idx = args.iter().position(|a| a == &file_str).unwrap_or(0);
+    let script_args = &args[file_idx + 1..];
+
+    let parent_dir = file_arg.parent().unwrap_or_else(|| Path::new("."));
+
+    let mut child = match std::process::Command::new("node")
+        .current_dir(parent_dir)
+        .arg("--input-type=module")
+        .arg("-")
+        .args(script_args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => match std::process::Command::new("bun")
+            .current_dir(parent_dir)
+            .arg("-")
+            .args(script_args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("hydra: neither node nor bun runtime found: {}", e);
+                return ExitCode::from(1);
+            }
+        },
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = stdin.write_all(code.as_bytes());
+    }
+
+    match child.wait() {
+        Ok(status) => {
+            if let Some(c) = status.code() {
+                ExitCode::from(c as u8)
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Err(e) => {
+            eprintln!("hydra: execution error: {}", e);
+            ExitCode::from(1)
         }
     }
 }

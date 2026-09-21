@@ -16,16 +16,17 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn usage() -> String {
     format!(
-        "hydra {VERSION} — Pythonic syntax for React (HSX) & Node (HX)\n\
+        "hydra {VERSION} — Pythonic syntax for React (.hsx) & Node (.hs)\n\
          \n\
          USAGE:\n\
+         \x20 hydra run <file.hs> [args]  execute script directly in memory\n\
          \x20 hydra <file.hsx>            compile to stdout\n\
-         \x20 hydra <file.hx> -o out.mjs  compile to output file\n\
+         \x20 hydra <file.hs> -o out.mjs  compile to output file\n\
          \x20 hydra --json <file.hsx>     emit {{code, map}} JSON\n\
          \x20 hydra --check <file.hsx>    parse only; exit 1 on error\n\
          \x20 hydra --stdin [filename]    read source from stdin\n\
          \x20 hydra --version\n\
-         \x20 hydra build|check|init      project commands\n"
+         \x20 hydra run|build|check|init  project commands\n"
     )
 }
 
@@ -44,7 +45,7 @@ fn main() -> ExitCode {
         print!("{}", usage());
         return ExitCode::SUCCESS;
     }
-    if matches!(args[0].as_str(), "build" | "check" | "init") {
+    if matches!(args[0].as_str(), "build" | "check" | "init" | "run") {
         return hydra::cli::run(&args);
     }
 

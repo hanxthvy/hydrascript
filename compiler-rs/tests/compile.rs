@@ -821,3 +821,13 @@ fn test_feature_auto_fragment_multiple_roots() {
         "</>",
     ]);
 }
+
+#[test]
+fn test_feature_cli_run() {
+    let tmp_dir = std::env::temp_dir();
+    let script_path = tmp_dir.join("test_run.hs");
+    std::fs::write(&script_path, "def add(a, b):\n    return a + b\nprint(f\"result={add(20, 22)}\")\n").unwrap();
+    let code = hydra::cli::run_script(&[script_path.to_string_lossy().to_string()]);
+    assert_eq!(code, std::process::ExitCode::SUCCESS);
+    let _ = std::fs::remove_file(&script_path);
+}
