@@ -699,6 +699,32 @@ impl Emitter {
                     self.imports.insert(format!("import {} from 'serpent';", names.join(", ")));
                 }
             }
+            Kind::Interface { name, body } => {
+                self.w(&format!("export interface {} {{", name));
+                for line in body.lines() {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        // Map Python types to TypeScript in interface fields
+                        let mapped = trimmed
+                            .replace(": str", ": string")
+                            .replace(": int", ": number")
+                            .replace(": float", ": number")
+                            .replace(": bool", ": boolean")
+                            .replace(": None", ": null")
+                            .replace(": Any", ": any")
+                            .replace(": list", ": Array")
+                            .replace(": dict", ": Record");
+                        self.w(&format!("  {};", mapped));
+                    }
+                }
+                self.w("}");
+            }
+            Kind::TypeAlias { name, body } => {
+                self.w(&format!("export type {} = {};", name, body));
+            }
+            Kind::RawTS(text) => {
+                self.w(text);
+            }
             _ => {}
         }
         Ok(())

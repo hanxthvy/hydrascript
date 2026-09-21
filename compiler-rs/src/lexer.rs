@@ -48,6 +48,7 @@ pub const KEYWORDS: &[&str] = &[
     // async, await, export, with, match, case.
     "while", "break", "continue", "pass", "try", "except", "finally", "raise",
     "async", "await", "export", "with", "match", "case",
+    "interface", "type",
 ];
 
 fn keyword(s: &str) -> Option<&'static str> {

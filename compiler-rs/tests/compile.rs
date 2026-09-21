@@ -1003,3 +1003,56 @@ fn test_multiline_component_and_attributes() {
         "<h1>{title}</h1>",
     ]);
 }
+
+#[test]
+fn test_feature_interface_declaration() {
+    let src = "interface UserProps:\n    name: str\n    age: int\n    email: str\n";
+    let (code, _) = compile(src, "test.hsx").expect("compilation failed");
+    assert_contains(&code, &[
+        "export interface UserProps {",
+        "name",
+        "string",
+        "age",
+        "number",
+        "email",
+        "}",
+    ]);
+}
+
+#[test]
+fn test_feature_type_alias() {
+    let src = "type OrderStatus = 'pending' | 'completed' | 'failed'\n";
+    let (code, _) = compile(src, "test.hsx").expect("compilation failed");
+    assert_contains(&code, &[
+        "export type OrderStatus = 'pending' | 'completed' | 'failed';",
+    ]);
+}
+
+#[test]
+fn test_feature_typeof_operator() {
+    let src = "component A():\n    if typeof x == 'string':\n        div: \"yes\"\n";
+    let out = comp(src);
+    assert_contains(&out, &[
+        "typeof x",
+    ]);
+}
+
+#[test]
+fn test_feature_import_type() {
+    let src = "from '../types' import type AmAccountResult, AlightLinkItem\n\ncomponent A():\n    div: \"ok\"\n";
+    let out = comp(src);
+    assert_contains(&out, &[
+        "AmAccountResult, AlightLinkItem",
+        "'../types'",
+    ]);
+}
+
+#[test]
+fn test_feature_import_as_alias() {
+    let src = "from 'lucide-react' import Image as ImageIcon, Download\n\ncomponent A():\n    div: \"ok\"\n";
+    let out = comp(src);
+    assert_contains(&out, &[
+        "Image as ImageIcon",
+        "Download",
+    ]);
+}

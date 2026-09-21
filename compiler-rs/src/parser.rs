@@ -152,6 +152,8 @@ impl Parser {
             TokType::Kw("def") => return self.def(),
             TokType::Kw("import") => return self.import(),
             TokType::Kw("from") => return self.from_import(),
+            TokType::Kw("interface") => return self.interface_decl(),
+            TokType::Kw("type") => return self.type_alias(),
             TokType::Kw("return") => {
                 self.i += 1;
                 return Ok(Node::new(Kind::Return(Box::new(self.expr()?)), t.line, t.col));
@@ -232,10 +234,30 @@ impl Parser {
             self.ident()?
         };
         self.eat(TokType::Kw("import"))?;
-        let mut names = vec![self.ident()?];
-        while self.cur().ty == TokType::Comma {
+        // `import type` prefix — skip the `type` keyword, it's TS-only
+        if self.cur().ty == TokType::Kw("type") {
             self.i += 1;
+        }
+        let mut names = Vec::new();
+        loop {
+            // `type Name` inline — skip the `type` keyword per-name
+            if self.cur().ty == TokType::Kw("type") {
+                self.i += 1;
+            }
             names.push(self.ident()?);
+            // `as Alias` — rename import
+            if self.cur().ty == TokType::Kw("as") {
+                self.i += 1;
+                let _alias = self.ident()?;
+                // ponytail: alias stored as "original as alias"
+                let last = names.last_mut().unwrap();
+                *last = format!("{} as {}", last, _alias);
+            }
+            if self.cur().ty == TokType::Comma {
+                self.i += 1;
+            } else {
+                break;
+            }
         }
         Ok(Node::new(Kind::Import { from: Some(module), names }, t.line, t.col))
     }
@@ -246,6 +268,103 @@ impl Parser {
         let params = if self.cur().ty == TokType::LParen { self.params()? } else { Vec::new() };
         let body = self.block()?;
         Ok(Node::new(Kind::Component { name, params, body }, t.line, t.col))
+    }
+
+    /// `interface Name:` block — collect raw lines of the indented body and pass through as TS.
+    fn interface_decl(&mut self) -> PResult<Node> {
+        let t = self.eat(TokType::Kw("interface"))?.clone();
+        let name = self.ident()?;
+        // Optionally consume `extends OtherInterface`
+        let mut extends = String::new();
+        if self.cur().ty == TokType::Ident && self.cur().value == "extends" {
+            extends.push_str(" extends ");
+            self.i += 1;
+            extends.push_str(&self.ident()?);
+            while self.cur().ty == TokType::Comma {
+                self.i += 1;
+                extends.push_str(", ");
+                extends.push_str(&self.ident()?);
+            }
+        }
+        // Consume the colon and the indented block as raw text
+        self.eat(TokType::Colon)?;
+        let body = self.raw_indented_block()?;
+        let full_name = format!("{}{}", name, extends);
+        Ok(Node::new(Kind::Interface { name: full_name, body }, t.line, t.col))
+    }
+
+    /// `type Name = ...` — collect everything until newline as TS type alias.
+    fn type_alias(&mut self) -> PResult<Node> {
+        let t = self.eat(TokType::Kw("type"))?.clone();
+        let name = self.ident()?;
+        self.eat_op("=")?;
+        let mut body = String::new();
+        while self.cur().ty != TokType::Newline && self.cur().ty != TokType::Eof {
+            if !body.is_empty() {
+                body.push(' ');
+            }
+            body.push_str(&self.cur().value);
+            self.i += 1;
+        }
+        Ok(Node::new(Kind::TypeAlias { name, body }, t.line, t.col))
+    }
+
+    /// Consume an operator token with a specific value (for `=` in type alias).
+    fn eat_op(&mut self, op: &str) -> PResult<()> {
+        if self.cur().ty == TokType::Op && self.cur().value == op {
+            self.i += 1;
+            Ok(())
+        } else {
+            Err(self.err(format!("expected `{}`, found `{}`", op, self.cur().value)))
+        }
+    }
+
+    /// Collect all tokens in an indented block and join them as raw text.
+    /// Used for interface/type bodies that should pass through to TypeScript verbatim.
+    fn raw_indented_block(&mut self) -> PResult<String> {
+        // Eat newline
+        if self.cur().ty == TokType::Newline {
+            self.i += 1;
+        }
+        if self.cur().ty != TokType::Indent {
+            return Ok(String::new());
+        }
+        self.i += 1; // eat Indent
+
+        let mut lines: Vec<String> = Vec::new();
+        let mut current_line = String::new();
+
+        while self.cur().ty != TokType::Dedent && self.cur().ty != TokType::Eof {
+            if self.cur().ty == TokType::Newline {
+                lines.push(std::mem::take(&mut current_line));
+                self.i += 1;
+                continue;
+            }
+            if self.cur().ty == TokType::Indent || self.cur().ty == TokType::Dedent {
+                self.i += 1;
+                continue;
+            }
+            if !current_line.is_empty() {
+                current_line.push(' ');
+            }
+            // Reconstruct token: keywords become their values, ops stay as-is
+            let val = &self.cur().value;
+            // Special handling: `?` before `:` means optional field
+            if val == "?" {
+                current_line.push('?');
+                self.i += 1;
+                continue;
+            }
+            current_line.push_str(val);
+            self.i += 1;
+        }
+        if !current_line.is_empty() {
+            lines.push(current_line);
+        }
+        if self.cur().ty == TokType::Dedent {
+            self.i += 1;
+        }
+        Ok(lines.join("\n"))
     }
 
     fn def(&mut self) -> PResult<Node> {
@@ -797,6 +916,13 @@ impl Parser {
             let v = self.unary();
             self.leave_depth();
             return Ok(Node::new(Kind::Unary { op: "-".into(), operand: Box::new(v?) }, t.line, t.col));
+        }
+        // typeof operator — pass through to JS
+        if self.cur().ty == TokType::Ident && self.cur().value == "typeof" {
+            let t = self.cur().clone();
+            self.i += 1;
+            let v = self.unary()?;
+            return Ok(Node::new(Kind::Unary { op: "typeof ".into(), operand: Box::new(v) }, t.line, t.col));
         }
         self.postfix()
     }
