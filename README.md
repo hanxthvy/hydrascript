@@ -5,7 +5,7 @@
 ### The Pythonic Programming Language & Compiler for React and Node.js
 
 [![Rust Compiler](https://img.shields.io/badge/compiler-100%25%20Pure%20Rust-orange?style=for-the-badge&logo=rust)](https://github.com/hanxthvy/hydrascript)
-[![Tests Passing](https://img.shields.io/badge/tests-218%20passing-brightgreen?style=for-the-badge&logo=github-actions)](https://github.com/hanxthvy/hydrascript)
+[![Tests Passing](https://img.shields.io/badge/tests-238%20passing-brightgreen?style=for-the-badge&logo=github-actions)](https://github.com/hanxthvy/hydrascript)
 [![Binary Size](https://img.shields.io/badge/binary-603_KB-blueviolet?style=for-the-badge)](https://github.com/hanxthvy/hydrascript)
 [![Compile Time](https://img.shields.io/badge/compile%20speed-~1.2ms-blue?style=for-the-badge&logo=lightning)](https://github.com/hanxthvy/hydrascript)
 [![React 18+](https://img.shields.io/badge/react-18%2B%20compatible-61dafb?style=for-the-badge&logo=react)](https://github.com/hanxthvy/hydrascript)
@@ -387,7 +387,7 @@ HydraScript automatically transforms idiomatic Python calls into optimized JavaS
 
 ## 🧪 Verification & Test Suite
 
-HydraScript enforces strict quality with **218 tests passing** (148 unit tests, 70 integration tests):
+HydraScript enforces strict quality with **238 tests passing** (154 unit tests, 84 integration tests):
 
 ```bash
 # Run Rust compiler test suite
