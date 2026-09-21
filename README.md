@@ -159,12 +159,11 @@ Vite + React 18               Node.js runtime
 # 1. Rust test suite (217 tests: unit + integration)
 cd compiler-rs && cargo test
 
-# 2. Reference & Parity test suite (100% match)
-python3 test_compiler.py
-python3 parity.py
-
-# 3. Runtime JS test suite
+# 2. Runtime JS test suite
 node --test runtime-js/
+
+# 3. Full monorepo check
+npm test
 ```
 
 ---

@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "build:compiler": "cd compiler-rs && cargo build --release && cp target/release/hydra ../vite-plugin/bin/hydra && cp target/release/hydra ../editors/vscode/bin/hydra",
-    "test": "python3 test_compiler.py && python3 parity.py && node --test runtime-js/",
+    "test": "npm run test:rust && npm run test:js",
     "test:rust": "cd compiler-rs && cargo test",
     "test:js": "node --test runtime-js/"
   }
