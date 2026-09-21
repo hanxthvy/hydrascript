@@ -978,3 +978,28 @@ fn test_error_recursion_depth_limit() {
     let err = compile(&nested, "App.hsx").expect_err("should reject deep nesting");
     assert_contains(&err.msg, &["maximum recursion depth exceeded"]);
 }
+
+#[test]
+fn test_multiline_component_and_attributes() {
+    let src = r#"component Card(
+        title: str,
+        count: int = 0,
+        is_active: bool = False,
+    ):
+        div(
+            cls={
+                "btn": True,
+                "active": is_active,
+            },
+            id="main-card",
+        ):
+            h1: title
+"#;
+    let out = comp(src);
+    assert_contains(&out, &[
+        "export function Card({ title, count = 0, is_active = false }: CardProps)",
+        "className={cx(({\"btn\": true, \"active\": is_active}))}",
+        "id=\"main-card\"",
+        "<h1>{title}</h1>",
+    ]);
+}

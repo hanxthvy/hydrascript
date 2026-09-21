@@ -262,8 +262,11 @@ impl Parser {
 
     fn params(&mut self) -> PResult<Vec<Param>> {
         self.eat(TokType::LParen)?;
+        let mut depth: i32 = 0;
+        self.skip_bracket_newlines(&mut depth);
         let mut out = Vec::new();
         while self.cur().ty != TokType::RParen {
+            self.skip_bracket_newlines(&mut depth);
             let prefix = if self.cur().ty == TokType::Op && (self.cur().value == "*" || self.cur().value == "**") {
                 self.i += 1;
                 "..."
@@ -275,22 +278,27 @@ impl Parser {
             let mut ty = None;
             if self.cur().ty == TokType::Colon {
                 self.i += 1;
+                self.skip_bracket_newlines(&mut depth);
                 ty = Some(self.type_expr()?);
             }
             let mut default = None;
             let mut has_default = false;
             if self.cur().ty == TokType::Op && self.cur().value == "=" {
                 self.i += 1;
+                self.skip_bracket_newlines(&mut depth);
                 default = Some(self.expr()?);
                 has_default = true;
             }
             out.push(Param { name, ty, default, has_default });
+            self.skip_bracket_newlines(&mut depth);
             if self.cur().ty == TokType::Comma {
                 self.i += 1;
+                self.skip_bracket_newlines(&mut depth);
             } else {
                 break;
             }
         }
+        self.skip_bracket_newlines(&mut depth);
         self.eat(TokType::RParen)?;
         Ok(out)
     }
