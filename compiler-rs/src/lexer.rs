@@ -83,10 +83,12 @@ fn scan_string(bytes: &[u8], mut i: usize) -> Option<usize> {
     None
 }
 
+// [xihanzu-NR]
 pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
     let lines: Vec<&str> = src.split('\n').collect();
     let mut out: Vec<Token> = Vec::new();
     let mut stack: Vec<usize> = vec![0];
+    let mut bracket_depth: usize = 0;
 
     for (idx, raw) in lines.iter().enumerate() {
         let line_no = idx + 1;
@@ -111,27 +113,29 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
         }
 
         let indent = raw.len() - raw.trim_start_matches(' ').len();
-        let top = *stack.last().unwrap();
-        if indent > top {
-            stack.push(indent);
-            out.push(Token { ty: TokType::Indent, value: indent.to_string(), line: line_no, col: 0 });
-        } else {
-            while indent < *stack.last().unwrap() {
-                stack.pop();
-                out.push(Token { ty: TokType::Dedent, value: indent.to_string(), line: line_no, col: 0 });
-            }
-            if indent != *stack.last().unwrap() {
-                return Err(CompileError::new(
-                    format!(
-                        "inconsistent indentation: expected {} spaces, got {}",
-                        stack.last().unwrap(),
-                        indent
-                    ),
-                    line_no,
-                    0,
-                    lines.iter().map(|s| s.to_string()).collect(),
-                )
-                .with_hint("keep one indent width across the file"));
+        if bracket_depth == 0 {
+            let top = *stack.last().unwrap();
+            if indent > top {
+                stack.push(indent);
+                out.push(Token { ty: TokType::Indent, value: indent.to_string(), line: line_no, col: 0 });
+            } else {
+                while indent < *stack.last().unwrap() {
+                    stack.pop();
+                    out.push(Token { ty: TokType::Dedent, value: indent.to_string(), line: line_no, col: 0 });
+                }
+                if indent != *stack.last().unwrap() {
+                    return Err(CompileError::new(
+                        format!(
+                            "inconsistent indentation: expected {} spaces, got {}",
+                            stack.last().unwrap(),
+                            indent
+                        ),
+                        line_no,
+                        0,
+                        lines.iter().map(|s| s.to_string()).collect(),
+                    )
+                    .with_hint("keep one indent width across the file"));
+                }
             }
         }
 
@@ -225,12 +229,30 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
                     b':' => (TokType::Colon, 1),
                     b',' => (TokType::Comma, 1),
                     b'.' => (TokType::Dot, 1),
-                    b'(' => (TokType::LParen, 1),
-                    b')' => (TokType::RParen, 1),
-                    b'[' => (TokType::LBrack, 1),
-                    b']' => (TokType::RBrack, 1),
-                    b'{' => (TokType::LBrace, 1),
-                    b'}' => (TokType::RBrace, 1),
+                    b'(' => {
+                        bracket_depth += 1;
+                        (TokType::LParen, 1)
+                    }
+                    b')' => {
+                        bracket_depth = bracket_depth.saturating_sub(1);
+                        (TokType::RParen, 1)
+                    }
+                    b'[' => {
+                        bracket_depth += 1;
+                        (TokType::LBrack, 1)
+                    }
+                    b']' => {
+                        bracket_depth = bracket_depth.saturating_sub(1);
+                        (TokType::RBrack, 1)
+                    }
+                    b'{' => {
+                        bracket_depth += 1;
+                        (TokType::LBrace, 1)
+                    }
+                    b'}' => {
+                        bracket_depth = bracket_depth.saturating_sub(1);
+                        (TokType::RBrace, 1)
+                    }
                     b'=' | b'+' | b'-' | b'*' | b'/' | b'%' | b'<' | b'>' | b'!' | b'&' | b'|' | b'?' => {
                         (TokType::Op, 1)
                     }
@@ -253,7 +275,9 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
             pos = start + len;
         }
 
-        out.push(Token { ty: TokType::Newline, value: "\n".to_string(), line: line_no, col: raw.len() });
+        if bracket_depth == 0 {
+            out.push(Token { ty: TokType::Newline, value: "\n".to_string(), line: line_no, col: raw.len() });
+        }
     }
 
     while stack.len() > 1 {
