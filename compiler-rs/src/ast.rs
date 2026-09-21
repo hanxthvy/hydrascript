@@ -35,6 +35,12 @@ pub enum Kind {
     Export(Box<Node>),
     /// A `tag:` or `tag(props):` block — the thing that becomes JSX.
     Tree { head: Box<Node>, body: Vec<Node> },
+    /// `interface Name: ...` — TypeScript interface, passed through verbatim.
+    Interface { name: String, body: String },
+    /// `type Name = ...` — TypeScript type alias, passed through verbatim.
+    TypeAlias { name: String, body: String },
+    /// Raw TypeScript/JavaScript passthrough — lines starting with `@raw`.
+    RawTS(String),
 
     // ---- expressions
     Name(String),
