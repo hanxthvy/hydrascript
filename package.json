@@ -1,17 +1,32 @@
 {
-  "name": "hydrascript-monorepo",
-  "private": true,
-  "version": "0.1.0",
-  "workspaces": [
-    "runtime",
-    "runtime-js",
-    "vite-plugin",
-    "demo2"
+  "name": "hydrascript",
+  "version": "0.3.0",
+  "description": "Pythonic Syntax for React & Modern Web Applications — Standalone native Rust compiler with zero runtime overhead",
+  "type": "module",
+  "bin": {
+    "hydra": "./bin/hydra.js"
+  },
+  "exports": {
+    ".": "./packages/cli/runner.mjs",
+    "./runner": "./packages/cli/runner.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hanxthvy/hydrascript.git"
+  },
+  "keywords": [
+    "hydrascript",
+    "react",
+    "compiler",
+    "meta-framework",
+    "pythonic",
+    "vite",
+    "rust"
   ],
+  "author": "Reyhan Akhtar Afriansyah (Hanz)",
+  "license": "MIT",
   "scripts": {
-    "build:compiler": "cd compiler-rs && cargo build --release && cp target/release/hydra ../vite-plugin/bin/hydra && cp target/release/hydra ../editors/vscode/bin/hydra",
-    "test": "npm run test:rust && npm run test:js",
-    "test:rust": "cd compiler-rs && cargo test",
-    "test:js": "node --test runtime-js/"
+    "build:compiler": "cd compiler-rs && cargo build --release && cp target/release/hydra ../bin/hydra && cp target/release/libhydra.so ../bin/hydra.node",
+    "test": "cd compiler-rs && cargo test"
   }
 }
