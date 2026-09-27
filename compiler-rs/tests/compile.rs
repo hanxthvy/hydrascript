@@ -352,7 +352,7 @@ fn test_stmt_def_to_arrow_fn() {
 fn test_stmt_aug_assign() {
     let src = "component A():\n    x = 0\n    x += 1\n    div: \"z\"\n";
     let out = comp(src);
-    assert_contains(&out, &["const x = 0;", "x += 1;"]);
+    assert_contains(&out, &["let x = 0;", "x += 1;"]);
 }
 
 #[test]

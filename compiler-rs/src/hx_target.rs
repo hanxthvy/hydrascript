@@ -11,7 +11,7 @@
 
 use crate::ast::{Kind, Node, Param};
 use crate::error::CompileError;
-use crate::emitter::{free_func, str_method};
+use crate::emitter::{free_func, str_method, Scope};
 
 pub struct JsEmitter {
     pub lines: Vec<String>,
@@ -21,6 +21,7 @@ pub struct JsEmitter {
     pub imports: std::collections::HashSet<String>,
     pub used_helpers: std::cell::RefCell<std::collections::HashSet<String>>,
     pub head_lines: Vec<String>,
+    pub scopes: Vec<Scope>,
 }
 
 impl JsEmitter {
@@ -33,6 +34,7 @@ impl JsEmitter {
             imports: std::collections::HashSet::new(),
             used_helpers: std::cell::RefCell::new(std::collections::HashSet::new()),
             head_lines: Vec::new(),
+            scopes: Vec::new(),
         }
     }
 
@@ -270,6 +272,19 @@ impl JsEmitter {
                     _ => self.js(target)?,
                 };
                 let rhs = self.js(value)?;
+
+                if let Kind::Name(id) = &target.kind {
+                    if let Some(scope) = self.scopes.last_mut() {
+                        if scope.is_mutable(id) {
+                            if scope.declared.insert(id.clone()) {
+                                self.w(&format!("let {} = {};", lhs, rhs));
+                            } else {
+                                self.w(&format!("{} = {};", lhs, rhs));
+                            }
+                            return Ok(());
+                        }
+                    }
+                }
                 self.w(&format!("const {} = {};", lhs, rhs));
             }
             Kind::AugAssign { target, op, value } => {
@@ -290,17 +305,18 @@ impl JsEmitter {
                 self.w(&format!("{};", val));
             }
             Kind::Def { name, params, body } => {
-                // A hoisted function declaration, not a const arrow: mutual
-                // recursion must work without ordering gymnastics.
                 let ps: Result<Vec<String>, CompileError> = params
                     .iter()
                     .map(|p| self.param(p))
                     .collect();
                 self.w(&format!("function {}({}) {{", name, ps?.join(", ")));
                 self.depth += 1;
+                let scope = Scope::scan(body);
+                self.scopes.push(scope);
                 for stmt in body {
                     self.stmt(stmt)?;
                 }
+                self.scopes.pop();
                 self.depth -= 1;
                 self.w("}");
             }
@@ -353,9 +369,12 @@ impl JsEmitter {
                     .collect();
                 self.w(&format!("async function {}({}) {{", name, ps?.join(", ")));
                 self.depth += 1;
+                let scope = Scope::scan(body);
+                self.scopes.push(scope);
                 for stmt in body {
                     self.stmt(stmt)?;
                 }
+                self.scopes.pop();
                 self.depth -= 1;
                 self.w("}");
             }
@@ -366,7 +385,10 @@ impl JsEmitter {
                         let ps: Result<Vec<String>, CompileError> = params.iter().map(|p| self.param(p)).collect();
                         self.w(&format!("export function {}({}) {{", name, ps?.join(", ")));
                         self.depth += 1;
+                        let scope = Scope::scan(body);
+                        self.scopes.push(scope);
                         for stmt in body { self.stmt(stmt)?; }
+                        self.scopes.pop();
                         self.depth -= 1;
                         self.w("}");
                     }
@@ -374,7 +396,10 @@ impl JsEmitter {
                         let ps: Result<Vec<String>, CompileError> = params.iter().map(|p| self.param(p)).collect();
                         self.w(&format!("export async function {}({}) {{", name, ps?.join(", ")));
                         self.depth += 1;
+                        let scope = Scope::scan(body);
+                        self.scopes.push(scope);
                         for stmt in body { self.stmt(stmt)?; }
+                        self.scopes.pop();
                         self.depth -= 1;
                         self.w("}");
                     }
@@ -548,6 +573,10 @@ impl JsEmitter {
             _ => unreachable!(),
         };
 
+        // ponytail: top-level scope for mutability tracking
+        let top_scope = Scope::scan(body);
+        self.scopes.push(top_scope);
+
         for s in body {
             match &s.kind {
                 Kind::Component { .. } | Kind::Tree { .. } => self.stmt(s)?,
@@ -568,6 +597,8 @@ impl JsEmitter {
                 _ => self.stmt(s)?,
             }
         }
+
+        self.scopes.pop();
 
         // Inject helpers the source used but did not import.
         let helpers: Vec<String> = self.used_helpers.borrow().iter().cloned().collect();

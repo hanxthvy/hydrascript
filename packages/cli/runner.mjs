@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
 
@@ -163,6 +163,72 @@ export function readConfig(cwd) {
   return config;
 }
 
+function setupSSRGlobals() {
+  if (typeof global.window === 'undefined') {
+    global.window = {
+      innerWidth: 1200,
+      innerHeight: 800,
+      scrollX: 0,
+      scrollY: 0,
+      addEventListener() {},
+      removeEventListener() {},
+      matchMedia: () => ({ matches: false, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} }),
+      requestAnimationFrame: (cb) => setTimeout(cb, 0),
+      cancelAnimationFrame: (id) => clearTimeout(id),
+      getComputedStyle: () => ({}),
+      location: { href: 'http://localhost/', pathname: '/', search: '', hash: '' },
+      history: { pushState() {}, replaceState() {} },
+    };
+  }
+  if (typeof global.document === 'undefined') {
+    global.document = {
+      documentElement: { scrollHeight: 2000, scrollWidth: 1200, clientHeight: 800, clientWidth: 1200 },
+      body: { scrollHeight: 2000, scrollWidth: 1200 },
+      getElementById() { return null; },
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+      createElement() {
+        return {
+          getContext() { return null; },
+          setAttribute() {},
+          getAttribute() { return null; },
+          appendChild() {},
+          removeChild() {},
+          addEventListener() {},
+          removeEventListener() {},
+          style: {},
+          children: [],
+        };
+      },
+      addEventListener() {},
+      removeEventListener() {},
+    };
+  }
+  if (typeof global.navigator === 'undefined') {
+    global.navigator = {
+      userAgent: 'Mozilla/5.0 (Node.js SSG)',
+      clipboard: {
+        writeText: async () => {},
+        readText: async () => '',
+      },
+    };
+  }
+  if (typeof global.ResizeObserver === 'undefined') {
+    global.ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+  }
+  if (typeof global.IntersectionObserver === 'undefined') {
+    global.IntersectionObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+  }
+}
+
 export async function runBuild(cwd = process.cwd()) {
   const t0 = Date.now();
   console.log('[hydra] Building for production (Hydra native bundler)...');
@@ -262,16 +328,108 @@ export async function runBuild(cwd = process.cwd()) {
     copyDirRecursive(publicDir, outDir);
   }
 
+  // 7. SSG Pre-rendering (default true for SEO)
+  if (config.rendering?.ssg !== false) {
+    const ssgEntryCandidates = [
+      path.join(cwd, 'src/App.hyx'),
+      path.join(cwd, 'src/App.hsx'),
+      path.join(cwd, 'src/App.jsx'),
+      path.join(cwd, 'src/App.tsx'),
+      path.join(cwd, 'src/App.js'),
+      entryPoint,
+    ];
+    const ssgEntry = ssgEntryCandidates.find((f) => fs.existsSync(f));
+    if (ssgEntry) {
+      try {
+        const reactPath = resolvePkg('react', cwd);
+        const jsxRuntimePath = resolvePkg('react/jsx-runtime', cwd);
+        let jsxDevRuntimePath;
+        try {
+          jsxDevRuntimePath = resolvePkg('react/jsx-dev-runtime', cwd);
+        } catch {}
+
+        const ssgResult = await esbuild.build({
+          entryPoints: [ssgEntry],
+          bundle: true,
+          write: false,
+          format: 'esm',
+          platform: 'node',
+          jsx: 'automatic',
+          target: 'node18',
+          plugins: [
+            createHydraEsbuildPlugin(),
+            {
+              name: 'hydra-ssg-external-react',
+              setup(build) {
+                build.onResolve({ filter: /^react(\/.*)?$/ }, (args) => {
+                  if (args.path === 'react') return { path: pathToFileURL(reactPath).href, external: true };
+                  if (args.path === 'react/jsx-runtime') return { path: pathToFileURL(jsxRuntimePath).href, external: true };
+                  if (args.path === 'react/jsx-dev-runtime' && jsxDevRuntimePath) return { path: pathToFileURL(jsxDevRuntimePath).href, external: true };
+                  try {
+                    return { path: pathToFileURL(resolvePkg(args.path, cwd)).href, external: true };
+                  } catch {}
+                });
+              },
+            },
+          ],
+          resolveExtensions: ['.hyx', '.hys', '.hsx', '.hs', '.mjs', '.js', '.jsx', '.ts', '.tsx', '.json'],
+          alias: {
+            hydra: hydraAlias,
+            '@': path.resolve(cwd, 'src'),
+          },
+          loader: {
+            '.css': 'empty',
+            '.png': 'text',
+            '.jpg': 'text',
+            '.jpeg': 'text',
+            '.gif': 'text',
+            '.svg': 'text',
+          },
+          define: {
+            'process.env.NODE_ENV': '"production"',
+          },
+        });
+
+        // Run SSR execution in a safe context
+        setupSSRGlobals();
+
+        const ssgCode = ssgResult.outputFiles[0].text;
+        const ssgMod = await import(`data:text/javascript;base64,${Buffer.from(ssgCode).toString('base64')}`);
+
+        const reactDomServerPath = resolvePkg('react-dom/server', cwd);
+        const { renderToString } = await import(pathToFileURL(reactDomServerPath).href);
+        const reactMod = await import(pathToFileURL(reactPath).href);
+        const React = reactMod.default || reactMod;
+
+        const AppComponent = ssgMod.App || ssgMod.default || Object.values(ssgMod).find((v) => typeof v === 'function');
+        if (!AppComponent) {
+          throw new Error('Could not find exported App component in SSR bundle');
+        }
+
+        const renderedHtml = renderToString(React.createElement(AppComponent));
+
+        if (fs.existsSync(htmlOutPath)) {
+          let html = fs.readFileSync(htmlOutPath, 'utf8');
+          html = html.replace(/<div\s+id=["']root["']\s*><\/div>/i, `<div id="root">${renderedHtml}</div>`);
+          fs.writeFileSync(htmlOutPath, html, 'utf8');
+          console.log(`[hydra] SSG: Pre-rendered HTML injected into dist/index.html (${renderedHtml.length} chars)`);
+        }
+      } catch (err) {
+        console.error('[hydra] SSG Pre-rendering error:', err.message || err);
+      }
+    }
+  }
+
   const ms = Date.now() - t0;
   console.log(`[hydra] Built successfully in ${ms}ms -> ${path.relative(cwd, outDir)}/`);
 }
 
 const MIME_TYPES = {
-  '.html': 'text/html',
-  '.js': 'text/javascript',
-  '.mjs': 'text/javascript',
-  '.css': 'text/css',
-  '.json': 'application/json',
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
@@ -286,7 +444,7 @@ const MIME_TYPES = {
 export async function serveDirectory(dir, port = 5173, host = '0.0.0.0') {
   const server = http.createServer((req, res) => {
     let reqPath = decodeURI(req.url.split('?')[0]);
-    if (reqPath === '/') reqPath = '/index.html';
+    if (reqPath === '/' || reqPath === '') reqPath = '/index.html';
 
     let filePath = path.join(dir, reqPath);
     if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
@@ -294,7 +452,7 @@ export async function serveDirectory(dir, port = 5173, host = '0.0.0.0') {
     }
 
     if (!fs.existsSync(filePath)) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Not Found');
       return;
     }
@@ -315,9 +473,10 @@ export async function runPreview(cwd = process.cwd()) {
   const outDir = path.resolve(cwd, config.outputDir || 'dist');
   const port = config.server?.port || 5173;
   const host = config.server?.host || '0.0.0.0';
+  const indexPath = path.join(outDir, 'index.html');
 
-  if (!fs.existsSync(outDir)) {
-    console.log('[hydra] Output directory not found. Running build first...');
+  if (!fs.existsSync(outDir) || !fs.existsSync(indexPath)) {
+    console.log('[hydra] Output directory or index.html not found. Running build first...');
     await runBuild(cwd);
   }
 

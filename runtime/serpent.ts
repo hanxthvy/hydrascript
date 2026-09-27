@@ -6,12 +6,13 @@
  * not surprise a Python developer. Where React's model differs from Python's
  * (immutability), we surface the difference in the NAME rather than hiding it.
  */
-import {
+import React, {
   useState, useEffect, useMemo, useRef, useCallback, useContext,
   createContext, useReducer, Fragment, useId, useTransition,
   useDeferredValue, useLayoutEffect, Suspense, forwardRef,
   type DependencyList,
 } from 'react'
+import * as ReactDOM from 'react-dom/client'
 
 /* ------------------------------------------------------------------ state */
 
@@ -289,4 +290,110 @@ export function cx(...args: unknown[]): string {
   }
   return classes.join(' ')
 }
+
+// [xihanzu-NR]
+/* --------------------------------------------------- SaaS routing & hydration */
+
+/**
+ * `mount(component, element)`
+ * Hydrates if server-rendered child elements exist, otherwise creates a fresh root and renders.
+ */
+export function mount(component: any, element: HTMLElement | null) {
+  if (!element) return null
+  const node = typeof component === 'function' && !React.isValidElement(component)
+    ? React.createElement(component)
+    : component
+  if (element.hasChildNodes() && element.children.length > 0) {
+    return ReactDOM.hydrateRoot(element, node)
+  } else {
+    const root = ReactDOM.createRoot(element)
+    root.render(node)
+    return root
+  }
+}
+
+/**
+ * `path = use_path()`
+ * Reactive hook returning current window.location.pathname or hash, listening to popstate.
+ */
+export function use_path(): string {
+  const getPath = () => {
+    if (typeof window === 'undefined') return '/'
+    return (window.location.pathname !== '/' ? window.location.pathname : window.location.hash) || '/'
+  }
+  const [path, setPath] = useState<string>(getPath)
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const onPopState = () => {
+      setPath(getPath())
+    }
+    window.addEventListener('popstate', onPopState)
+    window.addEventListener('hashchange', onPopState)
+    return () => {
+      window.removeEventListener('popstate', onPopState)
+      window.removeEventListener('hashchange', onPopState)
+    }
+  }, [])
+
+  return path
+}
+
+/**
+ * `navigate(to)`
+ * Client-side push navigation dispatching a PopStateEvent.
+ */
+export function navigate(to: string): void {
+  if (typeof window !== 'undefined') {
+    window.history.pushState({}, '', to)
+    window.dispatchEvent(new PopStateEvent('popstate'))
+  }
+}
+
+export interface LinkProps extends React.AnchorHTMLAttributes<HTMLAnchorElement> {
+  to?: string
+  href?: string
+  replace?: boolean
+  children?: React.ReactNode
+  [key: string]: any
+}
+
+/**
+ * `Link`: component handling client-side transitions.
+ */
+export function Link({ to, href, onClick, replace = false, children, ...rest }: LinkProps) {
+  const targetUrl = to ?? href ?? ''
+
+  const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    if (onClick) {
+      onClick(e)
+    }
+    if (
+      !e.defaultPrevented &&
+      e.button === 0 &&
+      (!rest.target || rest.target === '_self') &&
+      !e.metaKey &&
+      !e.altKey &&
+      !e.ctrlKey &&
+      !e.shiftKey
+    ) {
+      e.preventDefault()
+      if (replace) {
+        if (typeof window !== 'undefined') {
+          window.history.replaceState({}, '', targetUrl)
+          window.dispatchEvent(new PopStateEvent('popstate'))
+        }
+      } else {
+        navigate(targetUrl)
+      }
+    }
+  }
+
+  return React.createElement('a', {
+    href: targetUrl,
+    onClick: handleClick,
+    ...rest,
+  }, children)
+}
+
 
