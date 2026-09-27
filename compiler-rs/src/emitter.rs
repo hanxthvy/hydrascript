@@ -25,6 +25,17 @@ pub static HTML_TAGS: &[&str] = &[
     "colgroup", "col", "tfoot", "kbd", "blockquote", "address",
 ];
 
+// [xihanzu-NR]
+pub static JS_BUILTIN_GLOBALS: &[&str] = &[
+    "Math", "Date", "Array", "Object", "Number", "String", "Boolean",
+    "RegExp", "JSON", "Promise", "Reflect", "Intl", "Set", "Map",
+    "WeakSet", "WeakMap", "Symbol", "Error", "TypeError", "RangeError",
+    "ResizeObserver", "IntersectionObserver", "MutationObserver",
+    "WebSocket", "Worker", "Audio", "Image", "FormData", "URL", "URLSearchParams",
+    "Console", "console", "window", "document", "globalThis", "navigator", "location",
+    "localStorage", "sessionStorage", "performance", "Performance",
+];
+
 pub fn prop_map(k: &str) -> String {
     if k.starts_with("aria_") || k.starts_with("data_") {
         return k.replace('_', "-");
@@ -134,11 +145,20 @@ impl Emitter {
     pub fn is_element(n: &Node) -> bool {
         match &n.kind {
             Kind::Name(id) => {
+                if JS_BUILTIN_GLOBALS.contains(&id.as_str()) {
+                    return false;
+                }
                 HTML_TAGS.contains(&id.as_str()) || id.chars().next().map_or(false, |c| c.is_uppercase())
             }
             Kind::Attr { obj, name } => {
+                if JS_BUILTIN_GLOBALS.contains(&name.as_str()) {
+                    return false;
+                }
                 match &obj.kind {
                     Kind::Name(id) => {
+                        if JS_BUILTIN_GLOBALS.contains(&id.as_str()) {
+                            return false;
+                        }
                         id.chars().next().map_or(false, |c| c.is_uppercase())
                             || name.chars().next().map_or(false, |c| c.is_uppercase())
                             || id == "motion"
@@ -616,8 +636,12 @@ impl Emitter {
                 self.w(&format!("{} {}= {};", lhs, op, rhs));
             }
             Kind::Return(v) => {
-                let val = self.js(v)?;
-                self.w(&format!("return {};", val));
+                if let Some(val_node) = v {
+                    let val = self.js(val_node)?;
+                    self.w(&format!("return {};", val));
+                } else {
+                    self.w("return;");
+                }
             }
             Kind::ExprStmt(e) => {
                 let val = self.js(e)?;
@@ -694,7 +718,13 @@ impl Emitter {
             }
             Kind::Import { from, names } => {
                 if let Some(f) = from {
-                    self.imports.insert(format!("import {{ {} }} from '{}';", names.join(", "), f));
+                    if names.is_empty() {
+                        self.imports.insert(format!("import '{}';", f));
+                    } else if names.len() == 1 && names[0].starts_with("* as ") {
+                        self.imports.insert(format!("import {} from '{}';", names[0], f));
+                    } else {
+                        self.imports.insert(format!("import {{ {} }} from '{}';", names.join(", "), f));
+                    }
                 } else {
                     self.imports.insert(format!("import {} from 'serpent';", names.join(", ")));
                 }
@@ -808,7 +838,13 @@ impl Emitter {
         for s in body {
             if let Kind::Import { from, names } = &s.kind {
                 if let Some(f) = from {
-                    self.imports.insert(format!("import {{ {} }} from '{}';", names.join(", "), f));
+                    if names.is_empty() {
+                        self.imports.insert(format!("import '{}';", f));
+                    } else if names.len() == 1 && names[0].starts_with("* as ") {
+                        self.imports.insert(format!("import {} from '{}';", names[0], f));
+                    } else {
+                        self.imports.insert(format!("import {{ {} }} from '{}';", names.join(", "), f));
+                    }
                 } else {
                     self.imports.insert(format!("import {} from 'serpent';", names.join(", ")));
                 }
@@ -1246,6 +1282,50 @@ mod tests {
     fn statement_level_if_and_for_emit_native_blocks() {
         let out = emit_tsx("component A():\n    if a:\n        go()\n    for x in xs:\n        run(x)\n");
         has_all(&out, &["if (a) {", "for (const x of xs) {"]);
+    }
+
+    #[test]
+    fn js_builtins_are_not_elements() {
+        let math_cos = Node::new(
+            Kind::Attr {
+                obj: Box::new(Node::new(Kind::Name("Math".into()), 1, 1)),
+                name: "cos".into(),
+            },
+            1,
+            1,
+        );
+        assert!(!Emitter::is_element(&math_cos));
+
+        let date_now = Node::new(
+            Kind::Attr {
+                obj: Box::new(Node::new(Kind::Name("Date".into()), 1, 1)),
+                name: "now".into(),
+            },
+            1,
+            1,
+        );
+        assert!(!Emitter::is_element(&date_now));
+
+        let resize_obs = Node::new(Kind::Name("ResizeObserver".into()), 1, 1);
+        assert!(!Emitter::is_element(&resize_obs));
+
+        let button = Node::new(Kind::Name("button".into()), 1, 1);
+        assert!(Emitter::is_element(&button));
+
+        let custom_comp = Node::new(Kind::Name("StrokeText".into()), 1, 1);
+        assert!(Emitter::is_element(&custom_comp));
+    }
+
+    #[test]
+    fn bare_return_emits_semicolon() {
+        let out = emit_tsx("component A():\n    def go():\n        return\n");
+        has_all(&out, &["return;"]);
+    }
+
+    #[test]
+    fn keyword_kwargs_emit_cleanly() {
+        let out = emit_tsx("component A():\n    button(type=\"button\", for=\"my-id\"):\n        \"Click\"\n");
+        has_all(&out, &["<button type=\"button\" htmlFor=\"my-id\">"]);
     }
 
     // ------------------------------------------------------------------- imports

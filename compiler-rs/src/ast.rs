@@ -20,7 +20,7 @@ pub enum Kind {
     Import { from: Option<String>, names: Vec<String> },
     Assign { target: Box<Node>, value: Box<Node> },
     AugAssign { target: Box<Node>, op: String, value: Box<Node> },
-    Return(Box<Node>),
+    Return(Option<Box<Node>>),
     ExprStmt(Box<Node>),
     If { test: Box<Node>, body: Vec<Node>, orelse: Option<Vec<Node>> },
     For { target: String, iter: Box<Node>, body: Vec<Node> },

@@ -278,8 +278,12 @@ impl JsEmitter {
                 self.w(&format!("{} {}= {};", lhs, op, rhs));
             }
             Kind::Return(v) => {
-                let val = self.js(v)?;
-                self.w(&format!("return {};", val));
+                if let Some(val_node) = v {
+                    let val = self.js(val_node)?;
+                    self.w(&format!("return {};", val));
+                } else {
+                    self.w("return;");
+                }
             }
             Kind::ExprStmt(e) => {
                 let val = self.js(e)?;
@@ -493,7 +497,13 @@ impl JsEmitter {
             Kind::Import { from, names } => {
                 if let Some(f) = from {
                     let mod_name = if f == "serpent_js" { "serpent-js" } else { f.as_str() };
-                    self.imports.insert(format!("import {{ {} }} from '{}';", names.join(", "), mod_name));
+                    if names.is_empty() {
+                        self.imports.insert(format!("import '{}';", mod_name));
+                    } else if names.len() == 1 && names[0].starts_with("* as ") {
+                        self.imports.insert(format!("import {} from '{}';", names[0], mod_name));
+                    } else {
+                        self.imports.insert(format!("import {{ {} }} from '{}';", names.join(", "), mod_name));
+                    }
                 } else {
                     self.imports.insert(format!("import {} from 'serpent-js';", names.join(", ")));
                 }
@@ -544,7 +554,13 @@ impl JsEmitter {
                 Kind::Import { from, names } => {
                     if let Some(f) = from {
                         let mod_name = if f == "serpent_js" { "serpent-js" } else { f.as_str() };
-                        self.imports.insert(format!("import {{ {} }} from '{}';", names.join(", "), mod_name));
+                        if names.is_empty() {
+                            self.imports.insert(format!("import '{}';", mod_name));
+                        } else if names.len() == 1 && names[0].starts_with("* as ") {
+                            self.imports.insert(format!("import {} from '{}';", names[0], mod_name));
+                        } else {
+                            self.imports.insert(format!("import {{ {} }} from '{}';", names.join(", "), mod_name));
+                        }
                     } else {
                         self.imports.insert(format!("import {} from 'serpent-js';", names.join(", ")));
                     }
