@@ -1,146 +1,250 @@
 <!-- [xihanzu-NR] -->
 # HydraScript
 
-### Pythonic Syntax for React, Node.js, and Modern Web Applications
-A standalone native Rust compiler and zero-config meta-framework with zero runtime overhead.
+**The Pythonic Language and Meta-Framework for React and Modern Web Applications**  
+A native Rust compiler, zero-IPC Node-API runtime, and zero-config meta-framework with zero runtime overhead.
+
+[English](README.md) | [Bahasa Indonesia](README.id.md)
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Design Philosophy](#design-philosophy)
+- [Why HydraScript: Pain Points in Vanilla TSX](#why-hydrascript-pain-points-in-vanilla-tsx)
+- [Syntax & Feature Matrix](#syntax--feature-matrix)
+- [Comprehensive Code Showcases](#comprehensive-code-showcases)
+  - [1. Reactive Component with State and Events](#1-reactive-component-with-state-and-events)
+  - [2. Multi-Branch Conditionals & Pattern Matching](#2-multi-branch-conditionals--pattern-matching)
+  - [3. Dynamic Classes & Event Modifiers](#3-dynamic-classes--event-modifiers)
+  - [4. Pure Application Entrypoint (`src/main.hsx`)](#4-pure-application-entrypoint-srcmainhsx)
+  - [5. Backend and Script Logic (`.hs` / `.hx`)](#5-backend-and-script-logic-hs--hx)
+- [Meta-Framework Mode](#meta-framework-mode)
+  - [CLI Commands](#cli-commands)
+  - [Zero-Config Architecture](#zero-config-architecture)
+  - [Configuration Reference (`hydraconfig.json`)](#configuration-reference-hydraconfigjson)
+- [Compiler Architecture & Performance](#compiler-architecture--performance)
+  - [Pipeline Flow](#pipeline-flow)
+  - [Compilation Latency Benchmarks](#compilation-latency-benchmarks)
+- [Language Reference](#language-reference)
+  - [Component Definition](#component-definition)
+  - [Property and Event Conventions](#property-and-event-conventions)
+  - [Hooks & React Batteries](#hooks--react-batteries)
+  - [JavaScript Globals Whitelist](#javascript-globals-whitelist)
+  - [Module Imports and Exports](#module-imports-and-exports)
+- [CLI Reference](#cli-reference)
+- [Production Deployment](#production-deployment)
+  - [Static Hosting](#static-hosting)
+  - [Docker Container](#docker-container)
+- [Editor Support](#editor-support)
+- [Contributing & Architectural Roadmap](#contributing--architectural-roadmap)
+- [License](#license)
 
 ---
 
 ## Overview
 
-HydraScript is an indentation-based language and compiler that brings the ergonomics, clarity, and conciseness of Python to the React and Node.js ecosystems. It eliminates JSX boilerplate, closing tag clutter, nested ternary expressions, and framework configuration fatigue.
+HydraScript is an indentation-based language and complete web meta-framework that combines the conciseness, visual clarity, and readability of Python with the power and ubiquity of the React and JavaScript ecosystems.
 
-HydraScript compiles into human-readable React TSX and native ES Modules in sub-millisecond timeframes using a native Rust binary (`hydra`) and an in-memory Node-API addon (`hydra.node`).
-
-* **Component Files (`.hsx`)**: Declarative UI trees compiled to React 18/19 components.
-* **Script Files (`.hs` / `.hx`)**: Pure logic, utilities, backend servers, and CLI scripts compiled to standard ES modules.
-* **Meta-Framework Mode**: Native CLI commands (`hydra dev`, `hydra build`, `hydra preview`) with zero configuration files required in the repository.
+The project consists of three core components:
+1. **The Native Compiler (`compiler-rs`)**: A self-contained binary written in pure Rust that compiles `.hsx` files to React TypeScript/JSX and `.hs` files to clean ES Modules in sub-millisecond times.
+2. **The In-Memory Node-API Bridge (`hydra.node`)**: A native C-ABI shared library allowing bundlers and dev servers to call the compiler in-memory without spawning child processes.
+3. **The Standalone Meta-Framework CLI (`packages/cli`)**: An integrated runner that wraps Vite, Tailwind CSS, and Autoprefixer programmatically, eliminating the need for `vite.config.ts`, `tailwind.config.ts`, or `tsconfig.json` in user projects.
 
 ---
 
-## Why HydraScript vs Vanilla TSX
+## Design Philosophy
 
-React remains a dominant UI paradigm, but JSX syntax carries chronic structural pain points: verbose closing tags, double-curly braces for objects and styles, fragile ternary chains, and repetitive event handler ceremony.
+### 1. Zero Runtime Tax
+HydraScript introduces zero proprietary client-side runtimes. The code you write in `.hsx` compiles directly to idiomatic React 18/19 components, JSX calls, and native browser hooks. There is no virtual machine, no interpreter overhead, and zero extra kilobytes sent to the user's browser.
 
-HydraScript solves these issues at compile time:
+### 2. Syntax-Level Elimination of Boilerplate
+JSX requires developers to navigate opening and closing tags, double-curly braces for attribute interpolation, template literals for dynamic class names, and nested ternary chains for multi-branch rendering. HydraScript replaces this with clean Pythonic indentation, f-strings, list comprehensions, native dictionaries, and block-level control flow.
 
-| Concern | Vanilla TSX | HydraScript (`.hsx` / `.hs`) |
+### 3. Radical Toolchain Simplicity
+Modern web development often requires 5-8 configuration files before writing a single line of code (`tsconfig.json`, `vite.config.ts`, `tailwind.config.ts`, `postcss.config.js`, `eslint.config.js`). HydraScript reduces this to a single optional `hydraconfig.json`.
+
+---
+
+## Why HydraScript: Pain Points in Vanilla TSX
+
+| Area | Vanilla TSX / React | HydraScript (`.hsx` / `.hs`) |
 |---|---|---|
-| **Structure** | Mandatory opening and closing tags (`<div>...</div>`) | Indentation-based hierarchy (`div: ...`) |
-| **Branching** | Nested ternary operators (`a ? <B/> : c ? <D/> : <E/>`) | Pythonic `if / elif / else` directly in UI tree |
-| **Pattern Matching** | IIFEs `(() => { switch(...) ... })()` | Native `match / case` directly inside elements |
-| **Zero Bug** | Short-circuit `count && <Tag/>` leaks `0` to DOM | Strict compile-time truthiness and boolean coercion |
-| **Dynamic Styling** | External packages (`clsx`, `classnames`) | Native `cls={"btn": True, "active": active}` dict/list syntax |
-| **Event Modifiers** | Manual boilerplate `(e) => { e.preventDefault(); fn(e); }` | Declarative modifiers: `on_submit_prevent=handler` |
-| **Iteration** | Mandatory `.map((item) => <li key={item.id}>...</li>)` | Clean loops: `for item in items: li(key=item.id): item.name` |
-| **String Interpolation** | Template strings with backticks: `` `${prefix}-${id}` `` | Standard f-strings: `f"{prefix}-{id}"` |
-| **Root Sibling Tags** | Manual fragment wrappers `<> ... </>` | Auto-fragment insertion by compiler for multi-root nodes |
-| **State Declaration** | Verbose destructuring `const [val, setVal] = useState(0)` | Clean Pythonic unpacking: `val, set_val = state(0)` |
-| **Configuration** | Multiple config files (`vite.config`, `tsconfig`, `tailwind`) | Single optional `hydraconfig.json` or zero-config defaults |
+| **Element Hierarchy** | Closing tags required (`<div><header><h1></h1></header></div>`) | Clean indentation-based blocks (`div: header: h1: ...`) |
+| **Multi-Branch Rendering** | Nested ternaries (`a ? <B/> : c ? <D/> : <E/>`) | Pythonic `if / elif / else` inside UI trees |
+| **Pattern Matching** | IIFEs `(() => { switch(s) { ... } })()` | Native `match / case` directly inside tree blocks |
+| **Falsy Zero Leak** | `count && <Badge/>` renders unwanted `0` text | Strict boolean truthiness check compiled automatically |
+| **Dynamic Classes** | External libraries (`clsx`, `classnames`) required | Native dictionary syntax: `cls={"btn": True, "active": is_active}` |
+| **Event Modifiers** | Repetitive `e.preventDefault(); e.stopPropagation();` | Declarative modifiers: `on_submit_prevent_stop=handle_submit` |
+| **List Iteration** | `.map((item, idx) => <li key={item.id}>...</li>)` | Pythonic loop: `for item in items: li(key=item.id): item.name` |
+| **String Formatting** | Backtick template literals: `` `${base}/${id}` `` | Clean f-strings: `f"{base}/{id}"` |
+| **Multi-Root Nodes** | Manual fragment wrappers `<> ... </>` | Automatic fragment insertion by compiler |
+| **State Declaration** | Verbose destructuring `const [val, setVal] = useState(0)` | Pythonic tuple unpacking: `val, set_val = state(0)` |
+| **Global Builtins** | Can conflict with custom component names | Whitelist ensures `Math.cos()`, `Date.now()` are never JSX tags |
 
 ---
 
-## Code Comparison
+## Syntax & Feature Matrix
 
-### 1. Conditional Rendering and Pattern Matching
+### Indentation-Based Layout
+Single-line inline children use a colon followed by content; multi-line children use an indented block:
 
-#### Vanilla TSX
+```python
+# Inline
+h1: "System Status"
+
+# Block
+div(className="container"):
+    header(className="header"):
+        h1: "System Status"
+        p: "All telemetry nodes online."
+```
+
+### Auto-Fragment Insertion
+When a component or block has multiple sibling roots, the compiler wraps them in `<> ... </>` automatically:
+
+```python
+component MetricPair(label: str, value: str):
+    span(className="label"): label
+    span(className="value"): value
+```
+
+Compiles to:
 ```tsx
-export function StatusCard({ status, count }: StatusCardProps) {
+export function MetricPair({ label, value }: MetricPairProps) {
   return (
-    <div className="card">
-      {status === 'loading' ? (
-        <Spinner />
-      ) : status === 'error' ? (
-        <ErrorAlert />
-      ) : status === 'empty' ? (
-        <EmptyPlaceholder />
-      ) : (
-        <DashboardView />
-      )}
-      {count !== 0 && <span>{count} pending actions</span>}
-    </div>
+    <>
+      <span className="label">{label}</span>
+      <span className="value">{value}</span>
+    </>
   );
 }
 ```
 
-#### HydraScript (`.hsx`)
+---
+
+## Comprehensive Code Showcases
+
+### 1. Reactive Component with State and Events
+
 ```python
 # [xihanzu-NR]
-component StatusCard(status: str, count: int):
-    div(className="card"):
+from hydra import state, effect
+
+component Counter(initial_count: int = 0, step: int = 1):
+    count, set_count = state(initial_count)
+
+    effect(lambda: console.log(f"Current count: {count}"), [count])
+
+    div(className="counter-card"):
+        h2: f"Value: {count}"
+        div(className="button-group"):
+            button(
+                type="button",
+                onClick=lambda: set_count(count - step),
+                className="btn btn-secondary",
+            ):
+                "-"
+            button(
+                type="button",
+                onClick=lambda: set_count(count + step),
+                className="btn btn-primary",
+            ):
+                "+"
+```
+
+---
+
+### 2. Multi-Branch Conditionals & Pattern Matching
+
+```python
+# [xihanzu-NR]
+component ServerMonitor(status: str, load_average: float, alerts: list):
+    section(className="monitor-panel"):
+        h3: "Hardware Health"
+
+        # Pattern matching directly inside JSX tree
         match status:
-            case "loading":
-                Spinner:
-            case "error":
-                ErrorAlert:
-            case "empty":
-                EmptyPlaceholder:
+            case "healthy":
+                div(className="status-pill status-green"): "Systems Nominal"
+            case "degraded":
+                div(className="status-pill status-amber"): "High Memory Pressure"
+            case "critical":
+                div(className="status-pill status-red"): "Node Offline"
             case _:
-                DashboardView:
+                div(className="status-pill status-gray"): "Telemetry Initializing"
 
-        if count > 0:
-            span: f"{count} pending actions"
+        # Block-level branching
+        if load_average > 4.0:
+            div(className="warning-callout"):
+                p: f"CPU load critical: {load_average:.2f}"
+        elif load_average > 2.0:
+            div(className="info-callout"):
+                p: f"CPU load moderate: {load_average:.2f}"
+        else:
+            div(className="normal-callout"):
+                p: f"CPU load normal: {load_average:.2f}"
+
+        # Loop rendering
+        ul(className="alert-list"):
+            for alert in alerts:
+                li(key=alert.id, className="alert-item"):
+                    span(className="alert-time"): alert.timestamp
+                    span(className="alert-msg"): alert.message
 ```
 
 ---
 
-### 2. Form Submission with Event Modifiers and Dynamic Classes
+### 3. Dynamic Classes & Event Modifiers
 
-#### Vanilla TSX
-```tsx
-import clsx from 'clsx';
-
-export function AuthForm({ onSubmit, loading, hasError }) {
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    onSubmit();
-  };
-
-  return (
-    <form onSubmit={handleSubmit} className="form-container">
-      <input
-        type="email"
-        placeholder="user@example.com"
-        className={clsx('input-field', {
-          'border-red-500': hasError,
-          'opacity-50 cursor-not-allowed': loading,
-        })}
-        disabled={loading}
-      />
-      <button type="submit" disabled={loading}>
-        {loading ? 'Authenticating...' : 'Sign In'}
-      </button>
-    </form>
-  );
-}
-```
-
-#### HydraScript (`.hsx`)
 ```python
 # [xihanzu-NR]
-component AuthForm(on_submit, loading: bool = False, has_error: bool = False):
-    form(on_submit_prevent_stop=on_submit, className="form-container"):
-        input(
-            type="email",
-            placeholder="user@example.com",
-            cls={
-                "input-field": True,
-                "border-red-500": has_error,
-                "opacity-50 cursor-not-allowed": loading,
-            },
-            disabled=loading,
-        )
-        button(type="submit", disabled=loading):
-            "Authenticating..." if loading else "Sign In"
+component ContactModal(on_submit, is_open: bool = False, is_submitting: bool = False):
+    div(
+        cls={
+            "modal-backdrop": True,
+            "opacity-100 pointer-events-auto": is_open,
+            "opacity-0 pointer-events-none": not is_open,
+        },
+    ):
+        div(className="modal-surface"):
+            h2: "Dispatch Message"
+
+            # Form with automated preventDefault and stopPropagation
+            form(on_submit_prevent_stop=on_submit, className="modal-form"):
+                label(for="email_input"): "Email Address"
+                input(
+                    id="email_input",
+                    type="email",
+                    required=True,
+                    placeholder="name@domain.com",
+                    className="input-text",
+                )
+
+                label(for="msg_input"): "Message"
+                textarea(
+                    id="msg_input",
+                    rows=4,
+                    required=True,
+                    placeholder="Describe your inquiry...",
+                    className="input-textarea",
+                )
+
+                div(className="form-actions"):
+                    button(
+                        type="submit",
+                        disabled=is_submitting,
+                        className="btn-submit",
+                    ):
+                        "Sending..." if is_submitting else "Send Message"
 ```
 
 ---
 
-### 3. Application Entrypoint (`src/main.hsx`)
+### 4. Pure Application Entrypoint (`src/main.hsx`)
 
-HydraScript supports full application mounting without any intermediate `.tsx` or `.ts` files:
+Hydra projects do not require `main.tsx` or `index.ts`. The browser entrypoint is authored in pure HydraScript:
 
 ```python
 # [xihanzu-NR]
@@ -148,105 +252,69 @@ from "react-dom/client" import createRoot
 from "./App.hsx" import App
 import "./index.css"
 
-root_el = document.getElementById("root")
-createRoot(root_el).render(App())
+root_element = document.getElementById("root")
+createRoot(root_element).render(App())
 ```
 
 ---
 
-### 4. Backend and Script Logic (`.hs` / `.hx`)
+### 5. Backend and Script Logic (`.hs` / `.hx`)
 
-HydraScript compiles non-component code to clean, tree-shakeable ES modules:
+HydraScript compiles pure logic files to standard ES Modules:
 
 ```python
 # [xihanzu-NR]
 from "node:fs/promises" import readFile, writeFile
 from "node:path" import join
 
-async def process_telemetry(data_dir: str, threshold: float):
-    raw = await readFile(join(data_dir, "metrics.json"), "utf8")
-    payload = JSON.parse(raw)
-    
-    filtered = [
-        item for item in payload.entries
-        if item.score >= threshold and item.valid
+async def audit_metrics(directory: str, max_latency_ms: float):
+    config_file = join(directory, "telemetry.json")
+    content = await readFile(config_file, "utf8")
+    records = JSON.parse(content)
+
+    flagged = [
+        item for item in records
+        if item.latency > max_latency_ms
     ]
-    
-    output = {
+
+    report = {
         "timestamp": Date.now(),
-        "total": len(filtered),
-        "results": filtered,
+        "total_records": len(records),
+        "breaches": len(flagged),
+        "flagged_nodes": flagged,
     }
-    
-    await writeFile(
-        join(data_dir, "summary.json"),
-        JSON.stringify(output, None, 2),
-        "utf8",
-    )
-    return output
+
+    report_file = join(directory, "report.json")
+    await writeFile(report_file, JSON.stringify(report, None, 2), "utf8")
+    return report
 ```
-
----
-
-## Compiler Architecture
-
-The compiler is built in pure Rust with zero external runtime dependencies.
-
-```
-Source (.hs / .hsx)
-        │
-        ▼
-   [ Lexer ]  ──────────────── Indentation & Dedent Tokenizer
-        │
-        ▼
-   [ Parser ] ──────────────── Recursive Descent with Pythonic Precedence
-        │
-        ▼
- [ Semantic Pass ] ────────── Scope Resolution, JS Builtin Whitelist, Mutability
-        │
-        ▼
-   [ Emitter ]
-   ├── Target::React ──────── Emit TSX / JSX for React 18+
-   └── Target::Js    ──────── Emit clean ES Modules
-        │
-        ▼
- Output (TypeScript / JavaScript + VLQ Source Maps)
-```
-
-### Compiler Modules in `compiler-rs`
-* `lexer.rs`: Handles indentation levels via dedicated `INDENT` and `DEDENT` tokens, Unicode identifiers, string literals, and f-strings.
-* `parser.rs`: Recursive descent parser supporting component blocks, inline elements, expressions, comprehensions, and control flow.
-* `emitter.rs`: Transforms AST into valid TypeScript/JSX with React prop mapping, event modifiers, and import deduplication.
-* `hx_target.rs`: JavaScript target emitter for pure logic modules (`.hs` / `.hx`).
-* `napi.rs`: Node-API shared library bindings (`hydra.node`) exposing direct in-memory compilation without subprocess overhead.
-* `cli.rs`: Command dispatcher supporting single-file execution and meta-framework orchestration.
 
 ---
 
 ## Meta-Framework Mode
 
-HydraScript functions as a complete, self-contained web framework.
+Hydra includes an in-memory application runner that integrates Vite, Rollup, PostCSS, Autoprefixer, and Tailwind CSS into a single CLI workflow.
 
-### Commands
-* `hydra dev`: Starts a local development server with instant Hot Module Replacement (HMR).
-* `hydra build`: Compiles all assets, performs tree-shaking, extracts CSS, and outputs a production-ready bundle.
-* `hydra preview`: Launches a local production preview server.
-* `hydra run <file.hs>`: Executes a HydraScript logic file directly in memory via Node or Bun.
+### CLI Commands
+* `hydra dev`: Starts the local development server with Hot Module Replacement (HMR).
+* `hydra build`: Runs a production build with asset hashing, dead-code elimination, and CSS minification.
+* `hydra preview`: Starts a local HTTP server serving the compiled production output (`dist/`).
+* `hydra run <file.hs>`: Executes a HydraScript logic file in-memory using Node or Bun.
 
-### Zero Configuration by Default
-When running `hydra dev` or `hydra build`, HydraScript automatically:
-1. Detects `hydraconfig.json` in the project root.
-2. Injects the native `hydra.node` compiler into the bundling pipeline.
-3. Automatically inlines Tailwind CSS and Autoprefixer without requiring `tailwind.config.ts` or `postcss.config.js`.
-4. Establishes module aliases (`hydra` -> `src/hydra.hs`, `@` -> `src/`).
+### Zero-Config Architecture
+When `hydra dev` or `hydra build` runs in a directory containing `hydraconfig.json`:
+1. The Rust binary locates `packages/cli/runner.mjs`.
+2. The runner dynamically loads Vite and plugins from the local project's `node_modules`.
+3. In-memory configuration sets `configFile: false`, preventing Vite from looking for `vite.config.ts`.
+4. Tailwind and Autoprefixer are configured in-memory using settings from `hydraconfig.json`.
+5. The native Node-API addon (`hydra.node`) handles all `.hsx` and `.hs` transformations.
 
-### Configuration Specification (`hydraconfig.json`)
-All project settings can be defined in a single JSON file:
+### Configuration Reference (`hydraconfig.json`)
 
 ```json
 {
   "$schema": "https://hydrascript.dev/schema.json",
-  "name": "my-hydra-app",
+  "name": "production-app",
   "version": "1.0.0",
   "root": "./src",
   "outputDir": "./dist",
@@ -281,143 +349,213 @@ All project settings can be defined in a single JSON file:
 
 ---
 
+## Compiler Architecture & Performance
+
+### Pipeline Flow
+
+```
+                      [ Source: .hsx / .hs ]
+                                 │
+                                 ▼
+                     [ Lexer (lexer.rs) ]
+       Indent/Dedent Tracking, F-Strings, Unicode Identifiers
+                                 │
+                                 ▼
+                   [ Parser (parser.rs) ]
+     Recursive Descent, Tree Blocks, Comprehensions, Operators
+                                 │
+                                 ▼
+               [ Semantic Analysis (emitter.rs) ]
+     JS Builtin Whitelist, Scope Tracker, Mutability Analysis
+                                 │
+                 ┌───────────────┴───────────────┐
+                 ▼                               ▼
+       Target: React (.hsx)             Target: JS (.hs)
+   TSX Components, Props Mapping     Clean ES Modules Output
+                 │                               │
+                 └───────────────┬───────────────┘
+                                 ▼
+         [ Node-API Shared Library (hydra.node) ]
+                 In-Memory Transform Pipeline
+```
+
+### Compilation Latency Benchmarks
+*Tested on Linux x86_64, 16-Core AMD EPYC, Node.js v20.19:*
+
+| Workload | CLI Subprocess (`execFileSync`) | Node-API Addon (`hydra.node`) | Speedup |
+|---|---|---|---|
+| **15 Component Project** | 42.20 ms | **6.60 ms** | **6.4x faster** |
+| **1,500 Repeated Compiles** | 235.30 ms | **42.61 ms** | **5.5x faster** |
+| **Vite Full Production Build** | 4.96 s | **3.10 s** | **37% faster** |
+
+* Binary Size: ~756 KB release executable (stripped, LTO enabled).
+* Test Suite: 248 automated tests (159 unit tests + 89 end-to-end integration tests).
+
+---
+
 ## Language Reference
 
-### 1. Components
-Declared with the `component` keyword. Parameters map to React props.
+### Component Definition
 ```python
-component MetricDisplay(label: str, value: float, active: bool = False):
-    div(className="metric-box"):
-        span(className="label"): label
-        span(className="value"): f"{value:.2f}"
+component Name(prop_a: str, prop_b: int = 10, on_click=None):
+    div: f"{prop_a}: {prop_b}"
 ```
 
-### 2. Elements and Hierarchy
-HTML elements are declared by name, followed by optional attributes in parentheses, and a colon:
-```python
-section(id="overview", className="container"):
-    h1: "System Architecture"
-    p:
-        "Multi-line paragraph text is nested with indentation."
-```
-
-### 3. Property and Event Mapping
-HydraScript automatically translates snake_case attribute names to React camelCase conventions:
-* `class` or `cls` -> `className`
+### Property and Event Conventions
+* `class`, `cls` -> `className`
 * `for` -> `htmlFor`
 * `tab_index` -> `tabIndex`
 * `on_click` -> `onClick`
 * `on_change` -> `onChange`
 * `on_submit` -> `onSubmit`
-* `aria_*` -> `aria-*` (dashes preserved)
-* `data_*` -> `data-*` (dashes preserved)
+* `on_key_down` -> `onKeyDown`
+* `on_mouse_enter` -> `onMouseEnter`
+* `aria_*` -> `aria-*`
+* `data_*` -> `data-*`
 
 Event modifier suffixes:
 * `_prevent`: Calls `event.preventDefault()`
 * `_stop`: Calls `event.stopPropagation()`
-* `_prevent_stop`: Calls both `preventDefault()` and `stopPropagation()`
+* `_prevent_stop`: Calls both
 
-### 4. Built-in Globals Whitelist
-Standard JavaScript globals are recognized by the compiler and are never transformed into JSX tags:
-`Math`, `Date`, `Array`, `Object`, `Number`, `String`, `Boolean`, `RegExp`, `JSON`, `Promise`, `Reflect`, `Intl`, `Set`, `Map`, `WeakSet`, `WeakMap`, `Symbol`, `Error`, `TypeError`, `RangeError`, `ResizeObserver`, `IntersectionObserver`, `MutationObserver`, `WebSocket`, `Worker`, `Audio`, `Image`, `FormData`, `URL`, `URLSearchParams`.
+### Hooks & React Batteries
+HydraScript exposes Pythonic adapters for standard React primitives via the `hydra` runtime:
 
-Example:
+| Hydra Function | Underlying React API | Description |
+|---|---|---|
+| `val, set_val = state(init)` | `useState` | Returns value and setter tuple |
+| `r = ref(init)` | `useRef` | Creates a persistent mutable ref |
+| `cb = callback(fn, deps)` | `useCallback` | Memoizes callback function |
+| `effect(fn, deps)` | `useEffect` | Runs side-effect on dependency change |
+| `val, toggle_fn, set_val = toggle(False)` | Custom hook | Boolean toggle with toggle function |
+| `is_mounted = use_mounted()` | Custom hook | Returns true after client mount |
+
+### JavaScript Globals Whitelist
+The compiler recognizes built-in JavaScript globals and ensures calls to their methods are never emitted as JSX tags:
+* `Math`, `Date`, `Array`, `Object`, `Number`, `String`, `Boolean`
+* `RegExp`, `JSON`, `Promise`, `Reflect`, `Intl`, `Set`, `Map`
+* `WeakSet`, `WeakMap`, `Symbol`, `Error`, `TypeError`, `RangeError`
+* `ResizeObserver`, `IntersectionObserver`, `MutationObserver`
+* `WebSocket`, `Worker`, `Audio`, `Image`, `FormData`, `URL`, `URLSearchParams`
+
+### Module Imports and Exports
 ```python
-# Compiles to <div>{Math.cos(angle)}</div>, not <Math.cos>
-div: Math.cos(angle)
-```
+# Named import from package
+from "react" import useState, useEffect
 
-### 5. Control Flow
-```python
-# Conditional blocks
-if is_logged_in:
-    UserPanel:
-elif is_guest:
-    GuestBanner:
-else:
-    LoginPrompt:
+# Default / named import from local component
+from "./Header.hsx" import Header
 
-# Loops inside UI trees
-ul:
-    for user in users:
-        li(key=user.id): user.name
+# Namespace import
+import "three" as THREE
 
-# List comprehensions
-active_names = [u.name.upper() for u in users if u.is_active]
-```
+# Side-effect CSS import
+import "./index.css"
 
-### 6. Functions and Lambdas
-```python
-# Standard function
-def compute_total(items, tax_rate=0.1):
-    return sum([item.price for item in items]) * (1.0 + tax_rate)
+# Exporting a component
+export component Button(label: str):
+    button: label
 
-# Inline lambda
-button(onClick=lambda: set_count(count + 1)): "Increment"
+# Exporting a function or variable
+export def calculate_tax(amount):
+    return amount * 0.11
+
+export API_URL = "https://api.domain.com/v1"
 ```
 
 ---
 
-## Performance Benchmarks
+## CLI Reference
 
-Measured on Linux x86_64, 16-Core AMD EPYC:
+```
+hydra [COMMAND] [OPTIONS]
 
-| Benchmark | CLI Execution (`execFileSync`) | Node-API Addon (`hydra.node`) | Improvement |
-|---|---|---|---|
-| **15 Portfolio Files** | 42.20 ms | **6.60 ms** | **6.4x faster** |
-| **1,500 Repeated Compiles** | 235.30 ms | **42.61 ms** | **5.5x faster** |
-| **Vite Production Build (45 modules)** | 4.96 s | **3.10 s** | **37% faster** |
+COMMANDS:
+  dev                   Start development server with live HMR
+  build                 Compile and bundle project for production
+  preview               Preview production build locally
+  run <file.hs> [args]  Execute HydraScript script in memory
+  watch [dir]           Watch directory and recompile on change
+  check <file.hsx>      Parse and validate syntax without emitting
+  repl                  Start interactive HydraScript REPL session
+  --version, -v         Display compiler version information
+  --help, -h            Display help information
 
-* Binary Size: ~756 KB release executable (`strip` enabled, LTO level 3).
-* Runtime Footprint: 0 KB runtime tax. The compiled output uses standard React primitives directly.
+ENVIRONMENT VARIABLES:
+  HYDRA_NATIVE          Explicit path to hydra.node addon
+  HYDRA_COMPILER        Explicit path to hydra CLI binary
+```
 
 ---
 
-## Installation & Setup
+## Production Deployment
 
-### Building from Source
-Ensure Rust (1.80+) and Cargo are installed:
+### Static Hosting
+For Vercel, Netlify, Cloudflare Pages, or GitHub Pages:
 
 ```bash
-git clone https://github.com/hanxthvy/hydrascript.git
-cd hydrascript/compiler-rs
+# Build static assets
+npm run build # executes 'hydra build'
 
-# Run test suite (248 unit and integration tests)
-cargo test
-
-# Build release binary and Node-API addon
-cargo build --release
-
-# Install binary to path
-cp target/release/hydra /usr/local/bin/hydra
+# Output directory
+dist/
 ```
 
-### Project Quickstart
-Create a new directory with a single `src/main.hsx` and `index.html`:
+Configure your hosting provider:
+* **Build Command**: `hydra build` (or `npm run build`)
+* **Output Directory**: `dist`
 
-```bash
-mkdir my-app && cd my-app
-npm init -y
-npm install react react-dom
+### Docker Container
+A multi-stage Dockerfile for production deployment:
 
-# Start development server
-hydra dev
+```dockerfile
+# [xihanzu-NR]
+FROM node:20-alpine AS builder
+WORKDIR /app
 
-# Build for production
-hydra build
+# Install dependencies
+COPY package*.json hydraconfig.json ./
+RUN npm ci
+
+# Copy source and native tools
+COPY . .
+
+# Build with Hydra
+RUN npx hydra build
+
+FROM nginx:alpine AS runner
+COPY --from=builder /app/dist /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
 ```
 
 ---
 
-## Editor Integration
+## Editor Support
 
-### VS Code Extension
-Syntax highlighting grammar for `.hs` and `.hsx` is located under `editors/vscode`:
+### VS Code
+Syntax highlighting support is provided in `editors/vscode`:
 1. Copy or symlink `editors/vscode` to `~/.vscode/extensions/hydrascript`.
-2. Provides syntax coloring, keyword recognition, and indentation formatting for HydraScript files.
+2. Reload VS Code.
+3. `.hsx` and `.hs` files will display syntax coloring, keyword recognition, and indentation guides.
+
+---
+
+## Contributing & Architectural Roadmap
+
+HydraScript is actively developing toward a v1.0 GA release. Comprehensive architectural plans, including file-based routing and a native language server (`hydra-lsp`), are documented in:
+* [`PRODUCTION_BLUEPRINT.md`](PRODUCTION_BLUEPRINT.md): Architectural roadmap and meta-framework specification.
+* [`CRITIQUE_AND_ROADMAP.md`](CRITIQUE_AND_ROADMAP.md): Detailed compiler diagnostics and edge-case analysis.
+
+To run the compiler test suite locally:
+```bash
+cd compiler-rs
+cargo test
+```
 
 ---
 
 ## License
 
 MIT License. Copyright (c) Reyhan Akhtar Afriansyah (Hanz).
+All rights reserved.
