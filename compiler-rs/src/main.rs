@@ -16,19 +16,19 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn usage() -> String {
     format!(
-        "hydra {VERSION} — Pythonic syntax for React (.hsx) & Node (.hs)\n\
+        "hydra {VERSION} — Pythonic syntax for React (.hyx) & Node (.hys)\n\
          \n\
          USAGE:\n\
          \x20 hydra dev [options]         start Vite dev server\n\
          \x20 hydra build [options]       build for production\n\
          \x20 hydra preview [options]     preview production build\n\
-         \x20 hydra run <file.hs> [args]  execute script directly in memory\n\
+         \x20 hydra run <file.hys> [args] execute script directly in memory\n\
          \x20 hydra repl                  interactive Pythonic REPL\n\
          \x20 hydra watch [dir]           watch directory & recompile on change\n\
-         \x20 hydra <file.hsx>            compile to stdout\n\
-         \x20 hydra <file.hs> -o out.mjs  compile to output file\n\
-         \x20 hydra --json <file.hsx>     emit {{code, map}} JSON\n\
-         \x20 hydra --check <file.hsx>    parse only; exit 1 on error\n\
+         \x20 hydra <file.hyx>            compile to stdout\n\
+         \x20 hydra <file.hys> -o out.mjs compile to output file\n\
+         \x20 hydra --json <file.hyx>     emit {{code, map}} JSON\n\
+         \x20 hydra --check <file.hyx>    parse only; exit 1 on error\n\
          \x20 hydra --stdin [filename]    read source from stdin\n\
          \x20 hydra --version\n\
          \x20 hydra dev|build|preview|run|watch|repl|check|init  project commands\n"
@@ -72,7 +72,7 @@ fn main() -> ExitCode {
             .skip_while(|a| *a != "--stdin")
             .nth(1)
             .cloned()
-            .unwrap_or_else(|| "stdin.hsx".to_string());
+            .unwrap_or_else(|| "stdin.hyx".to_string());
         (buf, name)
     } else {
         let mut positional = Vec::new();

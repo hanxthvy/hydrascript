@@ -122,14 +122,14 @@ export function hydrascriptPlugin(transformWithEsbuild) {
     async transform(source, id) {
       const cleanId = id.split('?')[0];
 
-      if (cleanId.endsWith('.hsx')) {
+      if (cleanId.endsWith('.hyx') || cleanId.endsWith('.hsx')) {
         const res = compile(cleanId, source);
         if (res.error) {
           this.error(res.error);
           return null;
         }
 
-        const js = await transformWithEsbuild(res.code, cleanId.replace(/\.hsx$/, '.tsx'), {
+        const js = await transformWithEsbuild(res.code, cleanId.replace(/\.(hyx|hsx)$/, '.tsx'), {
           loader: 'tsx',
           jsx: 'automatic',
           sourcemap: true,
@@ -139,14 +139,14 @@ export function hydrascriptPlugin(transformWithEsbuild) {
         return { code: js.code, map: js.map };
       }
 
-      if (cleanId.endsWith('.hs')) {
+      if (cleanId.endsWith('.hys') || cleanId.endsWith('.hs')) {
         const res = compile(cleanId, source);
         if (res.error) {
           this.error(res.error);
           return null;
         }
 
-        const js = await transformWithEsbuild(res.code, cleanId.replace(/\.hs$/, '.js'), {
+        const js = await transformWithEsbuild(res.code, cleanId.replace(/\.(hys|hs)$/, '.js'), {
           loader: 'js',
           sourcemap: true,
           sourcefile: cleanId,
@@ -159,7 +159,7 @@ export function hydrascriptPlugin(transformWithEsbuild) {
     },
 
     handleHotUpdate(ctx) {
-      if (ctx.file.endsWith('.hsx') || ctx.file.endsWith('.hs')) {
+      if (ctx.file.endsWith('.hsx') || ctx.file.endsWith('.hs') || ctx.file.endsWith('.hyx') || ctx.file.endsWith('.hys')) {
         cache.delete(ctx.file);
       }
     },
@@ -217,9 +217,9 @@ export async function createViteConfig(configPath) {
   const userTailwind = config.tailwind || {};
   const twContent = Array.from(new Set([
     path.join(cwd, 'index.html'),
-    path.join(cwd, 'src/**/*.{js,ts,jsx,tsx,hs,hsx}'),
+    path.join(cwd, 'src/**/*.{js,ts,jsx,tsx,hys,hyx,hs,hsx}'),
     './index.html',
-    './src/**/*.{hs,hsx}',
+    './src/**/*.{js,ts,jsx,tsx,hys,hyx,hs,hsx}',
     ...(userTailwind.content || []),
   ]));
 
@@ -235,11 +235,13 @@ export async function createViteConfig(configPath) {
     react(),
   ];
 
-  const hydraAlias = fs.existsSync(path.resolve(cwd, 'src/hydra.hs'))
-    ? path.resolve(cwd, 'src/hydra.hs')
-    : (fs.existsSync('/root/projects/hydra/runtime-js/serpent-js.js')
-      ? '/root/projects/hydra/runtime-js/serpent-js.js'
-      : path.resolve(cwd, 'src/hydra.hs'));
+  const hydraAlias = fs.existsSync(path.resolve(cwd, 'src/hydra.hys'))
+    ? path.resolve(cwd, 'src/hydra.hys')
+    : (fs.existsSync(path.resolve(cwd, 'src/hydra.hs'))
+      ? path.resolve(cwd, 'src/hydra.hs')
+      : (fs.existsSync('/root/projects/hydra/runtime-js/serpent-js.js')
+        ? '/root/projects/hydra/runtime-js/serpent-js.js'
+        : path.resolve(cwd, 'src/hydra.hys')));
 
   return {
     root: cwd,
@@ -258,7 +260,7 @@ export async function createViteConfig(configPath) {
         hydra: hydraAlias,
         '@': path.resolve(cwd, 'src'),
       },
-      extensions: ['.mjs', '.js', '.ts', '.jsx', '.tsx', '.json', '.hsx', '.hs'],
+      extensions: ['.mjs', '.js', '.ts', '.jsx', '.tsx', '.json', '.hyx', '.hys', '.hsx', '.hs'],
     },
     build: {
       outDir: config.outputDir || 'dist',

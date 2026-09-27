@@ -14,24 +14,29 @@ const fs = require('node:fs')
 /** Find the compiler binary: bundled first, then the workspace, then PATH. */
 function findCompiler(context) {
   const candidates = [
+    path.join(context.extensionPath, 'bin', 'hydra'),
     path.join(context.extensionPath, 'bin', 'serpent'),
+    ...(vscode.workspace.workspaceFolders ?? []).map((f) =>
+      path.join(f.uri.fsPath, 'compiler-rs', 'target', 'release', 'hydra'),
+    ),
     ...(vscode.workspace.workspaceFolders ?? []).map((f) =>
       path.join(f.uri.fsPath, 'compiler-rs', 'target', 'release', 'serpent'),
     ),
     ...(vscode.workspace.workspaceFolders ?? []).map((f) =>
       path.join(f.uri.fsPath, 'node_modules', 'vite-plugin-serpent', 'bin', 'serpent'),
     ),
+    'hydra',
     'serpent',
   ]
   for (const c of candidates) {
-    if (c === 'serpent' || fs.existsSync(c)) return c
+    if (c === 'hydra' || c === 'serpent' || fs.existsSync(c)) return c
   }
   return null
 }
 
-/** Run `serpent --check` on a document and turn stderr into diagnostics. */
+/** Run `hydra --check` on a document and turn stderr into diagnostics. */
 function diagnose(doc, bin, collection) {
-  if (doc.languageId !== 'hsx' || !bin) return
+  if (!['hyx', 'hys', 'hsx', 'hs'].includes(doc.languageId) || !bin) return
   execFile(bin, ['--check', '--stdin', doc.fileName], { input: doc.getText() }, (err, _out, stderr) => {
     collection.clear()
     if (!err || !stderr) return

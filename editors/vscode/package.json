@@ -1,7 +1,7 @@
 {
   "name": "hydrascript",
-  "displayName": "HydraScript (HSX / HS)",
-  "description": "Syntax highlighting and inline compiler diagnostics for HydraScript (.hsx and .hs)",
+  "displayName": "HydraScript (HYX / HYS)",
+  "description": "Syntax highlighting and inline compiler diagnostics for HydraScript (.hyx, .hys, .hsx, and .hs)",
   "version": "0.1.0",
   "publisher": "hydrascript",
   "license": "MIT",
@@ -9,25 +9,35 @@
     "vscode": "^1.80.0"
   },
   "categories": ["Programming Languages", "Linters"],
-  "keywords": ["react", "python", "hydrascript", "hsx", "hs", "jsx"],
+  "keywords": ["react", "python", "hydrascript", "hyx", "hys", "hsx", "hs", "jsx"],
   "main": "./extension.js",
-  "activationEvents": ["onLanguage:hsx", "onLanguage:hs"],
+  "activationEvents": ["onLanguage:hyx", "onLanguage:hys", "onLanguage:hsx", "onLanguage:hs"],
   "contributes": {
     "languages": [
       {
-        "id": "hsx",
-        "aliases": ["HydraScript (React)", "hsx"],
-        "extensions": [".hsx"],
+        "id": "hyx",
+        "aliases": ["Hydra JSX", "HydraScript (React)", "hyx", "hsx"],
+        "extensions": [".hyx", ".hsx"],
         "configuration": "./language-configuration.json"
       },
       {
-        "id": "hs",
-        "aliases": ["HydraScript (Script)", "hs", "hx"],
-        "extensions": [".hs", ".hx"],
+        "id": "hys",
+        "aliases": ["Hydra Script", "HydraScript (Script)", "hys", "hs", "hx"],
+        "extensions": [".hys", ".hs", ".hx"],
         "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
+      {
+        "language": "hyx",
+        "scopeName": "source.hsx",
+        "path": "./syntaxes/hsx.tmLanguage.json"
+      },
+      {
+        "language": "hys",
+        "scopeName": "source.hsx",
+        "path": "./syntaxes/hsx.tmLanguage.json"
+      },
       {
         "language": "hsx",
         "scopeName": "source.hsx",

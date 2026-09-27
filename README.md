@@ -14,12 +14,14 @@ A native Rust compiler, zero-IPC Node-API runtime, and zero-config meta-framewor
 - [Design Philosophy](#design-philosophy)
 - [Why HydraScript: Pain Points in Vanilla TSX](#why-hydrascript-pain-points-in-vanilla-tsx)
 - [Syntax & Feature Matrix](#syntax--feature-matrix)
-- [Comprehensive Code Showcases](#comprehensive-code-showcases)
-  - [1. Reactive Component with State and Events](#1-reactive-component-with-state-and-events)
-  - [2. Multi-Branch Conditionals & Pattern Matching](#2-multi-branch-conditionals--pattern-matching)
-  - [3. Dynamic Classes & Event Modifiers](#3-dynamic-classes--event-modifiers)
-  - [4. Pure Application Entrypoint (`src/main.hsx`)](#4-pure-application-entrypoint-srcmainhsx)
-  - [5. Backend and Script Logic (`.hs` / `.hx`)](#5-backend-and-script-logic-hs--hx)
+- [Side-by-Side Syntax Comparisons](#side-by-side-syntax-comparisons)
+  - [1. Basic Component Declaration & Auto-Fragment](#1-basic-component-declaration--auto-fragment)
+  - [2. Reactive State & Side Effects](#2-reactive-state--side-effects)
+  - [3. Multi-Branch Conditionals & Pattern Matching](#3-multi-branch-conditionals--pattern-matching)
+  - [4. Dynamic Classes & Event Modifiers](#4-dynamic-classes--event-modifiers)
+  - [5. Collection Iteration & Key Props](#5-collection-iteration--key-props)
+  - [6. Application Entrypoint (`src/main.hyx`)](#6-application-entrypoint-srcmainhyx)
+  - [7. Backend Logic & Slicing (`.hys` vs `.ts`)](#7-backend-logic--slicing-hys-vs-ts)
 - [Meta-Framework Mode](#meta-framework-mode)
   - [CLI Commands](#cli-commands)
   - [Zero-Config Architecture](#zero-config-architecture)
@@ -48,7 +50,7 @@ A native Rust compiler, zero-IPC Node-API runtime, and zero-config meta-framewor
 HydraScript is an indentation-based language and complete web meta-framework that combines the conciseness, visual clarity, and readability of Python with the power and ubiquity of the React and JavaScript ecosystems.
 
 The project consists of three core components:
-1. **The Native Compiler (`compiler-rs`)**: A self-contained binary written in pure Rust that compiles `.hsx` files to React TypeScript/JSX and `.hs` files to clean ES Modules in sub-millisecond times.
+1. **The Native Compiler (`compiler-rs`)**: A self-contained binary written in pure Rust that compiles `.hyx` files (legacy: `.hsx`) to React TypeScript/JSX and `.hys` files (legacy: `.hs`, `.hx`) to clean ES Modules in sub-millisecond times.
 2. **The In-Memory Node-API Bridge (`hydra.node`)**: A native C-ABI shared library allowing bundlers and dev servers to call the compiler in-memory without spawning child processes.
 3. **The Standalone Meta-Framework CLI (`packages/cli`)**: An integrated runner that wraps Vite, Tailwind CSS, and Autoprefixer programmatically, eliminating the need for `vite.config.ts`, `tailwind.config.ts`, or `tsconfig.json` in user projects.
 
@@ -57,7 +59,7 @@ The project consists of three core components:
 ## Design Philosophy
 
 ### 1. Zero Runtime Tax
-HydraScript introduces zero proprietary client-side runtimes. The code you write in `.hsx` compiles directly to idiomatic React 18/19 components, JSX calls, and native browser hooks. There is no virtual machine, no interpreter overhead, and zero extra kilobytes sent to the user's browser.
+HydraScript introduces zero proprietary client-side runtimes. The code you write in `.hyx` compiles directly to idiomatic React 18/19 components, JSX calls, and native browser hooks. There is no virtual machine, no interpreter overhead, and zero extra kilobytes sent to the user's browser.
 
 ### 2. Syntax-Level Elimination of Boilerplate
 JSX requires developers to navigate opening and closing tags, double-curly braces for attribute interpolation, template literals for dynamic class names, and nested ternary chains for multi-branch rendering. HydraScript replaces this with clean Pythonic indentation, f-strings, list comprehensions, native dictionaries, and block-level control flow.
@@ -69,7 +71,7 @@ Modern web development often requires 5-8 configuration files before writing a s
 
 ## Why HydraScript: Pain Points in Vanilla TSX
 
-| Area | Vanilla TSX / React | HydraScript (`.hsx` / `.hs`) |
+| Area | Vanilla TSX / React | HydraScript (`.hyx` / `.hys`, legacy `.hsx` / `.hs`) |
 |---|---|---|
 | **Element Hierarchy** | Closing tags required (`<div><header><h1></h1></header></div>`) | Clean indentation-based blocks (`div: header: h1: ...`) |
 | **Multi-Branch Rendering** | Nested ternaries (`a ? <B/> : c ? <D/> : <E/>`) | Pythonic `if / elif / else` inside UI trees |
@@ -160,7 +162,7 @@ export function UserBadge({ name, role = 'Member', isOnline = false }: UserBadge
 }
 ```
 
-#### HydraScript (`.hsx`)
+#### HydraScript (`.hyx`, legacy `.hsx`)
 ```python
 # [xihanzu-NR]
 component UserBadge(name: str, role: str = "Member", is_online: bool = False):
@@ -201,7 +203,7 @@ export function Counter({ initialCount = 0, step = 1 }: { initialCount?: number;
 }
 ```
 
-#### HydraScript (`.hsx`)
+#### HydraScript (`.hyx`, legacy `.hsx`)
 ```python
 # [xihanzu-NR]
 from hydra import state, effect
@@ -262,7 +264,7 @@ export function StatusPanel({ status, loadAverage }: { status: string; loadAvera
 }
 ```
 
-#### HydraScript (`.hsx`)
+#### HydraScript (`.hyx`, legacy `.hsx`)
 ```python
 # [xihanzu-NR]
 component StatusPanel(status: str, load_average: float):
@@ -314,7 +316,7 @@ export function ContactModal({ onSubmit, isOpen = false, isSubmitting = false })
 }
 ```
 
-#### HydraScript (`.hsx`)
+#### HydraScript (`.hyx`, legacy `.hsx`)
 ```python
 # [xihanzu-NR]
 component ContactModal(on_submit, is_open: bool = False, is_submitting: bool = False):
@@ -345,7 +347,7 @@ export function AlertList({ alerts }: { alerts: Array<{ id: string; message: str
 }
 ```
 
-#### HydraScript (`.hsx`)
+#### HydraScript (`.hyx`, legacy `.hsx`)
 ```python
 # [xihanzu-NR]
 component AlertList(alerts: list):
@@ -357,7 +359,7 @@ component AlertList(alerts: list):
 
 ---
 
-### 6. Application Entrypoint
+### 6. Application Entrypoint (`src/main.hyx`)
 
 #### Vanilla TSX (`src/main.tsx`)
 ```tsx
@@ -374,11 +376,11 @@ root.render(
 );
 ```
 
-#### HydraScript (`src/main.hsx`)
+#### HydraScript (`src/main.hyx`)
 ```python
 # [xihanzu-NR]
 from "react-dom/client" import createRoot
-from "./App.hsx" import App
+from "./App.hyx" import App
 import "./index.css"
 
 root_element = document.getElementById("root")
@@ -387,7 +389,7 @@ createRoot(root_element).render(App())
 
 ---
 
-### 7. Backend Logic & Slicing (`.hs` vs `.ts`)
+### 7. Backend Logic & Slicing (`.hys` vs `.ts`)
 
 #### Vanilla TypeScript (`src/utils.ts`)
 ```typescript
@@ -408,7 +410,7 @@ export async function processLogs(dir: string, maxItems: number) {
 }
 ```
 
-#### HydraScript (`src/utils.hs`)
+#### HydraScript (`src/utils.hys`)
 ```python
 # [xihanzu-NR]
 from "node:fs/promises" import readFile, writeFile
@@ -437,7 +439,7 @@ Hydra includes an in-memory application runner that integrates Vite, Rollup, Pos
 * `hydra dev`: Starts the local development server with Hot Module Replacement (HMR).
 * `hydra build`: Runs a production build with asset hashing, dead-code elimination, and CSS minification.
 * `hydra preview`: Starts a local HTTP server serving the compiled production output (`dist/`).
-* `hydra run <file.hs>`: Executes a HydraScript logic file in-memory using Node or Bun.
+* `hydra run <file.hys>`: Executes a HydraScript logic file in-memory using Node or Bun (legacy `.hs` supported).
 
 ### Zero-Config Architecture
 When `hydra dev` or `hydra build` runs in a directory containing `hydraconfig.json`:
@@ -445,7 +447,7 @@ When `hydra dev` or `hydra build` runs in a directory containing `hydraconfig.js
 2. The runner dynamically loads Vite and plugins from the local project's `node_modules`.
 3. In-memory configuration sets `configFile: false`, preventing Vite from looking for `vite.config.ts`.
 4. Tailwind and Autoprefixer are configured in-memory using settings from `hydraconfig.json`.
-5. The native Node-API addon (`hydra.node`) handles all `.hsx` and `.hs` transformations.
+5. The native Node-API addon (`hydra.node`) handles all `.hyx` and `.hys` transformations (with backwards compatibility for legacy `.hsx` and `.hs`).
 
 ### Configuration Reference (`hydraconfig.json`)
 
@@ -492,7 +494,7 @@ When `hydra dev` or `hydra build` runs in a directory containing `hydraconfig.js
 ### Pipeline Flow
 
 ```
-                      [ Source: .hsx / .hs ]
+                 [ Source: .hyx / .hys (legacy: .hsx / .hs) ]
                                  │
                                  ▼
                      [ Lexer (lexer.rs) ]
@@ -508,7 +510,8 @@ When `hydra dev` or `hydra build` runs in a directory containing `hydraconfig.js
                                  │
                  ┌───────────────┴───────────────┐
                  ▼                               ▼
-       Target: React (.hsx)             Target: JS (.hs)
+       Target: React (.hyx)             Target: JS (.hys)
+     (Legacy: .hsx)                   (Legacy: .hs / .hx)
    TSX Components, Props Mapping     Clean ES Modules Output
                  │                               │
                  └───────────────┬───────────────┘
@@ -582,7 +585,7 @@ The compiler recognizes built-in JavaScript globals and ensures calls to their m
 from "react" import useState, useEffect
 
 # Default / named import from local component
-from "./Header.hsx" import Header
+from "./Header.hyx" import Header
 
 # Namespace import
 import "three" as THREE
@@ -612,9 +615,9 @@ COMMANDS:
   dev                   Start development server with live HMR
   build                 Compile and bundle project for production
   preview               Preview production build locally
-  run <file.hs> [args]  Execute HydraScript script in memory
+  run <file.hys> [args] Execute HydraScript script in memory (legacy .hs supported)
   watch [dir]           Watch directory and recompile on change
-  check <file.hsx>      Parse and validate syntax without emitting
+  check <file.hyx>      Parse and validate syntax without emitting
   repl                  Start interactive HydraScript REPL session
   --version, -v         Display compiler version information
   --help, -h            Display help information
@@ -676,7 +679,7 @@ cp target/release/hydra /usr/local/bin/hydra
 npm install react react-dom
 npm install -D hanxthvy/hydrascript
 
-# Create your entrypoint in src/main.hsx and run:
+# Create your entrypoint in src/main.hyx and run:
 npx hydra dev
 ```
 
@@ -731,7 +734,7 @@ CMD ["nginx", "-g", "daemon off;"]
 Syntax highlighting support is provided in `editors/vscode`:
 1. Copy or symlink `editors/vscode` to `~/.vscode/extensions/hydrascript`.
 2. Reload VS Code.
-3. `.hsx` and `.hs` files will display syntax coloring, keyword recognition, and indentation guides.
+3. `.hyx`, `.hys`, and legacy `.hsx`/`.hs` files will display syntax coloring, keyword recognition, and indentation guides.
 
 ---
 

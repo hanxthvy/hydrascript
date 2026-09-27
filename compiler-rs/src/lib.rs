@@ -18,16 +18,18 @@ pub use error::CompileError;
 /// Which output language to emit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
-    /// `.hsx` -> React TSX (components, JSX trees, prop renaming).
+    /// `.hyx` / `.hsx` -> React TSX (components, JSX trees, prop renaming).
     React,
-    /// `.hx` -> plain JavaScript (functions, scripts, no component tree).
+    /// `.hys` / `.hs` / `.hx` -> plain JavaScript (functions, scripts, no component tree).
     Js,
 }
 
-/// Pick the target from a filename's extension. `.hs` and `.hx` are JS;
-/// `.hsx` is React TSX. Everything else defaults to React.
+/// Pick the target from a filename's extension.
+/// `.hys`, `.hs`, and `.hx` compile to plain JS.
+/// `.hyx` and `.hsx` compile to React TSX.
+/// Everything else defaults to React for backwards compatibility.
 pub fn target_for(filename: &str) -> Target {
-    if filename.ends_with(".hs") || filename.ends_with(".hx") {
+    if filename.ends_with(".hys") || filename.ends_with(".hs") || filename.ends_with(".hx") {
         Target::Js
     } else {
         Target::React
@@ -60,5 +62,20 @@ pub fn compile_for(src: &str, filename: &str, target: Target) -> Result<(String,
             let map = em.sourcemap(filename, src);
             Ok((code, map))
         }
+    }
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::*;
+
+    #[test]
+    fn test_target_for_extensions() {
+        assert_eq!(target_for("app.hyx"), Target::React);
+        assert_eq!(target_for("app.hsx"), Target::React);
+        assert_eq!(target_for("logic.hys"), Target::Js);
+        assert_eq!(target_for("logic.hs"), Target::Js);
+        assert_eq!(target_for("logic.hx"), Target::Js);
+        assert_eq!(target_for("fallback.txt"), Target::React);
     }
 }

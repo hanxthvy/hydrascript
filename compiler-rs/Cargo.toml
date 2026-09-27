@@ -1,8 +1,9 @@
+# [xihanzu-NR]
 [package]
 name = "hydra"
 version = "0.1.0"
 edition = "2021"
-description = "HydraScript compiler: Pythonic syntax for React (.hsx) and Node (.hs)"
+description = "HydraScript compiler: Pythonic syntax for React (.hyx) and Node (.hys)"
 license = "MIT"
 
 [lib]
