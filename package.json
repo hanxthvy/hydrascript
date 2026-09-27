@@ -25,6 +25,12 @@
   ],
   "author": "Reyhan Akhtar Afriansyah (Hanz)",
   "license": "MIT",
+  "dependencies": {
+    "autoprefixer": "^10.4.20",
+    "esbuild": "^0.25.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.16"
+  },
   "scripts": {
     "build:compiler": "cd compiler-rs && cargo build --release && cp target/release/hydra ../bin/hydra && cp target/release/libhydra.so ../bin/hydra.node",
     "test": "cd compiler-rs && cargo test"
