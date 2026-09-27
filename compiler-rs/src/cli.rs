@@ -11,17 +11,89 @@ use std::time::Instant;
 
 use crate::compile;
 
+fn find_hydraconfig() -> Option<PathBuf> {
+    let mut current = std::env::current_dir().ok()?;
+    loop {
+        let candidate = current.join("hydraconfig.json");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if !current.pop() {
+            break;
+        }
+    }
+    None
+}
+
+fn spawn_runner(cmd: &str, args: &[String]) -> ExitCode {
+    let runner_path = "/root/projects/hydra/packages/cli/runner.mjs";
+    let mut command = std::process::Command::new("node");
+    command
+        .arg(runner_path)
+        .arg(cmd)
+        .args(args)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit());
+
+    match command.spawn().and_then(|mut c| c.wait()) {
+        Ok(status) => {
+            if let Some(code) = status.code() {
+                ExitCode::from(code as u8)
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Err(e) => {
+            eprintln!("hydra: execution error: {}", e);
+            ExitCode::from(1)
+        }
+    }
+}
+
+pub fn dev_cmd(args: &[String]) -> ExitCode {
+    let has_help = args.iter().any(|a| a == "--help" || a == "-h");
+    if find_hydraconfig().is_some() || has_help {
+        spawn_runner("dev", args)
+    } else {
+        watch(args)
+    }
+}
+
+pub fn build_cmd(args: &[String]) -> ExitCode {
+    let has_help = args.iter().any(|a| a == "--help" || a == "-h");
+    if find_hydraconfig().is_some() {
+        spawn_runner("build", args)
+    } else if has_help {
+        spawn_runner("build", args)
+    } else {
+        build(args)
+    }
+}
+
+pub fn preview_cmd(args: &[String]) -> ExitCode {
+    let has_help = args.iter().any(|a| a == "--help" || a == "-h");
+    if find_hydraconfig().is_some() || has_help {
+        spawn_runner("preview", args)
+    } else {
+        eprintln!("hydra: preview requires hydraconfig.json");
+        ExitCode::from(1)
+    }
+}
+
 pub fn run(args: &[String]) -> ExitCode {
     match args.first().map(|s| s.as_str()) {
         Some("run") => run_script(&args[1..]),
-        Some("build") => build(&args[1..]),
+        Some("dev") => dev_cmd(&args[1..]),
+        Some("build") => build_cmd(&args[1..]),
+        Some("preview") => preview_cmd(&args[1..]),
         Some("watch") => watch(&args[1..]),
         Some("check") => check(&args[1..]),
         Some("init") => init(&args[1..]),
         Some("repl") => repl(),
         Some(other) => {
             eprintln!("hydra: unknown command {:?}", other);
-            eprintln!("try: hydra run | build | watch | repl | check | init | --help");
+            eprintln!("try: hydra dev | build | preview | run | watch | repl | check | init | --help");
             ExitCode::from(2)
         }
         None => repl(),

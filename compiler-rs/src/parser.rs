@@ -75,6 +75,16 @@ impl Parser {
         Ok(self.eat(TokType::Ident)?.value.clone())
     }
 
+    fn ident_or_kw(&mut self) -> PResult<String> {
+        if matches!(self.cur().ty, TokType::Ident | TokType::Kw(_)) {
+            let s = self.cur().value.clone();
+            self.i += 1;
+            Ok(s)
+        } else {
+            self.ident()
+        }
+    }
+
     /// Skip newlines/indent/dedent tokens that appear inside a bracket pair.
     ///
     /// Python makes newlines insignificant inside `()`, `[]` and `{}`. We do the
@@ -156,7 +166,12 @@ impl Parser {
             TokType::Kw("type") => return self.type_alias(),
             TokType::Kw("return") => {
                 self.i += 1;
-                return Ok(Node::new(Kind::Return(Box::new(self.expr()?)), t.line, t.col));
+                let val = if matches!(self.cur().ty, TokType::Newline | TokType::Dedent | TokType::Eof) {
+                    None
+                } else {
+                    Some(Box::new(self.expr()?))
+                };
+                return Ok(Node::new(Kind::Return(val), t.line, t.col));
             }
             TokType::Kw("if") => return self.if_stmt(),
             TokType::Kw("for") => return self.for_stmt(),
@@ -214,10 +229,29 @@ impl Parser {
 
     fn import(&mut self) -> PResult<Node> {
         let t = self.eat(TokType::Kw("import"))?.clone();
-        let mut names = vec![self.ident()?];
+        if self.cur().ty == TokType::String {
+            let raw = self.cur().value.clone();
+            self.i += 1;
+            let mod_name = raw[1..raw.len() - 1].to_string();
+            if self.cur().ty == TokType::Kw("as") {
+                self.i += 1;
+                let alias = self.ident_or_kw()?;
+                return Ok(Node::new(
+                    Kind::Import { from: Some(mod_name), names: vec![format!("* as {}", alias)] },
+                    t.line,
+                    t.col,
+                ));
+            }
+            return Ok(Node::new(
+                Kind::Import { from: Some(mod_name), names: Vec::new() },
+                t.line,
+                t.col,
+            ));
+        }
+        let mut names = vec![self.ident_or_kw()?];
         while self.cur().ty == TokType::Comma {
             self.i += 1;
-            names.push(self.ident()?);
+            names.push(self.ident_or_kw()?);
         }
         Ok(Node::new(Kind::Import { from: None, names }, t.line, t.col))
     }
@@ -392,7 +426,7 @@ impl Parser {
             } else {
                 ""
             };
-            let ident = self.ident()?;
+            let ident = self.ident_or_kw()?;
             let name = format!("{}{}", prefix, ident);
             let mut ty = None;
             if self.cur().ty == TokType::Colon {
@@ -935,7 +969,7 @@ impl Parser {
                 TokType::LParen => n = self.call(n)?,
                 TokType::Dot => {
                     self.i += 1;
-                    let name = self.ident()?;
+                    let name = self.ident_or_kw()?;
                     let (line, col) = (n.line, n.col);
                     n = Node::new(Kind::Attr { obj: Box::new(n), name }, line, col);
                 }
@@ -948,7 +982,7 @@ impl Parser {
                         let (line, col) = (n.line, n.col);
                         n = Node::new(Kind::OptIndex { obj: Box::new(n), index: Box::new(idx) }, line, col);
                     } else {
-                        let name = self.ident()?;
+                        let name = self.ident_or_kw()?;
                         let (line, col) = (n.line, n.col);
                         n = Node::new(Kind::OptAttr { obj: Box::new(n), name }, line, col);
                     }
@@ -1003,11 +1037,11 @@ impl Parser {
             if self.cur().ty == TokType::Op && (self.cur().value == "*" || self.cur().value == "**") {
                 self.i += 1;
                 args.push(Node::new(Kind::Spread(Box::new(self.expr()?)), line, col));
-            } else if self.cur().ty == TokType::Ident
+            } else if (self.cur().ty == TokType::Ident || matches!(self.cur().ty, TokType::Kw(_)))
                 && self.peek(1).ty == TokType::Op
                 && self.peek(1).value == "="
             {
-                let key = self.ident()?;
+                let key = self.ident_or_kw()?;
                 self.i += 1; // '='
                 kwargs.push((key, self.expr()?));
             } else {
@@ -1065,7 +1099,7 @@ impl Parser {
                 let mut defaults = Vec::new();
                 if self.cur().ty != TokType::Colon {
                     loop {
-                        let pname = self.ident()?;
+                        let pname = self.ident_or_kw()?;
                         // `lambda m=mode: ...` — Python's early-binding default.
                         // This is the idiom that makes a lambda inside a `for`
                         // capture the CURRENT value instead of the last one.
@@ -1695,7 +1729,28 @@ mod tests {
     #[test]
     fn return_statement_parses() {
         match &body("component A():\n    def go():\n        return 1\n")[0].kind {
-            Kind::Def { body, .. } => assert!(matches!(body[0].kind, Kind::Return(_))),
+            Kind::Def { body, .. } => assert!(matches!(body[0].kind, Kind::Return(Some(_)))),
+            other => panic!("got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bare_return_statement_parses() {
+        match &body("component A():\n    def go():\n        return\n")[0].kind {
+            Kind::Def { body, .. } => assert!(matches!(body[0].kind, Kind::Return(None))),
+            other => panic!("got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn keyword_kwargs_parse() {
+        match first_expr("component A():\n    button(type=\"button\", as=\"div\", for=\"id\")\n").kind {
+            Kind::Call { kwargs, .. } => {
+                assert_eq!(kwargs.len(), 3);
+                assert_eq!(kwargs[0].0, "type");
+                assert_eq!(kwargs[1].0, "as");
+                assert_eq!(kwargs[2].0, "for");
+            }
             other => panic!("got {:?}", other),
         }
     }

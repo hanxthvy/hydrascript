@@ -5,6 +5,11 @@ edition = "2021"
 description = "HydraScript compiler: Pythonic syntax for React (.hsx) and Node (.hs)"
 license = "MIT"
 
+[lib]
+name = "hydra"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
 [[bin]]
 name = "hydra"
 path = "src/main.rs"

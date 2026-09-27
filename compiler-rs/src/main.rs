@@ -19,6 +19,9 @@ fn usage() -> String {
         "hydra {VERSION} — Pythonic syntax for React (.hsx) & Node (.hs)\n\
          \n\
          USAGE:\n\
+         \x20 hydra dev [options]         start Vite dev server\n\
+         \x20 hydra build [options]       build for production\n\
+         \x20 hydra preview [options]     preview production build\n\
          \x20 hydra run <file.hs> [args]  execute script directly in memory\n\
          \x20 hydra repl                  interactive Pythonic REPL\n\
          \x20 hydra watch [dir]           watch directory & recompile on change\n\
@@ -28,7 +31,7 @@ fn usage() -> String {
          \x20 hydra --check <file.hsx>    parse only; exit 1 on error\n\
          \x20 hydra --stdin [filename]    read source from stdin\n\
          \x20 hydra --version\n\
-         \x20 hydra run|build|watch|repl|check|init  project commands\n"
+         \x20 hydra dev|build|preview|run|watch|repl|check|init  project commands\n"
     )
 }
 
@@ -46,7 +49,7 @@ fn main() -> ExitCode {
         print!("{}", usage());
         return ExitCode::SUCCESS;
     }
-    if matches!(args[0].as_str(), "build" | "check" | "init" | "run" | "watch" | "repl") {
+    if matches!(args[0].as_str(), "dev" | "build" | "preview" | "check" | "init" | "run" | "watch" | "repl") {
         return hydra::cli::run(&args);
     }
 
