@@ -104,7 +104,7 @@ pub fn run_script(args: &[String]) -> ExitCode {
     let file_arg = match args.iter().find(|a| !a.starts_with('-')) {
         Some(f) => PathBuf::from(f),
         None => {
-            eprintln!("hydra: run requires a script file (e.g. hydra run script.hs)");
+            eprintln!("hydra: run requires a script file (e.g. hydra run script.hys)");
             return ExitCode::from(2);
         }
     };
@@ -115,7 +115,7 @@ pub fn run_script(args: &[String]) -> ExitCode {
 
     let filename = file_arg
         .file_name()
-        .map_or_else(|| "script.hs".into(), |n| n.to_string_lossy().to_string());
+        .map_or_else(|| "script.hys".into(), |n| n.to_string_lossy().to_string());
     let (code, _map) = match compile(&src, &filename) {
         Ok(res) => res,
         Err(e) => {
@@ -200,11 +200,11 @@ fn targets(args: &[String]) -> Vec<PathBuf> {
         return files;
     }
     let mut found = Vec::new();
-    for ext in &["hsx", "hs", "hx"] {
+    for ext in &["hyx", "hys", "hsx", "hs", "hx"] {
         collect(Path::new("src"), ext, &mut found);
     }
     if found.is_empty() {
-        for ext in &["hsx", "hs", "hx"] {
+        for ext in &["hyx", "hys", "hsx", "hs", "hx"] {
             collect(Path::new("."), ext, &mut found);
         }
     }
@@ -224,7 +224,7 @@ fn build(args: &[String]) -> ExitCode {
     let verbose = args.iter().any(|a| a == "-v" || a == "--verbose");
     let files = targets(args);
     if files.is_empty() {
-        eprintln!("hydra: no .hsx, .hs, or .hx files found");
+        eprintln!("hydra: no .hyx, .hys, .hsx, .hs, or .hx files found");
         return ExitCode::from(1);
     }
 
@@ -237,10 +237,10 @@ fn build(args: &[String]) -> ExitCode {
             errors += 1;
             continue;
         };
-        let name = path.file_name().map_or_else(|| "out.hsx".into(), |n| n.to_string_lossy().to_string());
+        let name = path.file_name().map_or_else(|| "out.hyx".into(), |n| n.to_string_lossy().to_string());
         match compile(&src, &name) {
             Ok((code, map)) => {
-                let is_js = path.extension().map_or(false, |x| x == "hs" || x == "hx");
+                let is_js = path.extension().map_or(false, |x| x == "hys" || x == "hs" || x == "hx");
                 let out_ext = if is_js { "mjs" } else { "tsx" };
                 let out_file = path.with_extension(out_ext);
                 let map_path = path.with_extension(format!("{}.map", out_ext));
@@ -305,10 +305,10 @@ pub fn watch(args: &[String]) -> ExitCode {
                 mtimes.insert(path.clone(), m);
                 let t0 = Instant::now();
                 if let Ok(src) = fs::read_to_string(path) {
-                    let name = path.file_name().map_or_else(|| "out.hsx".into(), |n| n.to_string_lossy().to_string());
+                    let name = path.file_name().map_or_else(|| "out.hyx".into(), |n| n.to_string_lossy().to_string());
                     match compile(&src, &name) {
                         Ok((code, map)) => {
-                            let is_js = path.extension().map_or(false, |x| x == "hs" || x == "hx");
+                            let is_js = path.extension().map_or(false, |x| x == "hys" || x == "hs" || x == "hx");
                             let out_ext = if is_js { "mjs" } else { "tsx" };
                             let out_file = path.with_extension(out_ext);
                             let map_path = path.with_extension(format!("{}.map", out_ext));
@@ -356,12 +356,12 @@ pub fn repl() -> ExitCode {
                 // Statement first: if it compiles as-is, run it directly.
                 // Otherwise wrap in print() to auto-display expression results.
                 let as_stmt = format!("{}\n", trimmed);
-                let to_compile = match compile(&as_stmt, "repl.hs") {
+                let to_compile = match compile(&as_stmt, "repl.hys") {
                     Ok(_) => {
                         // Check if it's a pure expression (not assignment/import/def/etc)
                         // by also trying print() — if both work, prefer print() for display
                         let as_expr = format!("print({})\n", trimmed);
-                        match compile(&as_expr, "repl.hs") {
+                        match compile(&as_expr, "repl.hys") {
                             Ok(_) => {
                                 // Both compile. Use print() only if stmt was ExprStmt
                                 // (no `=` outside strings, no keywords at start)
@@ -391,7 +391,7 @@ pub fn repl() -> ExitCode {
                     }
                 };
 
-                match compile(&to_compile, "repl.hs") {
+                match compile(&to_compile, "repl.hys") {
                     Ok((code, _)) => {
                         let node_res = std::process::Command::new("node")
                             .arg("--input-type=module")
@@ -429,7 +429,7 @@ fn check(args: &[String]) -> ExitCode {
     let mut errors = 0usize;
     for path in &files {
         let Ok(src) = fs::read_to_string(path) else { continue };
-        let name = path.file_name().map_or_else(|| "out.hsx".into(), |n| n.to_string_lossy().to_string());
+        let name = path.file_name().map_or_else(|| "out.hyx".into(), |n| n.to_string_lossy().to_string());
         if let Err(e) = compile(&src, &name) {
             eprintln!("{}", e.pretty());
             errors += 1;
@@ -492,7 +492,7 @@ fn init(args: &[String]) -> ExitCode {
             ),
         ),
         (
-            src.join("App.hsx"),
+            src.join("App.hyx"),
             r#"# [xihanzu-NR]
 from serpent import state
 
@@ -543,7 +543,7 @@ component App():
             r#"// [xihanzu-NR]
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { App } from './App.hsx'
+import { App } from './App.hyx'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

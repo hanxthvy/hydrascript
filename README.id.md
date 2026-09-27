@@ -14,12 +14,14 @@ Kompiler native berbasis Rust, runtime Node-API in-memory bebas IPC, dan meta-fr
 - [Filosofi Desain](#filosofi-desain)
 - [Mengapa HydraScript: Masalah Kronis pada Vanilla TSX](#mengapa-hydrascript-masalah-kronis-pada-vanilla-tsx)
 - [Matriks Sintaks & Fitur](#matriks-sintaks--fitur)
-- [Contoh Kode Lengkap](#contoh-kode-lengkap)
-  - [1. Komponen Reaktif dengan State dan Event](#1-komponen-reaktif-dengan-state-dan-event)
-  - [2. Percabangan Multi-Branch & Pattern Matching](#2-percabangan-multi-branch--pattern-matching)
-  - [3. Dynamic Classes & Event Modifiers](#3-dynamic-classes--event-modifiers)
-  - [4. Entrypoint Aplikasi Murni (`src/main.hsx`)](#4-entrypoint-aplikasi-murni-srcmainhsx)
-  - [5. Logika Backend dan Scripting (`.hs` / `.hx`)](#5-logika-backend-dan-scripting-hs--hx)
+- [Komparasi Sintaks Berdampingan (Side-by-Side)](#komparasi-sintaks-berdampingan-side-by-side)
+  - [1. Deklarasi Komponen Dasar & Auto-Fragment](#1-deklarasi-komponen-dasar--auto-fragment)
+  - [2. State Reaktif & Side Effects](#2-state-reaktif--side-effects)
+  - [3. Percabangan Multi-Branch & Pattern Matching](#3-percabangan-multi-branch--pattern-matching)
+  - [4. Dynamic Classes & Event Modifiers](#4-dynamic-classes--event-modifiers)
+  - [5. Iterasi Koleksi & Key Props](#5-iterasi-koleksi--key-props)
+  - [6. Entrypoint Aplikasi Browser (`src/main.hyx`)](#6-entrypoint-aplikasi-browser-srcmainhyx)
+  - [7. Logika Backend & Slicing (`.hys` vs `.ts`)](#7-logika-backend--slicing-hys-vs-ts)
 - [Mode Meta-Framework](#mode-meta-framework)
   - [Perintah CLI](#perintah-cli)
   - [Arsitektur Zero-Config](#arsitektur-zero-config)
@@ -48,7 +50,7 @@ Kompiler native berbasis Rust, runtime Node-API in-memory bebas IPC, dan meta-fr
 HydraScript adalah bahasa pemrograman berbasis indentasi dan meta-framework web lengkap yang memadukan kebersihan visual, keringkasan, dan keterbacaan sintaks Python dengan kekuatan ekosistem React dan JavaScript modern.
 
 Proyek ini terdiri dari tiga pilar arsitektur utama:
-1. **Kompiler Native (`compiler-rs`)**: Biner mandiri dalam bahasa Rust murni yang mentranspilasikan berkas `.hsx` ke React TypeScript/JSX dan berkas `.hs` ke modul ES standar dalam waktu sub-milidetik.
+1. **Kompiler Native (`compiler-rs`)**: Biner mandiri dalam bahasa Rust murni yang mentranspilasikan berkas `.hyx` (warisan: `.hsx`) ke React TypeScript/JSX dan berkas `.hys` (warisan: `.hs`, `.hx`) ke modul ES standar dalam waktu sub-milidetik.
 2. **Bridge Node-API In-Memory (`hydra.node`)**: Pustaka dinamis (C-ABI) yang memungkinkan dev server dan bundler memanggil kompiler langsung di memori RAM tanpa overhead spawn proses OS (`fork/exec`).
 3. **CLI Meta-Framework Mandiri (`packages/cli`)**: Runner terintegrasi yang membungkus Vite, Tailwind CSS, dan Autoprefixer secara programatik, menghapus kebutuhan berkas `vite.config.ts`, `tailwind.config.ts`, atau `tsconfig.json` di proyek pengguna.
 
@@ -57,7 +59,7 @@ Proyek ini terdiri dari tiga pilar arsitektur utama:
 ## Filosofi Desain
 
 ### 1. Nol Beban Runtime (Zero Runtime Tax)
-HydraScript tidak menyematkan runtime virtual machine khusus pada browser pengguna. Kode `.hsx` dikompilasi langsung menjadi komponen React 18/19 standar, pemanggilan JSX murni, dan hooks bawaan browser. Tidak ada overhead interpretasi dan tidak ada payload kilobyte tambahan yang dikirim ke browser.
+HydraScript tidak menyematkan runtime virtual machine khusus pada browser pengguna. Kode `.hyx` dikompilasi langsung menjadi komponen React 18/19 standar, pemanggilan JSX murni, dan hooks bawaan browser. Tidak ada overhead interpretasi dan tidak ada payload kilobyte tambahan yang dikirim ke browser.
 
 ### 2. Eliminasi Boilerplate pada Tingkat Sintaks
 JSX mewajibkan pengembang menulis tag penutup berulang, kurung kurawal ganda untuk objek properti, template string rumit untuk nama kelas dinamis, dan rantai ternary operator berjenjang. HydraScript menggantikannya dengan blok indentasi bersih khas Python, f-strings, list comprehensions, kamus (dict) native, dan percabangan tingkat blok.
@@ -69,7 +71,7 @@ Pengembangan web modern seringkali menuntut 5 hingga 8 berkas konfigurasi sebelu
 
 ## Mengapa HydraScript: Masalah Kronis pada Vanilla TSX
 
-| Aspek | Vanilla TSX / React | HydraScript (`.hsx` / `.hs`) |
+| Aspek | Vanilla TSX / React | HydraScript (`.hyx` / `.hys`, warisan `.hsx` / `.hs`) |
 |---|---|---|
 | **Hierarki Elemen** | Wajib tag pembuka & penutup (`<div><header><h1></h1></header></div>`) | Blok hierarki berbasis indentasi (`div: header: h1: ...`) |
 | **Percabangan Bersyarat** | Operator ternary bersarang (`a ? <B/> : c ? <D/> : <E/>`) | Pythonic `if / elif / else` langsung di dalam pohon UI |
@@ -160,7 +162,7 @@ export function UserBadge({ name, role = 'Member', isOnline = false }: UserBadge
 }
 ```
 
-#### HydraScript (`.hsx`)
+#### HydraScript (`.hyx`, warisan `.hsx`)
 ```python
 # [xihanzu-NR]
 component UserBadge(name: str, role: str = "Member", is_online: bool = False):
@@ -201,7 +203,7 @@ export function Counter({ initialCount = 0, step = 1 }: { initialCount?: number;
 }
 ```
 
-#### HydraScript (`.hsx`)
+#### HydraScript (`.hyx`, warisan `.hsx`)
 ```python
 # [xihanzu-NR]
 from hydra import state, effect
@@ -262,7 +264,7 @@ export function StatusPanel({ status, loadAverage }: { status: string; loadAvera
 }
 ```
 
-#### HydraScript (`.hsx`)
+#### HydraScript (`.hyx`, warisan `.hsx`)
 ```python
 # [xihanzu-NR]
 component StatusPanel(status: str, load_average: float):
@@ -314,7 +316,7 @@ export function ContactModal({ onSubmit, isOpen = false, isSubmitting = false })
 }
 ```
 
-#### HydraScript (`.hsx`)
+#### HydraScript (`.hyx`, warisan `.hsx`)
 ```python
 # [xihanzu-NR]
 component ContactModal(on_submit, is_open: bool = False, is_submitting: bool = False):
@@ -345,7 +347,7 @@ export function AlertList({ alerts }: { alerts: Array<{ id: string; message: str
 }
 ```
 
-#### HydraScript (`.hsx`)
+#### HydraScript (`.hyx`, warisan `.hsx`)
 ```python
 # [xihanzu-NR]
 component AlertList(alerts: list):
@@ -357,7 +359,7 @@ component AlertList(alerts: list):
 
 ---
 
-### 6. Entrypoint Aplikasi Browser
+### 6. Entrypoint Aplikasi Browser (`src/main.hyx`)
 
 #### Vanilla TSX (`src/main.tsx`)
 ```tsx
@@ -374,11 +376,11 @@ root.render(
 );
 ```
 
-#### HydraScript (`src/main.hsx`)
+#### HydraScript (`src/main.hyx`)
 ```python
 # [xihanzu-NR]
 from "react-dom/client" import createRoot
-from "./App.hsx" import App
+from "./App.hyx" import App
 import "./index.css"
 
 root_element = document.getElementById("root")
@@ -387,7 +389,7 @@ createRoot(root_element).render(App())
 
 ---
 
-### 7. Logika Backend & Slicing (`.hs` vs `.ts`)
+### 7. Logika Backend & Slicing (`.hys` vs `.ts`)
 
 #### Vanilla TypeScript (`src/utils.ts`)
 ```typescript
@@ -408,7 +410,7 @@ export async function processLogs(dir: string, maxItems: number) {
 }
 ```
 
-#### HydraScript (`src/utils.hs`)
+#### HydraScript (`src/utils.hys`)
 ```python
 # [xihanzu-NR]
 from "node:fs/promises" import readFile, writeFile
@@ -426,7 +428,6 @@ async def process_logs(dir: str, max_items: int):
     await writeFile(join(dir, "out.json"), JSON.stringify(result, None, 2), "utf8")
     return result
 ```
-```
 
 ---
 
@@ -438,7 +439,7 @@ Hydra menyertakan runner aplikasi in-memory yang mengintegrasikan Vite, Rollup, 
 * `hydra dev`: Menjalankan development server lokal dengan Hot Module Replacement (HMR) instan.
 * `hydra build`: Mengompilasi seluruh aset, menjalankan dead-code elimination, dan memproduksi bundle siap rilis.
 * `hydra preview`: Menjalankan server HTTP lokal untuk menguji build produksi (`dist/`).
-* `hydra run <file.hs>`: Mengeksekusi berkas logika HydraScript langsung di memori melalui Node atau Bun.
+* `hydra run <file.hys>`: Mengeksekusi berkas logika HydraScript langsung di memori melalui Node atau Bun (mendukung format warisan `.hs`).
 
 ### Arsitektur Zero-Config
 Ketika `hydra dev` atau `hydra build` dijalankan di direktori yang memiliki `hydraconfig.json`:
@@ -446,7 +447,7 @@ Ketika `hydra dev` atau `hydra build` dijalankan di direktori yang memiliki `hyd
 2. Runner memuat Vite dan plugin secara dinamis dari `node_modules` proyek lokal.
 3. Konfigurasi in-memory menetapkan `configFile: false`, mencegah Vite mencari `vite.config.ts`.
 4. Tailwind dan Autoprefixer dikonfigurasi langsung di RAM menggunakan pengaturan dari `hydraconfig.json`.
-5. Modul native Node-API (`hydra.node`) memproses seluruh kompilasi `.hsx` dan `.hs`.
+5. Modul native Node-API (`hydra.node`) memproses seluruh kompilasi `.hyx` dan `.hys` (dengan kompatibilitas mundur untuk format warisan `.hsx` dan `.hs`).
 
 ### Referensi Konfigurasi (`hydraconfig.json`)
 
@@ -493,7 +494,7 @@ Ketika `hydra dev` atau `hydra build` dijalankan di direktori yang memiliki `hyd
 ### Alur Pipeline
 
 ```
-                     [ Berkas Sumber: .hsx / .hs ]
+                [ Berkas Sumber: .hyx / .hys (warisan: .hsx / .hs) ]
                                   │
                                   ▼
                       [ Lexer (lexer.rs) ]
@@ -509,7 +510,8 @@ Ketika `hydra dev` atau `hydra build` dijalankan di direktori yang memiliki `hyd
                                   │
                  ┌────────────────┴────────────────┐
                  ▼                                 ▼
-        Target: React (.hsx)              Target: JS (.hs)
+        Target: React (.hyx)              Target: JS (.hys)
+      (Warisan: .hsx)                   (Warisan: .hs / .hx)
     Komponen TSX, Pemetaan Props       Modul ES Bersih & Ramping
                  │                                 │
                  └────────────────┬────────────────┘
@@ -583,7 +585,7 @@ Kompiler mengenali objek global bawaan browser dan memastikan pemanggilan fungsi
 from "react" import useState, useEffect
 
 # Import komponen lokal
-from "./Header.hsx" import Header
+from "./Header.hyx" import Header
 
 # Import namespace
 import "three" as THREE
@@ -613,9 +615,9 @@ PERINTAH:
   dev                   Menjalankan development server dengan live HMR
   build                 Mengompilasi dan membundle proyek untuk produksi
   preview               Menjalankan preview build produksi secara lokal
-  run <file.hs> [args]  Mengeksekusi skrip HydraScript langsung di memori
+  run <file.hys> [args] Mengeksekusi skrip HydraScript langsung di memori (format warisan .hs didukung)
   watch [dir]           Memantau direktori dan recompile saat ada perubahan
-  check <file.hsx>      Validasi sintaks tanpa menghasilkan berkas keluaran
+  check <file.hyx>      Validasi sintaks tanpa menghasilkan berkas keluaran
   repl                  Membuka sesi REPL interaktif HydraScript
   --version, -v         Menampilkan informasi versi kompiler
   --help, -h            Menampilkan bantuan CLI
@@ -677,7 +679,7 @@ cp target/release/hydra /usr/local/bin/hydra
 npm install react react-dom
 npm install -D hanxthvy/hydrascript
 
-# Buat entrypoint di src/main.hsx dan jalankan:
+# Buat entrypoint di src/main.hyx dan jalankan:
 npx hydra dev
 ```
 
@@ -732,7 +734,7 @@ CMD ["nginx", "-g", "daemon off;"]
 Dukungan pewarnaan sintaks tersedia di `editors/vscode`:
 1. Salin atau buat symlink folder `editors/vscode` ke `~/.vscode/extensions/hydrascript`.
 2. Muat ulang VS Code.
-3. Berkas `.hsx` dan `.hs` akan menampilkan pewarnaan sintaks, pengenalan kata kunci, dan panduan indentasi otomatis.
+3. Berkas `.hyx`, `.hys`, dan warisan `.hsx`/`.hs` akan menampilkan pewarnaan sintaks, pengenalan kata kunci, dan panduan indentasi otomatis.
 
 ---
 

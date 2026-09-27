@@ -839,11 +839,18 @@ fn test_feature_auto_fragment_multiple_roots() {
 #[test]
 fn test_feature_cli_run() {
     let tmp_dir = std::env::temp_dir();
-    let script_path = tmp_dir.join("test_run.hs");
+    let script_path = tmp_dir.join("test_run.hys");
     std::fs::write(&script_path, "def add(a, b):\n    return a + b\nprint(f\"result={add(20, 22)}\")\n").unwrap();
     let code = hydra::cli::run_script(&[script_path.to_string_lossy().to_string()]);
     assert_eq!(code, std::process::ExitCode::SUCCESS);
     let _ = std::fs::remove_file(&script_path);
+
+    // Test backward compatibility with .hs
+    let legacy_script = tmp_dir.join("test_run_legacy.hs");
+    std::fs::write(&legacy_script, "def sub(a, b):\n    return a - b\nprint(f\"result={sub(50, 8)}\")\n").unwrap();
+    let legacy_code = hydra::cli::run_script(&[legacy_script.to_string_lossy().to_string()]);
+    assert_eq!(legacy_code, std::process::ExitCode::SUCCESS);
+    let _ = std::fs::remove_file(&legacy_script);
 }
 
 #[test]
