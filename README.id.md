@@ -124,10 +124,73 @@ export function MetricPair({ label, value }: MetricPairProps) {
 
 ---
 
-## Contoh Kode Lengkap
+## Komparasi Sintaks Berdampingan (Side-by-Side)
 
-### 1. Komponen Reaktif dengan State dan Event
+### 1. Deklarasi Komponen Dasar & Auto-Fragment
 
+#### Vanilla TSX
+```tsx
+import React from 'react';
+
+export interface UserBadgeProps {
+  name: string;
+  role?: string;
+  isOnline?: boolean;
+}
+
+export function UserBadge({ name, role = 'Member', isOnline = false }: UserBadgeProps) {
+  return (
+    <>
+      <span className="user-name">{name}</span>
+      <span className="user-role">{role}</span>
+      {isOnline && <span className="status-dot" />}
+    </>
+  );
+}
+```
+
+#### HydraScript (`.hsx`)
+```python
+# [xihanzu-NR]
+component UserBadge(name: str, role: str = "Member", is_online: bool = False):
+    span(className="user-name"): name
+    span(className="user-role"): role
+    if is_online:
+        span(className="status-dot")
+```
+
+---
+
+### 2. State Reaktif & Side Effects
+
+#### Vanilla TSX
+```tsx
+import React, { useState, useEffect } from 'react';
+
+export function Counter({ initialCount = 0, step = 1 }: { initialCount?: number; step?: number }) {
+  const [count, setCount] = useState<number>(initialCount);
+
+  useEffect(() => {
+    console.log(`Nilai terkini: ${count}`);
+  }, [count]);
+
+  return (
+    <div className="counter-card">
+      <h2>Nilai: {count}</h2>
+      <div className="button-group">
+        <button type="button" onClick={() => setCount(count - step)} className="btn btn-secondary">
+          -
+        </button>
+        <button type="button" onClick={() => setCount(count + step)} className="btn btn-primary">
+          +
+        </button>
+      </div>
+    </div>
+  );
+}
+```
+
+#### HydraScript (`.hsx`)
 ```python
 # [xihanzu-NR]
 from hydra import state, effect
@@ -156,96 +219,151 @@ component Counter(initial_count: int = 0, step: int = 1):
 
 ---
 
-### 2. Percabangan Multi-Branch & Pattern Matching
+### 3. Percabangan Multi-Branch & Pattern Matching
 
+#### Vanilla TSX
+```tsx
+export function StatusPanel({ status, loadAverage }: { status: string; loadAverage: number }) {
+  return (
+    <section className="monitor-panel">
+      {(() => {
+        switch (status) {
+          case 'healthy':
+            return <div className="status-green">Sistem Optimal</div>;
+          case 'degraded':
+            return <div className="status-amber">Tekanan Memori Tinggi</div>;
+          case 'critical':
+            return <div className="status-red">Node Terputus</div>;
+          default:
+            return <div className="status-gray">Inisialisasi</div>;
+        }
+      })()}
+
+      {loadAverage > 4.0 ? (
+        <div className="warning">Beban CPU Kritis: {loadAverage.toFixed(2)}</div>
+      ) : loadAverage > 2.0 ? (
+        <div className="info">Beban CPU Sedang: {loadAverage.toFixed(2)}</div>
+      ) : (
+        <div className="normal">Beban CPU Normal: {loadAverage.toFixed(2)}</div>
+      )}
+    </section>
+  );
+}
+```
+
+#### HydraScript (`.hsx`)
 ```python
 # [xihanzu-NR]
-component ServerMonitor(status: str, load_average: float, alerts: list):
+component StatusPanel(status: str, load_average: float):
     section(className="monitor-panel"):
-        h3: "Kesehatan Hardware"
-
-        # Pattern matching langsung di dalam pohon elemen
         match status:
             case "healthy":
-                div(className="status-pill status-green"): "Sistem Optimal"
+                div(className="status-green"): "Sistem Optimal"
             case "degraded":
-                div(className="status-pill status-amber"): "Tekanan Memori Tinggi"
+                div(className="status-amber"): "Tekanan Memori Tinggi"
             case "critical":
-                div(className="status-pill status-red"): "Node Terputus"
+                div(className="status-red"): "Node Terputus"
             case _:
-                div(className="status-pill status-gray"): "Inisialisasi Data"
+                div(className="status-gray"): "Inisialisasi"
 
-        # Percabangan tingkat blok
         if load_average > 4.0:
-            div(className="warning-callout"):
-                p: f"Beban CPU kritis: {load_average:.2f}"
+            div(className="warning"): f"Beban CPU Kritis: {load_average:.2f}"
         elif load_average > 2.0:
-            div(className="info-callout"):
-                p: f"Beban CPU sedang: {load_average:.2f}"
+            div(className="info"): f"Beban CPU Sedang: {load_average:.2f}"
         else:
-            div(className="normal-callout"):
-                p: f"Beban CPU normal: {load_average:.2f}"
-
-        # Perulangan data
-        ul(className="alert-list"):
-            for alert in alerts:
-                li(key=alert.id, className="alert-item"):
-                    span(className="alert-time"): alert.timestamp
-                    span(className="alert-msg"): alert.message
+            div(className="normal"): f"Beban CPU Normal: {load_average:.2f}"
 ```
 
 ---
 
-### 3. Dynamic Classes & Event Modifiers
+### 4. Dynamic Classes & Event Modifiers
 
+#### Vanilla TSX
+```tsx
+import clsx from 'clsx';
+
+export function ContactModal({ onSubmit, isOpen = false, isSubmitting = false }) {
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onSubmit();
+  };
+
+  return (
+    <div className={clsx('modal-backdrop', { 'opacity-100': isOpen, 'opacity-0': !isOpen })}>
+      <form onSubmit={handleSubmit} className="modal-form">
+        <label htmlFor="email_input">Alamat Email</label>
+        <input id="email_input" type="email" required placeholder="nama@domain.com" />
+        <button type="submit" disabled={isSubmitting}>
+          {isSubmitting ? 'Mengirim...' : 'Kirim Pesan'}
+        </button>
+      </form>
+    </div>
+  );
+}
+```
+
+#### HydraScript (`.hsx`)
 ```python
 # [xihanzu-NR]
 component ContactModal(on_submit, is_open: bool = False, is_submitting: bool = False):
-    div(
-        cls={
-            "modal-backdrop": True,
-            "opacity-100 pointer-events-auto": is_open,
-            "opacity-0 pointer-events-none": not is_open,
-        },
-    ):
-        div(className="modal-surface"):
-            h2: "Kirim Pesan"
-
-            # Form dengan preventDefault dan stopPropagation otomatis
-            form(on_submit_prevent_stop=on_submit, className="modal-form"):
-                label(for="email_input"): "Alamat Email"
-                input(
-                    id="email_input",
-                    type="email",
-                    required=True,
-                    placeholder="nama@domain.com",
-                    className="input-text",
-                )
-
-                label(for="msg_input"): "Pesan"
-                textarea(
-                    id="msg_input",
-                    rows=4,
-                    required=True,
-                    placeholder="Tuliskan kebutuhan Anda...",
-                    className="input-textarea",
-                )
-
-                div(className="form-actions"):
-                    button(
-                        type="submit",
-                        disabled=is_submitting,
-                        className="btn-submit",
-                    ):
-                        "Mengirim..." if is_submitting else "Kirim Pesan"
+    div(cls={"modal-backdrop": True, "opacity-100": is_open, "opacity-0": not is_open}):
+        form(on_submit_prevent_stop=on_submit, className="modal-form"):
+            label(for="email_input"): "Alamat Email"
+            input(id="email_input", type="email", required=True, placeholder="nama@domain.com")
+            button(type="submit", disabled=is_submitting):
+                "Mengirim..." if is_submitting else "Kirim Pesan"
 ```
 
 ---
 
-### 4. Entrypoint Aplikasi Murni (`src/main.hsx`)
+### 5. Iterasi Koleksi & Key Props
 
-Proyek Hydra tidak memerlukan berkas perantara `main.tsx` atau `index.ts`. Seluruh bootstrapping browser ditulis murni dalam HydraScript:
+#### Vanilla TSX
+```tsx
+export function AlertList({ alerts }: { alerts: Array<{ id: string; message: string; severity: string }> }) {
+  return (
+    <ul className="alert-list">
+      {alerts.map((alert) => (
+        <li key={alert.id} className={`alert-item alert-${alert.severity}`}>
+          <span className="alert-msg">{alert.message}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
 
+#### HydraScript (`.hsx`)
+```python
+# [xihanzu-NR]
+component AlertList(alerts: list):
+    ul(className="alert-list"):
+        for alert in alerts:
+            li(key=alert.id, className=f"alert-item alert-{alert.severity}"):
+                span(className="alert-msg"): alert.message
+```
+
+---
+
+### 6. Entrypoint Aplikasi Browser
+
+#### Vanilla TSX (`src/main.tsx`)
+```tsx
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import { App } from './App';
+import './index.css';
+
+const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement);
+root.render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+```
+
+#### HydraScript (`src/main.hsx`)
 ```python
 # [xihanzu-NR]
 from "react-dom/client" import createRoot
@@ -258,35 +376,45 @@ createRoot(root_element).render(App())
 
 ---
 
-### 5. Logika Backend dan Scripting (`.hs` / `.hx`)
+### 7. Logika Backend & Slicing (`.hs` vs `.ts`)
 
-HydraScript mengompilasi logika murni non-komponen menjadi modul ES standar:
+#### Vanilla TypeScript (`src/utils.ts`)
+```typescript
+import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
+export async function processLogs(dir: string, maxItems: number) {
+  const raw = await readFile(join(dir, 'events.json'), 'utf8');
+  const events = JSON.parse(raw);
+  const sliced = events.slice(0, maxItems);
+  const result = {
+    timestamp: Date.now(),
+    count: sliced.length,
+    items: sliced,
+  };
+  await writeFile(join(dir, 'out.json'), JSON.stringify(result, null, 2), 'utf8');
+  return result;
+}
+```
+
+#### HydraScript (`src/utils.hs`)
 ```python
 # [xihanzu-NR]
 from "node:fs/promises" import readFile, writeFile
 from "node:path" import join
 
-async def audit_metrics(directory: str, max_latency_ms: float):
-    config_file = join(directory, "telemetry.json")
-    content = await readFile(config_file, "utf8")
-    records = JSON.parse(content)
-
-    flagged = [
-        item for item in records
-        if item.latency > max_latency_ms
-    ]
-
-    report = {
+async def process_logs(dir: str, max_items: int):
+    raw = await readFile(join(dir, "events.json"), "utf8")
+    events = JSON.parse(raw)
+    sliced = events[:max_items]
+    result = {
         "timestamp": Date.now(),
-        "total_records": len(records),
-        "breaches": len(flagged),
-        "flagged_nodes": flagged,
+        "count": len(sliced),
+        "items": sliced,
     }
-
-    report_file = join(directory, "report.json")
-    await writeFile(report_file, JSON.stringify(report, None, 2), "utf8")
-    return report
+    await writeFile(join(dir, "out.json"), JSON.stringify(result, None, 2), "utf8")
+    return result
+```
 ```
 
 ---
