@@ -4,7 +4,7 @@
 //! Emits clean, readable TSX and keeps an exact line-by-line map so a browser
 //! stack trace points at the .hsx line that produced it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{Kind, Node, Param};
 use crate::error::CompileError;
@@ -104,6 +104,73 @@ pub fn free_func(m: &str) -> Option<&'static str> {
     }
 }
 
+// [xihanzu-NR]
+#[derive(Default, Debug, Clone)]
+pub struct Scope {
+    pub assign_counts: HashMap<String, usize>,
+    pub aug_assigned: HashSet<String>,
+    pub declared: HashSet<String>,
+}
+
+impl Scope {
+    pub fn scan(body: &[Node]) -> Self {
+        let mut scope = Scope::default();
+        scope.scan_nodes(body);
+        scope
+    }
+
+    fn scan_nodes(&mut self, nodes: &[Node]) {
+        for s in nodes {
+            match &s.kind {
+                Kind::Assign { target, .. } => {
+                    if let Kind::Name(id) = &target.kind {
+                        *self.assign_counts.entry(id.clone()).or_insert(0) += 1;
+                    }
+                }
+                Kind::AugAssign { target, .. } => {
+                    if let Kind::Name(id) = &target.kind {
+                        self.aug_assigned.insert(id.clone());
+                    }
+                }
+                Kind::If { body, orelse, .. } => {
+                    self.scan_nodes(body);
+                    if let Some(ore) = orelse {
+                        self.scan_nodes(ore);
+                    }
+                }
+                Kind::For { body, .. } => {
+                    self.scan_nodes(body);
+                }
+                Kind::While { body, .. } => {
+                    self.scan_nodes(body);
+                }
+                Kind::Try { body, handlers, orelse, finally } => {
+                    self.scan_nodes(body);
+                    for h in handlers {
+                        self.scan_nodes(&h.body);
+                    }
+                    if let Some(ore) = orelse {
+                        self.scan_nodes(ore);
+                    }
+                    if let Some(fin) = finally {
+                        self.scan_nodes(fin);
+                    }
+                }
+                Kind::Match { cases, .. } => {
+                    for c in cases {
+                        self.scan_nodes(&c.body);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub fn is_mutable(&self, id: &str) -> bool {
+        self.assign_counts.get(id).copied().unwrap_or(0) > 1 || self.aug_assigned.contains(id)
+    }
+}
+
 pub struct Emitter {
     pub lines: Vec<String>,
     pub linemap: Vec<usize>,
@@ -114,6 +181,7 @@ pub struct Emitter {
     /// Collected during emission so the import is injected only when needed.
     pub used_helpers: std::cell::RefCell<HashSet<String>>,
     pub head_lines: Vec<String>,
+    pub scopes: Vec<Scope>,
 }
 
 impl Emitter {
@@ -126,6 +194,7 @@ impl Emitter {
             imports: HashSet::new(),
             used_helpers: std::cell::RefCell::new(HashSet::new()),
             head_lines: Vec::new(),
+            scopes: Vec::new(),
         }
     }
 
@@ -628,6 +697,19 @@ impl Emitter {
                     _ => self.js(target)?,
                 };
                 let rhs = self.js(value)?;
+
+                if let Kind::Name(id) = &target.kind {
+                    if let Some(scope) = self.scopes.last_mut() {
+                        if scope.is_mutable(id) {
+                            if scope.declared.insert(id.clone()) {
+                                self.w(&format!("let {} = {};", lhs, rhs));
+                            } else {
+                                self.w(&format!("{} = {};", lhs, rhs));
+                            }
+                            return Ok(());
+                        }
+                    }
+                }
                 self.w(&format!("const {} = {};", lhs, rhs));
             }
             Kind::AugAssign { target, op, value } => {
@@ -656,9 +738,12 @@ impl Emitter {
                 let ps = self.format_params(params)?;
                 self.w(&format!("const {} = ({}) => {{", name, ps));
                 self.depth += 1;
+                let scope = Scope::scan(body);
+                self.scopes.push(scope);
                 for stmt in body {
                     self.stmt(stmt)?;
                 }
+                self.scopes.pop();
                 self.depth -= 1;
                 self.w("};");
             }
@@ -785,6 +870,9 @@ impl Emitter {
         self.w(&format!("export function {}({}) {{", name, arg));
         self.depth += 1;
 
+        let scope = Scope::scan(body);
+        self.scopes.push(scope);
+
         let tree_count = body.iter().filter(|s| matches!(s.kind, Kind::Tree { .. })).count();
         if tree_count > 1 {
             for s in body {
@@ -807,6 +895,7 @@ impl Emitter {
                 self.stmt(s)?;
             }
         }
+        self.scopes.pop();
         self.depth -= 1;
         self.w("}");
 
@@ -851,6 +940,10 @@ impl Emitter {
             }
         }
 
+        // ponytail: single top-level scope; nested function scopes already push their own
+        let top_scope = Scope::scan(body);
+        self.scopes.push(top_scope);
+
         for s in body {
             match &s.kind {
                 Kind::Component { name, params, body } => {
@@ -862,6 +955,8 @@ impl Emitter {
                 _ => self.stmt(s)?,
             }
         }
+
+        self.scopes.pop();
 
         // Inject imports for any runtime helper the source used but did not
         // import itself. `s.capitalize()` should not need the author to know
@@ -1258,6 +1353,37 @@ mod tests {
     fn assign_emits_const() {
         let out = emit_tsx("component A():\n    x = 1\n");
         has_all(&out, &["const x = 1;"]);
+    }
+
+    #[test]
+    fn reassigned_variable_emits_let_then_reassignment() {
+        let out = emit_tsx("component A():\n    x = 1\n    x = 2\n    div: \"z\"\n");
+        has_all(&out, &["let x = 1;", "x = 2;"]);
+        lacks(&out, "const x = 1;");
+        lacks(&out, "const x = 2;");
+        lacks(&out, "let x = 2;");
+    }
+
+    #[test]
+    fn single_assign_variable_emits_const() {
+        let out = emit_tsx("component A():\n    y = 1\n    div: \"z\"\n");
+        has_all(&out, &["const y = 1;"]);
+        lacks(&out, "let y = 1;");
+    }
+
+    #[test]
+    fn augmented_assign_emits_let_then_aug() {
+        let out = emit_tsx("component A():\n    z = 0\n    z += 1\n    div: \"z\"\n");
+        has_all(&out, &["let z = 0;", "z += 1;"]);
+        lacks(&out, "const z = 0;");
+    }
+
+    #[test]
+    fn def_reassigned_and_augmented_emits_let() {
+        let out = emit_tsx("def calc():\n    x = 1\n    x = 2\n    z = 0\n    z += 1\n    return x + z\n");
+        has_all(&out, &["let x = 1;", "x = 2;", "let z = 0;", "z += 1;"]);
+        lacks(&out, "const x = 1;");
+        lacks(&out, "const z = 0;");
     }
 
     #[test]
