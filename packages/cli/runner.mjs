@@ -1,6 +1,7 @@
 // [xihanzu-NR]
 import fs from 'node:fs';
 import path from 'node:path';
+import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
@@ -9,45 +10,40 @@ const selfRequire = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 function resolvePkg(name, cwd) {
-  try {
-    const req = createRequire(path.join(cwd, 'package.json'));
-    return req.resolve(name);
-  } catch {
-    const fallbackBases = [
-      cwd,
-      '/var/www/hanz',
-      '/root/projects/hydra',
-      '/usr/local/lib/hermes-agent',
-    ];
-    for (const base of fallbackBases) {
-      try {
-        const req = createRequire(path.join(base, 'package.json'));
-        return req.resolve(name);
-      } catch {}
-    }
+  const bases = [
+    HERE,
+    path.join(HERE, '../..'),
+    '/root/projects/hydra',
+    cwd,
+  ];
+  for (const base of bases) {
     try {
-      return selfRequire.resolve(name);
-    } catch {
-      throw new Error(`Cannot resolve package '${name}' from ${cwd}`);
-    }
+      const req = createRequire(path.join(base, 'package.json'));
+      return req.resolve(name);
+    } catch {}
+  }
+  try {
+    return selfRequire.resolve(name);
+  } catch {
+    throw new Error(`Cannot resolve package '${name}'`);
   }
 }
 
-async function loadDependencies(cwd) {
-  const vitePath = resolvePkg('vite', cwd);
-  const reactPath = resolvePkg('@vitejs/plugin-react', cwd);
+async function loadBundlerDeps(cwd) {
+  const esbuildPath = resolvePkg('esbuild', cwd);
+  const postcssPath = resolvePkg('postcss', cwd);
   const twPath = resolvePkg('tailwindcss', cwd);
   const apPath = resolvePkg('autoprefixer', cwd);
 
-  const vite = await import(vitePath);
-  const reactMod = await import(reactPath);
-  const react = reactMod.default || reactMod;
+  const esbuild = await import(esbuildPath);
+  const postcssMod = await import(postcssPath);
+  const postcss = postcssMod.default || postcssMod;
   const twMod = await import(twPath);
   const tailwindcss = twMod.default || twMod;
   const apMod = await import(apPath);
   const autoprefixer = apMod.default || apMod;
 
-  return { vite, react, tailwindcss, autoprefixer };
+  return { esbuild, postcss, tailwindcss, autoprefixer };
 }
 
 function findNativeAddon() {
@@ -97,7 +93,7 @@ function cliFallbackCompile(file, source) {
   return { error: 'Hydra compiler (native or CLI) not found' };
 }
 
-export function hydrascriptPlugin(transformWithEsbuild) {
+function createHydraEsbuildPlugin() {
   const native = findNativeAddon();
   const cache = new Map();
 
@@ -116,258 +112,268 @@ export function hydrascriptPlugin(transformWithEsbuild) {
   }
 
   return {
-    name: 'vite-plugin-hydrascript',
-    enforce: 'pre',
-
-    async transform(source, id) {
-      const cleanId = id.split('?')[0];
-
-      if (cleanId.endsWith('.hyx') || cleanId.endsWith('.hsx')) {
-        const res = compile(cleanId, source);
+    name: 'hydra-compiler-plugin',
+    setup(build) {
+      build.onLoad({ filter: /\.(hyx|hsx)$/ }, async (args) => {
+        const source = await fs.promises.readFile(args.path, 'utf8');
+        const res = compile(args.path, source);
         if (res.error) {
-          this.error(res.error);
-          return null;
+          return { errors: [{ text: res.error }] };
         }
+        return { contents: res.code, loader: 'tsx', resolveDir: path.dirname(args.path) };
+      });
 
-        const js = await transformWithEsbuild(res.code, cleanId.replace(/\.(hyx|hsx)$/, '.tsx'), {
-          loader: 'tsx',
-          jsx: 'automatic',
-          sourcemap: true,
-          sourcefile: cleanId,
-        });
-
-        return { code: js.code, map: js.map };
-      }
-
-      if (cleanId.endsWith('.hys') || cleanId.endsWith('.hs')) {
-        const res = compile(cleanId, source);
+      build.onLoad({ filter: /\.(hys|hs)$/ }, async (args) => {
+        const source = await fs.promises.readFile(args.path, 'utf8');
+        const res = compile(args.path, source);
         if (res.error) {
-          this.error(res.error);
-          return null;
+          return { errors: [{ text: res.error }] };
         }
-
-        const js = await transformWithEsbuild(res.code, cleanId.replace(/\.(hys|hs)$/, '.js'), {
-          loader: 'js',
-          sourcemap: true,
-          sourcefile: cleanId,
-        });
-
-        return { code: js.code, map: js.map };
-      }
-
-      return null;
-    },
-
-    handleHotUpdate(ctx) {
-      if (ctx.file.endsWith('.hsx') || ctx.file.endsWith('.hs') || ctx.file.endsWith('.hyx') || ctx.file.endsWith('.hys')) {
-        cache.delete(ctx.file);
-      }
+        return { contents: res.code, loader: 'js', resolveDir: path.dirname(args.path) };
+      });
     },
   };
 }
 
-function findConfigFile(startDir) {
-  let curr = path.resolve(startDir);
-  while (true) {
-    const candidate = path.join(curr, 'hydraconfig.json');
-    if (fs.existsSync(candidate)) return candidate;
-    const parent = path.dirname(curr);
-    if (parent === curr) break;
-    curr = parent;
+function copyDirRecursive(src, dest) {
+  if (!fs.existsSync(src)) return;
+  fs.mkdirSync(dest, { recursive: true });
+  const entries = fs.readdirSync(src, { withFileTypes: true });
+  for (const entry of entries) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      copyDirRecursive(srcPath, destPath);
+    } else {
+      fs.copyFileSync(srcPath, destPath);
+    }
   }
-  return null;
 }
 
-export async function createViteConfig(configPath) {
-  let cwd = process.cwd();
-  let resolvedConfigPath = null;
-
-  if (configPath) {
-    if (fs.existsSync(configPath) && fs.statSync(configPath).isDirectory()) {
-      cwd = path.resolve(configPath);
-      resolvedConfigPath = findConfigFile(cwd);
-    } else {
-      resolvedConfigPath = path.resolve(configPath);
-      cwd = path.dirname(resolvedConfigPath);
-    }
-  } else {
-    resolvedConfigPath = findConfigFile(cwd);
-  }
-
-  if (resolvedConfigPath && fs.existsSync(resolvedConfigPath)) {
-    cwd = path.dirname(resolvedConfigPath);
-  } else {
-    resolvedConfigPath = path.join(cwd, 'hydraconfig.json');
-  }
-
+export function readConfig(cwd) {
+  const configPath = path.join(cwd, 'hydraconfig.json');
   let config = {};
-  if (fs.existsSync(resolvedConfigPath)) {
+  if (fs.existsSync(configPath)) {
     try {
-      config = JSON.parse(fs.readFileSync(resolvedConfigPath, 'utf8'));
+      config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     } catch (e) {
       console.error('[hydra] Error parsing hydraconfig.json:', e.message);
     }
   }
+  return config;
+}
 
-  const { vite, react, tailwindcss, autoprefixer } = await loadDependencies(cwd);
+export async function runBuild(cwd = process.cwd()) {
+  const t0 = Date.now();
+  console.log('[hydra] Building for production (Hydra native bundler)...');
 
-  const serverPort = config.server?.port || 5173;
-  const serverHost = config.server?.host || '0.0.0.0';
+  const config = readConfig(cwd);
+  const outDir = path.resolve(cwd, config.outputDir || 'dist');
+  const assetsDir = path.join(outDir, 'assets');
+  fs.mkdirSync(assetsDir, { recursive: true });
 
-  const userTailwind = config.tailwind || {};
-  const twContent = Array.from(new Set([
-    path.join(cwd, 'index.html'),
-    path.join(cwd, 'src/**/*.{js,ts,jsx,tsx,hys,hyx,hs,hsx}'),
-    './index.html',
-    './src/**/*.{js,ts,jsx,tsx,hys,hyx,hs,hsx}',
-    ...(userTailwind.content || []),
-  ]));
+  const { esbuild, postcss, tailwindcss, autoprefixer } = await loadBundlerDeps(cwd);
 
-  const twConfig = {
-    ...userTailwind,
-    content: twContent,
-    theme: userTailwind.theme || { extend: {} },
-    plugins: userTailwind.plugins || [],
-  };
-
-  const plugins = [
-    hydrascriptPlugin(vite.transformWithEsbuild),
-    react(),
+  // 1. Discover entrypoint
+  const entryCandidates = [
+    path.join(cwd, 'src/main.hyx'),
+    path.join(cwd, 'src/main.hsx'),
+    path.join(cwd, 'src/index.hyx'),
+    path.join(cwd, 'src/index.hsx'),
   ];
-
-  const hydraAlias = fs.existsSync(path.resolve(cwd, 'src/hydra.hys'))
-    ? path.resolve(cwd, 'src/hydra.hys')
-    : (fs.existsSync(path.resolve(cwd, 'src/hydra.hs'))
-      ? path.resolve(cwd, 'src/hydra.hs')
-      : (fs.existsSync('/root/projects/hydra/runtime-js/serpent-js.js')
-        ? '/root/projects/hydra/runtime-js/serpent-js.js'
-        : path.resolve(cwd, 'src/hydra.hys')));
-
-  return {
-    root: cwd,
-    configFile: false,
-    plugins,
-    css: {
-      postcss: {
-        plugins: [
-          tailwindcss(twConfig),
-          autoprefixer(),
-        ],
-      },
-    },
-    resolve: {
-      alias: {
-        hydra: hydraAlias,
-        '@': path.resolve(cwd, 'src'),
-      },
-      extensions: ['.mjs', '.js', '.ts', '.jsx', '.tsx', '.json', '.hyx', '.hys', '.hsx', '.hs'],
-    },
-    build: {
-      outDir: config.outputDir || 'dist',
-      rollupOptions: {
-        output: {
-          manualChunks: {
-            react: ['react', 'react-dom'],
-          },
-        },
-      },
-      chunkSizeWarningLimit: 1200,
-    },
-    server: {
-      host: serverHost,
-      port: serverPort,
-    },
-    preview: {
-      host: serverHost,
-      port: serverPort,
-    },
-  };
-}
-
-export async function dev(configPath) {
-  let cwd = process.cwd();
-  if (configPath) {
-    cwd = fs.existsSync(configPath) && fs.statSync(configPath).isDirectory()
-      ? configPath
-      : path.dirname(path.resolve(configPath));
+  const entryPoint = entryCandidates.find((f) => fs.existsSync(f));
+  if (!entryPoint) {
+    throw new Error('[hydra] Entrypoint not found: expected src/main.hyx');
   }
-  const { vite } = await loadDependencies(cwd);
-  const viteConfig = await createViteConfig(configPath);
-  const server = await vite.createServer(viteConfig);
-  await server.listen();
-  server.printUrls();
-  return server;
-}
 
-export async function build(configPath) {
-  let cwd = process.cwd();
-  if (configPath) {
-    cwd = fs.existsSync(configPath) && fs.statSync(configPath).isDirectory()
-      ? configPath
-      : path.dirname(path.resolve(configPath));
+  // 2. Discover hydra runtime alias
+  const hydraAlias = [
+    path.resolve(cwd, 'src/hydra.hys'),
+    path.resolve(cwd, 'src/hydra.hs'),
+    '/root/projects/hydra/runtime-js/serpent-js.js',
+  ].find((f) => fs.existsSync(f)) || path.resolve(cwd, 'src/hydra.hys');
+
+  // 3. Bundle JavaScript via esbuild
+  const jsOutFile = path.join(assetsDir, 'index.js');
+  await esbuild.build({
+    entryPoints: [entryPoint],
+    bundle: true,
+    minify: true,
+    sourcemap: true,
+    jsx: 'automatic',
+    format: 'esm',
+    platform: 'browser',
+    target: 'es2020',
+    outfile: jsOutFile,
+    plugins: [createHydraEsbuildPlugin()],
+    resolveExtensions: ['.hyx', '.hys', '.hsx', '.hs', '.mjs', '.js', '.jsx', '.ts', '.tsx', '.json'],
+    alias: {
+      hydra: hydraAlias,
+      '@': path.resolve(cwd, 'src'),
+    },
+    loader: {
+      '.css': 'empty',
+    },
+    define: {
+      'process.env.NODE_ENV': '"production"',
+    },
+  });
+
+  // 4. Compile CSS via PostCSS with Tailwind
+  const cssInPath = path.join(cwd, 'src/index.css');
+  const cssOutPath = path.join(assetsDir, 'index.css');
+  if (fs.existsSync(cssInPath)) {
+    const rawCss = fs.readFileSync(cssInPath, 'utf8');
+    const userTailwind = config.tailwind || {};
+    const twConfig = {
+      ...userTailwind,
+      content: Array.from(new Set([
+        path.join(cwd, 'index.html'),
+        path.join(cwd, 'src/**/*.{hyx,hys,hsx,hs,html,css}'),
+        ...(userTailwind.content || []),
+      ])),
+      theme: userTailwind.theme || { extend: {} },
+      plugins: userTailwind.plugins || [],
+    };
+
+    const cssResult = await postcss([tailwindcss(twConfig), autoprefixer()]).process(rawCss, {
+      from: cssInPath,
+      to: cssOutPath,
+    });
+    fs.writeFileSync(cssOutPath, cssResult.css, 'utf8');
   }
-  const { vite } = await loadDependencies(cwd);
-  const viteConfig = await createViteConfig(configPath);
-  return await vite.build(viteConfig);
-}
 
-export async function preview(configPath) {
-  let cwd = process.cwd();
-  if (configPath) {
-    cwd = fs.existsSync(configPath) && fs.statSync(configPath).isDirectory()
-      ? configPath
-      : path.dirname(path.resolve(configPath));
-  }
-  const { vite } = await loadDependencies(cwd);
-  const viteConfig = await createViteConfig(configPath);
-  const previewServer = await vite.preview(viteConfig);
-  previewServer.printUrls();
-  return previewServer;
-}
-
-export const runDev = dev;
-export const runBuild = build;
-export const runPreview = preview;
-
-// CLI entrypoint when executed directly
-const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
-
-if (isDirectRun) {
-  const cmd = process.argv[2] || 'dev';
-  const hasHelp = process.argv.includes('--help') || process.argv.includes('-h');
-
-  if (hasHelp) {
-    if (cmd === 'build') {
-      console.log('Usage: hydra build [configPath]\n\nBuild Hydra project for production');
-    } else if (cmd === 'preview') {
-      console.log('Usage: hydra preview [configPath]\n\nPreview production build');
-    } else {
-      console.log('Usage: hydra dev [configPath]\n\nStart Vite development server for Hydra project');
+  // 5. Generate dist/index.html
+  const htmlInPath = path.join(cwd, 'index.html');
+  const htmlOutPath = path.join(outDir, 'index.html');
+  if (fs.existsSync(htmlInPath)) {
+    let html = fs.readFileSync(htmlInPath, 'utf8');
+    // Replace source entry with built bundle
+    html = html.replace(/<script[^>]*src=["']\/src\/main\.(hyx|hsx|tsx|ts|js)["'][^>]*><\/script>/i, '<script type="module" crossorigin src="/assets/index.js"></script>');
+    if (!html.includes('/assets/index.css')) {
+      html = html.replace('</head>', '  <link rel="stylesheet" crossorigin href="/assets/index.css">\n  </head>');
     }
-    process.exit(0);
+    fs.writeFileSync(htmlOutPath, html, 'utf8');
   }
 
-  // Filter out any other flags and find configPath if provided
-  const args = process.argv.slice(3);
-  const configArg = args.find((a) => !a.startsWith('-'));
+  // 6. Copy public/ directory
+  const publicDir = path.join(cwd, 'public');
+  if (fs.existsSync(publicDir)) {
+    copyDirRecursive(publicDir, outDir);
+  }
 
-  if (cmd === 'dev') {
-    dev(configArg).catch((err) => {
-      console.error(err);
-      process.exit(1);
+  const ms = Date.now() - t0;
+  console.log(`[hydra] Built successfully in ${ms}ms -> ${path.relative(cwd, outDir)}/`);
+}
+
+const MIME_TYPES = {
+  '.html': 'text/html',
+  '.js': 'text/javascript',
+  '.mjs': 'text/javascript',
+  '.css': 'text/css',
+  '.json': 'application/json',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.map': 'application/json',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+};
+
+export async function serveDirectory(dir, port = 5173, host = '0.0.0.0') {
+  const server = http.createServer((req, res) => {
+    let reqPath = decodeURI(req.url.split('?')[0]);
+    if (reqPath === '/') reqPath = '/index.html';
+
+    let filePath = path.join(dir, reqPath);
+    if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+      filePath = path.join(dir, 'index.html');
+    }
+
+    if (!fs.existsSync(filePath)) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Not Found');
+      return;
+    }
+
+    const ext = path.extname(filePath).toLowerCase();
+    const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+    res.writeHead(200, { 'Content-Type': contentType });
+    fs.createReadStream(filePath).pipe(res);
+  });
+
+  server.listen(port, host, () => {
+    console.log(`[hydra] Server running at http://${host === '0.0.0.0' ? 'localhost' : host}:${port}/`);
+  });
+}
+
+export async function runPreview(cwd = process.cwd()) {
+  const config = readConfig(cwd);
+  const outDir = path.resolve(cwd, config.outputDir || 'dist');
+  const port = config.server?.port || 5173;
+  const host = config.server?.host || '0.0.0.0';
+
+  if (!fs.existsSync(outDir)) {
+    console.log('[hydra] Output directory not found. Running build first...');
+    await runBuild(cwd);
+  }
+
+  console.log('[hydra] Previewing production build:');
+  await serveDirectory(outDir, port, host);
+}
+
+export async function runDev(cwd = process.cwd()) {
+  // Build first then serve with auto rebuild
+  await runBuild(cwd);
+  const config = readConfig(cwd);
+  const outDir = path.resolve(cwd, config.outputDir || 'dist');
+  const port = config.server?.port || 5173;
+  const host = config.server?.host || '0.0.0.0';
+
+  console.log('[hydra] Development mode active.');
+  await serveDirectory(outDir, port, host);
+
+  // Watch src/ directory for changes
+  const srcDir = path.join(cwd, 'src');
+  if (fs.existsSync(srcDir)) {
+    let building = false;
+    fs.watch(srcDir, { recursive: true }, async () => {
+      if (building) return;
+      building = true;
+      try {
+        await runBuild(cwd);
+      } catch (err) {
+        console.error('[hydra] Build error:', err.message);
+      } finally {
+        building = false;
+      }
     });
-  } else if (cmd === 'build') {
-    build(configArg).catch((err) => {
-      console.error(err);
-      process.exit(1);
-    });
-  } else if (cmd === 'preview') {
-    preview(configArg).catch((err) => {
-      console.error(err);
-      process.exit(1);
-    });
-  } else {
-    console.error(`[hydra] Unknown command: ${cmd}`);
+  }
+}
+
+// CLI entrypoint
+const cmd = process.argv[2] || 'dev';
+const cwd = process.cwd();
+
+if (cmd === 'dev') {
+  runDev(cwd).catch((err) => {
+    console.error(err);
     process.exit(1);
-  }
+  });
+} else if (cmd === 'build') {
+  runBuild(cwd).catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+} else if (cmd === 'preview') {
+  runPreview(cwd).catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+} else {
+  console.error(`[hydra] Unknown command: ${cmd}`);
+  process.exit(1);
 }
