@@ -87,14 +87,14 @@ Pengembangan web modern seringkali menuntut 5 hingga 8 berkas konfigurasi sebelu
 
 ---
 
-## Efisiensi Token Ramah-AI (AI-Native Token Economy)
+## Keandalan Struktural untuk Generasi Kode AI
 
-Bagi pengembang yang menggunakan coding assistant berbasis AI (Claude Code, Cursor, GitHub Copilot), HydraScript memberikan keunggulan struktural yang memangkas biaya API dan latensi generasi kode:
+Bagi pengembang yang menggunakan asisten coding AI (Claude Code, Cursor, GitHub Copilot), HydraScript memecahkan masalah struktural yang sering terjadi pada pohon JSX bersarang:
 
-1. **Hemat Token 35% hingga 40%**: Mengeliminasi tag penutup (`</div>`, `</section>`, `</span>`) dan kurung kurawal menghemat 2 hingga 4 token per elemen. Pada komponen 500 baris, ratusan token dihemat pada setiap pesan prompt dan output respon.
-2. **Generasi Kode 40% Lebih Cepat**: Latensi LLM berbanding lurus dengan jumlah token yang digenerate. Memangkas 40% token membuat kodingan selesai lebih cepat di terminal dan editor.
-3. **Pemberhentian Blok Deterministik**: Kesalahan paling sering dari model AI saat menulis JSX panjang adalah salah memasangkan atau lupa menutup tag `</div>`. Dengan indentasi Pythonic, halusinasi tag penutup hilang 100%.
-4. **Context Window Efektif Lebih Luas**: Lebih banyak modul dan fungsi dapat dimuat ke dalam jendela konteks model AI tanpa terpotong atau terkompresi.
+1. **Melenyapkan Halusinasi Tag Penutup**: Salah satu kegagalan paling sering pada model AI saat menulis JSX panjang adalah salah memasangkan atau lupa menutup tag (`</div>`, `</section>`, `</span>`). Dengan indentasi Pythonic, kesalahan sintaks akibat tag penutup yang salah pasang hilang 100%.
+2. **Alur Kontrol Linear & Jelas**: JSX standar memaksa model AI menggunakan operator ternary bertingkat (`a ? <B/> : c ? <D/> : <E/>`) atau pola IIFE yang rentan salah logika. HydraScript menyediakan percabangan native `if / elif / else` dan perulangan `for ... in` langsung di dalam elemen UI.
+3. **Penyisipan Fragment Otomatis**: Kompiler otomatis menyisipkan pembungkus fragment `<> ... </>` pada sibling multi-root, menghilangkan error struktur komponen yang sering terjadi pada kode hasil generasi AI.
+4. **Diff Lebih Bersih & Mudah Diaudit**: Blok berbasis indentasi menghasilkan baris diff yang rapi, mempermudah inspeksi kode oleh pengembang maupun agen AI otomatis.
 
 ---
 

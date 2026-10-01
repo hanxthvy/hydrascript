@@ -87,14 +87,14 @@ Modern web development often requires 5-8 configuration files before writing a s
 
 ---
 
-## AI-Native Token Efficiency
+## AI Code Generation & Structural Determinism
 
-For developers using AI coding assistants (Claude Code, Cursor, GitHub Copilot), HydraScript delivers structural advantages that directly reduce API costs and generation latency:
+For developers using AI coding assistants (Claude Code, Cursor, GitHub Copilot), HydraScript addresses structural failure modes inherent to deeply nested JSX:
 
-1. **35% to 40% Token Reduction**: Eliminating closing tags (`</div>`, `</section>`, `</span>`) and braces saves 2 to 4 tokens per element. In a 500-line UI component, this eliminates hundreds of tokens per prompt and response.
-2. **Faster Generation Speed**: LLM latency is proportional to output token count. Generating 40% fewer tokens translates to noticeably faster code completion in terminal agents and editor windows.
-3. **Deterministic Block Termination**: One of the most prevalent LLM failure modes in JSX is unclosed or mismatched closing tags deep in nested trees. HydraScript's indentation-based syntax eliminates closing-tag hallucination entirely.
-4. **Expanded Effective Context Window**: More modules and utility files fit into the AI model's context window before compaction or truncation occurs.
+1. **Zero Tag-Mismatch Hallucinations**: One of the most prevalent LLM failure modes in JSX is unclosed or mismatched closing tags (`</div>`, `</section>`, `</span>`) deep in nested trees. HydraScript's indentation-based hierarchy completely eliminates closing-tag syntax errors.
+2. **Linear Control Flow**: Standard JSX forces LLMs into nested ternary expressions (`a ? <B/> : c ? <D/> : <E/>`) and IIFEs, which frequently introduce logical regressions. HydraScript provides native `if / elif / else` and `for ... in` constructs directly within UI blocks.
+3. **Automated Fragment Insertion**: The compiler handles multi-root wrapping automatically, preventing missing `<> ... </>` syntax errors when models generate component snippets.
+4. **Clean Diffs & Reviewability**: Indentation-scoped blocks create concise, line-by-line diffs that are easier for human developers and autonomous coding agents to audit and maintain.
 
 ---
 
