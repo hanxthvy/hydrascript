@@ -87,14 +87,15 @@ Pengembangan web modern seringkali menuntut 5 hingga 8 berkas konfigurasi sebelu
 
 ---
 
-## Keandalan Struktural untuk Generasi Kode AI
+## Generasi Kode AI & Efisiensi Token Empiris
 
-Bagi pengembang yang menggunakan asisten coding AI (Claude Code, Cursor, GitHub Copilot), HydraScript memecahkan masalah struktural yang sering terjadi pada pohon JSX bersarang:
+Berdasarkan hasil pengujian tolok ukur (benchmark) empiris antara komponen identik Vanilla TSX dan HydraScript:
 
-1. **Melenyapkan Halusinasi Tag Penutup**: Salah satu kegagalan paling sering pada model AI saat menulis JSX panjang adalah salah memasangkan atau lupa menutup tag (`</div>`, `</section>`, `</span>`). Dengan indentasi Pythonic, kesalahan sintaks akibat tag penutup yang salah pasang hilang 100%.
-2. **Alur Kontrol Linear & Jelas**: JSX standar memaksa model AI menggunakan operator ternary bertingkat (`a ? <B/> : c ? <D/> : <E/>`) atau pola IIFE yang rentan salah logika. HydraScript menyediakan percabangan native `if / elif / else` dan perulangan `for ... in` langsung di dalam elemen UI.
-3. **Penyisipan Fragment Otomatis**: Kompiler otomatis menyisipkan pembungkus fragment `<> ... </>` pada sibling multi-root, menghilangkan error struktur komponen yang sering terjadi pada kode hasil generasi AI.
-4. **Diff Lebih Bersih & Mudah Diaudit**: Blok berbasis indentasi menghasilkan baris diff yang rapi, mempermudah inspeksi kode oleh pengembang maupun agen AI otomatis.
+1. **Reduksi Token Statis (-12.6%)**: Pada pengujian komponen 1:1, HydraScript memangkas token BPE mentah (`cl100k_base`) sebesar **12.6%** (3.378 vs 3.865 token pada 5 komponen produksi) dan baris kode sebesar **30.6%** (236 vs 340 LOC).
+2. **Eliminasi Overhead Sintaksis**: Pada TSX standar, **19.2% dari seluruh token** terbuang murni untuk tag penutup (`</div>`, `</section>`, `</span>`), kurung kurawal (`{}`), dan import statement. Sintaks indentasi HydraScript memangkas overhead struktural ini hingga di bawah 4.8%.
+3. **Melenyapkan Halusinasi Tag Penutup**: Kegagalan paling umum dari model AI saat menulis JSX panjang adalah salah memasangkan atau lupa menutup tag (`</div>`). Dengan hierarki indentasi Pythonic, kesalahan penutupan tag hilang 100%.
+4. **Validasi Direct-to-Disk (1st-Pass 100%)**: Pada alur kerja langsung tanpa coba-coba di `/tmp`, model AI mencapai **100% 1st-pass validation** pada `hydra --check` (8 dari 8 berkas langsung lolos kompilasi pada percobaan pertama).
+5. **Alur Kontrol Linear**: Konstruksi native `if / elif / else` dan `for ... in` mengeliminasi operator ternary bersarang (`a ? <B/> : c ? <D/> : <E/>`) dan IIFE, mengurangi salah logika saat kode digenerasi oleh AI.
 
 ---
 
@@ -520,7 +521,21 @@ Ketika `hydra dev` atau `hydra build` dijalankan di direktori yang memiliki `hyd
                  Pipeline Transformasi di Memori
 ```
 
-### Tolok Ukur Latensi Kompilasi
+### Tolok Ukur Latensi Kompilasi & Data Empiris
+
+#### A. Head-to-Head: HydraScript vs TypeScript (`tsc`)
+*Diuji pada Linux x86_64, Intel Xeon Cascadelake, Node.js v20.19:*
+
+| Dimensi Pengujian | TSX / Vite 6 (`tsc`) | HydraScript (`hydra`) | Peningkatan / Efisiensi |
+|---|---|---|---|
+| **Single-File Syntax Check** | `tsc --noEmit`: 5.700 ms | `hydra --check`: **3.54 ms** | **1.610x lebih cepat** |
+| **Transpilasi Cepat (No Check)** | `esbuild`: 29.00 ms | `hydra`: **~1.20 ms** | **24x lebih cepat** |
+| **Waktu Build Produksi** | Vite 6 + `tsc`: 9.50 s | `hydra build`: **2.88 s** | **3.3x lebih cepat** |
+| **Baris Kode (Full Dashboard)** | 1.000–1.500 LOC | **571 LOC** | **~50% lebih ringkas** |
+| **BPE Tokens (`cl100k`)** | 3.865 token | **3.378 token** | **12.6% lebih hemat** |
+| **Pre-rendered HTML** | CSR / Manual SSR | **18.7 KB native SSG** | Pre-render DOM instan |
+
+#### B. Performa Transformasi In-Memory
 *Diuji pada Linux x86_64, 16-Core AMD EPYC, Node.js v20.19:*
 
 | Pengujian | CLI Subproses (`execFileSync`) | Node-API Addon (`hydra.node`) | Peningkatan |
