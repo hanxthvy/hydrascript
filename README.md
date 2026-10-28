@@ -618,20 +618,79 @@ These compile without an import:
 
 | HydraScript | JavaScript |
 |---|---|
-| `len(xs)` | `xs.length` |
+| `len(xs)` / `len(d)` | `xs.length` / `len_of(d)` (dict-aware) |
 | `max(a, b)` / `max(xs)` | `Math.max(a, b)` / `Math.max(...xs)` |
 | `min(a, b)` / `min(xs)` | `Math.min(a, b)` / `Math.min(...xs)` |
+| `max(xs, key=f)` / `min(xs, default=0)` | `max_by` / `min_by` runtime helpers |
 | `abs(x)` / `round(x)` | `Math.abs(x)` / `Math.round(x)` |
-| `sum(xs)` | `xs.reduce((a, b) => a + b, 0)` |
+| `pow(a, b)` | `a ** b` |
+| `sum(xs)` / `sum(xs, start)` | `xs.reduce((a, b) => a + b, 0)` / `sum(xs, start)` |
 | `sorted(xs)` / `reversed(xs)` | non-mutating `slice()` then sort/reverse |
+| `sorted(xs, key=f, reverse=True)` | runtime helper |
 | `str(x)` / `int(x)` / `float(x)` / `bool(x)` | `String` / `parseInt` / `parseFloat` / `Boolean` |
 | `isinstance(x, int)` | `isinstance(x, Number)` |
-| `enumerate(xs)` / `range(n)` | runtime helpers, imported automatically |
-| `print(x)` | `console.log(x)` |
+| `type(x).__name__` | `x.constructor.name` |
+| `enumerate(xs)` / `range(n)` / `zip(a, b)` | runtime helpers, imported automatically |
+| `any(xs)` / `all(xs)` | runtime helpers |
+| `print(x)` / `print(a, b)` | `console.log(x)` / variadic |
+| `assert cond, "msg"` | `assert_(cond, "msg")` — throws, never silently dropped |
+| `raise ValueError("x")` | `new ValueError("x")` |
 
 Python string methods with no JS equivalent (`s.capitalize()`, `s.title()`,
-`s.zfill(4)`, `s.isdigit()`) become calls into the runtime. The import is
-injected for you, so the source does not need to know the helper exists.
+`s.zfill(4)`, `s.isdigit()`) and the collection helpers Python exposes as
+methods (`", ".join(xs)`, `d.get(k, v)`, `xs.extend(ys)`, `d.keys()`) become
+calls into the runtime. The import is injected for you, so the source does not
+need to know the helper exists. The helpers delegate to a receiver that owns the
+equivalent native method (a `DOMTokenList` keeps its own `add`/`remove`), so
+`.add()` / `.remove()` stay safe on non-list objects.
+
+### Language features
+
+Python semantics are preserved rather than approximated:
+
+```python
+a = 0 < x < 10           # chained comparison: evaluated once per operand
+found = key in items     # membership, not property presence
+same = a is b            # identity
+a, b = b, a              # parallel assignment
+p = q = r = 0            # chained assignment
+name, age = get_user()   # destructuring (let when in a function scope)
+xs[1:3] / xs[:5] / xs[::2]   # slicing via runtime helpers
+{k: v for k, v in pairs} # dict comprehension
+{x for x in xs}          # set comprehension
+total = 0
+for x in xs:
+    total += x           # augmented assignment on any target
+```
+
+`def` with `yield` becomes a generator (`function*`); `class` with `__init__`
+becomes an ES class with `this`, `@staticmethod`, and inheritance; free functions
+can be decorated (`@deco` → `f = deco(f)`), and `@dataclass` synthesises
+`__init__` from annotated fields.
+
+`slot` inside a component body renders `props.children`; the component then
+receives a `children` prop automatically:
+
+```python
+component Card(title: str):
+    div(className="card"):
+        h3: title
+        slot                # <- children land here
+```
+
+### Structured error types
+
+`type(x).__name__` works, and `class MyError(Exception)` produces a real JS class,
+so `raise MyError("msg")` / `raise ValueError("msg")` give usable stack traces:
+
+```python
+class ValidationError(Exception):
+    pass
+
+def check(x):
+    if x < 0:
+        raise ValidationError("negative")
+```
 
 ### Module Imports and Exports
 ```python
@@ -676,6 +735,11 @@ COMMANDS:
   stats [dir]           Report file/line/definition counts for a codebase
   doctor                Check the local toolchain and project health
   init [dir]            Scaffold a new project
+  add <pkg> [--dev]     Install a dependency (npm/bun, detected)
+  remove <pkg>          Remove a dependency
+  list                  Show declared vs installed dependencies
+  clean [--all]         Remove build output (--all also clears caches)
+  analyze [dir]         Report bundle sizes and per-file weight
   repl                  Start interactive HydraScript REPL session
   --version, -v         Display compiler version information
   --help, -h            Display help information
