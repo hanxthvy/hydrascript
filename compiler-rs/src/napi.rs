@@ -37,10 +37,7 @@ extern "C" {
         result: *mut NapiValue,
     ) -> NapiStatus;
 
-    fn napi_create_object(
-        env: NapiEnv,
-        result: *mut NapiValue,
-    ) -> NapiStatus;
+    fn napi_create_object(env: NapiEnv, result: *mut NapiValue) -> NapiStatus;
 
     fn napi_set_named_property(
         env: NapiEnv,

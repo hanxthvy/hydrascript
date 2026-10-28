@@ -46,7 +46,16 @@ fn assert_not_contains(out: &str, frags: &[&str]) {
 fn test_lexer_indent_dedent_balance() {
     let src = "component A():\n    div:\n        span: \"x\"\n        span: \"y\"\n    p: \"z\"\n";
     let out = comp(src);
-    assert_contains(&out, &["<div>", "<span>x</span>", "<span>y</span>", "</div>", "<p>z</p>"]);
+    assert_contains(
+        &out,
+        &[
+            "<div>",
+            "<span>x</span>",
+            "<span>y</span>",
+            "</div>",
+            "<p>z</p>",
+        ],
+    );
 }
 
 #[test]
@@ -54,7 +63,10 @@ fn test_lexer_comment_stripping() {
     let src = "# top comment\ncomponent A(): # inline comment\n    # body comment\n    div: \"x\" # trailing\n";
     let out = comp(src);
     assert_contains(&out, &["export function A()", "<div>x</div>"]);
-    assert_not_contains(&out, &["top comment", "inline comment", "body comment", "trailing"]);
+    assert_not_contains(
+        &out,
+        &["top comment", "inline comment", "body comment", "trailing"],
+    );
 }
 
 #[test]
@@ -89,16 +101,19 @@ fn test_lexer_fstring_basic() {
 fn test_lexer_two_and_three_char_operators() {
     let src = "component A():\n    if a == b and c != d and e <= f and g >= h:\n        x += 1\n        x -= 1\n        x *= 2\n        x /= 2\n        p: \"y\"\n";
     let out = comp(src);
-    assert_contains(&out, &[
-        "(a === b)",
-        "(c !== d)",
-        "(e <= f)",
-        "(g >= h)",
-        "x += 1;",
-        "x -= 1;",
-        "x *= 2;",
-        "x /= 2;",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "(a === b)",
+            "(c !== d)",
+            "(e <= f)",
+            "(g >= h)",
+            "x += 1;",
+            "x -= 1;",
+            "x *= 2;",
+            "x /= 2;",
+        ],
+    );
 }
 
 #[test]
@@ -150,45 +165,54 @@ fn test_expr_ternary() {
 fn test_expr_all_arithmetic_and_unary_minus() {
     let src = "component A():\n    x = 1 + 2 * 3 - 4 / 2 % 3\n    y = -x\n    z = -1\n";
     let out = comp(src);
-    assert_contains(&out, &[
-        "const x = ((1 + (2 * 3)) - ((4 / 2) % 3));",
-        "const y = (-x);",
-        "const z = (-1);",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "const x = ((1 + (2 * 3)) - ((4 / 2) % 3));",
+            "const y = (-x);",
+            "const z = (-1);",
+        ],
+    );
 }
 
 #[test]
 fn test_expr_string_methods() {
     let src = "component A():\n    a = s.strip()\n    b = s.upper()\n    c = s.lower()\n    d = s.startswith(\"x\")\n    e = s.endswith(\"y\")\n    f = s.replace(\"a\", \"b\")\n    g = s.find(\"x\")\n";
     let out = comp(src);
-    assert_contains(&out, &[
-        "const a = s.trim();",
-        "const b = s.toUpperCase();",
-        "const c = s.toLowerCase();",
-        "const d = s.startsWith(\"x\");",
-        "const e = s.endsWith(\"y\");",
-        "const f = s.replaceAll(\"a\", \"b\");",
-        "const g = s.indexOf(\"x\");",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "const a = s.trim();",
+            "const b = s.toUpperCase();",
+            "const c = s.toLowerCase();",
+            "const d = s.startsWith(\"x\");",
+            "const e = s.endsWith(\"y\");",
+            "const f = s.replaceAll(\"a\", \"b\");",
+            "const g = s.indexOf(\"x\");",
+        ],
+    );
 }
 
 #[test]
 fn test_expr_python_builtins() {
     let src = "component A():\n    a = len(xs)\n    b = str(x)\n    c = int(x)\n    d = float(x)\n    e = abs(x)\n    f = round(x)\n    g = sum(xs)\n    h = sorted(xs)\n    i = reversed(xs)\n    j = list(xs)\n    k = bool(x)\n";
     let out = comp(src);
-    assert_contains(&out, &[
-        "const a = xs.length;",
-        "const b = String(x);",
-        "const c = parseInt(x);",
-        "const d = parseFloat(x);",
-        "const e = Math.abs(x);",
-        "const f = Math.round(x);",
-        "const g = xs.reduce((a, b) => a + b, 0);",
-        "const h = xs.slice().sort();",
-        "const i = xs.slice().reverse();",
-        "const j = xs.slice();",
-        "const k = Boolean(x);",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "const a = xs.length;",
+            "const b = String(x);",
+            "const c = parseInt(x);",
+            "const d = parseFloat(x);",
+            "const e = Math.abs(x);",
+            "const f = Math.round(x);",
+            "const g = xs.reduce((a, b) => a + b, 0);",
+            "const h = xs.slice().sort();",
+            "const i = xs.slice().reverse();",
+            "const j = xs.slice();",
+            "const k = Boolean(x);",
+        ],
+    );
 }
 
 // =========================================================================
@@ -211,7 +235,10 @@ fn test_list_comprehension_filter_only_form() {
 #[test]
 fn test_list_comprehension_filter_and_map_form() {
     let out = comp("component A():\n    ys = [x * 2 for x in xs if x > 1]\n");
-    assert_contains(&out, &["const ys = xs.filter((x) => (x > 1)).map((x) => (x * 2));"]);
+    assert_contains(
+        &out,
+        &["const ys = xs.filter((x) => (x > 1)).map((x) => (x * 2));"],
+    );
 }
 
 // =========================================================================
@@ -279,19 +306,27 @@ fn test_tree_elif_chain_no_nested_braces() {
 
 #[test]
 fn test_tree_for_to_map() {
-    let out = comp("component A():\n    ul:\n        for item in items:\n            li(key=item): item\n");
-    assert_contains(&out, &["{items.map((item) => (<li key={item}>{item}</li>))}"]);
+    let out = comp(
+        "component A():\n    ul:\n        for item in items:\n            li(key=item): item\n",
+    );
+    assert_contains(
+        &out,
+        &["{items.map((item) => (<li key={item}>{item}</li>))}"],
+    );
 }
 
 #[test]
 fn test_tree_for_multiple_children_fragment() {
     let out = comp("component A():\n    div:\n        for x in xs:\n            span: \"a\"\n            span: \"b\"\n");
-    assert_contains(&out, &[
-        "{xs.map((x) => (<>",
-        "<span>a</span>",
-        "<span>b</span>",
-        "</>))}",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "{xs.map((x) => (<>",
+            "<span>a</span>",
+            "<span>b</span>",
+            "</>))}",
+        ],
+    );
 }
 
 // =========================================================================
@@ -302,13 +337,16 @@ fn test_tree_for_multiple_children_fragment() {
 fn test_component_props_interface_and_types() {
     let src = "component Btn(label: str, count: int = 0, on_click=None):\n    button: label\n";
     let out = comp(src);
-    assert_contains(&out, &[
-        "export function Btn({ label, count = 0, on_click }: BtnProps)",
-        "export interface BtnProps {",
-        "label: string;",
-        "count?: number;",
-        "on_click?: any;",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "export function Btn({ label, count = 0, on_click }: BtnProps)",
+            "export interface BtnProps {",
+            "label: string;",
+            "count?: number;",
+            "on_click?: any;",
+        ],
+    );
     assert_not_contains(&out, &["label?:", "= null"]);
 }
 
@@ -316,11 +354,14 @@ fn test_component_props_interface_and_types() {
 fn test_component_generic_and_union_types() {
     let src = "component C(x: list[str], y: dict[str, int], a: str | None):\n    div: \"z\"\n";
     let out = comp(src);
-    assert_contains(&out, &[
-        "x: Array<string>;",
-        "y: Record<string, number>;",
-        "a: string | null;",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "x: Array<string>;",
+            "y: Record<string, number>;",
+            "a: string | null;",
+        ],
+    );
 }
 
 #[test]
@@ -359,12 +400,10 @@ fn test_stmt_aug_assign() {
 fn test_stmt_level_if_and_for() {
     let src = "component A():\n    if a:\n        go()\n    for x in xs:\n        run(x)\n    div: \"z\"\n";
     let out = comp(src);
-    assert_contains(&out, &[
-        "if (a) {",
-        "go();",
-        "for (const x of xs) {",
-        "run(x);",
-    ]);
+    assert_contains(
+        &out,
+        &["if (a) {", "go();", "for (const x of xs) {", "run(x);"],
+    );
 }
 
 // =========================================================================
@@ -373,12 +412,16 @@ fn test_stmt_level_if_and_for() {
 
 #[test]
 fn test_imports_from_and_bare() {
-    let src = "from serpent import state, effect\nimport serpent\n\ncomponent A():\n    div: \"z\"\n";
+    let src =
+        "from serpent import state, effect\nimport serpent\n\ncomponent A():\n    div: \"z\"\n";
     let out = comp(src);
-    assert_contains(&out, &[
-        "import serpent from 'serpent';",
-        "import { state, effect } from 'serpent';",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "import serpent from 'serpent';",
+            "import { state, effect } from 'serpent';",
+        ],
+    );
 }
 
 #[test]
@@ -386,10 +429,13 @@ fn test_imports_deduplicated_and_sorted() {
     let src = "from b_module import b\nfrom a_module import a\nfrom b_module import b\n\ncomponent A():\n    div: \"z\"\n";
     let out = comp(src);
     let import_lines: Vec<_> = out.lines().filter(|l| l.starts_with("import ")).collect();
-    assert_eq!(import_lines, vec![
-        "import { a } from 'a_module';",
-        "import { b } from 'b_module';",
-    ]);
+    assert_eq!(
+        import_lines,
+        vec![
+            "import { a } from 'a_module';",
+            "import { b } from 'b_module';",
+        ]
+    );
 }
 
 // =========================================================================
@@ -459,22 +505,21 @@ fn test_sourcemap_version_sources_and_segments() {
 fn test_edge_case_empty_collections() {
     let src = "component A():\n    a = []\n    b = {}\n    c = ()\n    div: \"z\"\n";
     let out = comp(src);
-    assert_contains(&out, &[
-        "const a = [];",
-        "const b = ({});",
-        "const c = [];",
-    ]);
+    assert_contains(&out, &["const a = [];", "const b = ({});", "const c = [];"]);
 }
 
 #[test]
 fn test_edge_case_deeply_nested_trees() {
     let src = "component A():\n    div:\n        section:\n            ul:\n                li:\n                    span:\n                        em: \"deep\"\n";
     let out = comp(src);
-    assert_contains(&out, &[
-        "<div>",
-        "<section><ul><li><span><em>deep</em></span></li></ul></section>",
-        "</div>",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "<div>",
+            "<section><ul><li><span><em>deep</em></span></li></ul></section>",
+            "</div>",
+        ],
+    );
 }
 
 #[test]
@@ -503,10 +548,7 @@ fn test_edge_case_fstring_with_dollar_interpolation() {
 fn test_edge_case_unicode_in_strings_and_identifiers() {
     let src = "component A():\n    café = 1\n    div: \"日本語 café ünïcode\"\n";
     let out = comp(src);
-    assert_contains(&out, &[
-        "const café = 1;",
-        "<div>日本語 café ünïcode</div>",
-    ]);
+    assert_contains(&out, &["const café = 1;", "<div>日本語 café ünïcode</div>"]);
 }
 
 #[test]
@@ -522,19 +564,22 @@ fn test_edge_case_very_long_attribute_list() {
 fn test_edge_case_component_with_many_props() {
     let src = "component Big(a: str, b: int, c: float, d: bool, e: list[str], f: dict[str, int], g: str | None, h=None, i: int = 3):\n    div: \"z\"\n";
     let out = comp(src);
-    assert_contains(&out, &[
-        "export function Big({ a, b, c, d, e, f, g, h, i = 3 }: BigProps)",
-        "export interface BigProps {",
-        "a: string;",
-        "b: number;",
-        "c: number;",
-        "d: boolean;",
-        "e: Array<string>;",
-        "f: Record<string, number>;",
-        "g: string | null;",
-        "h?: any;",
-        "i?: number;",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "export function Big({ a, b, c, d, e, f, g, h, i = 3 }: BigProps)",
+            "export interface BigProps {",
+            "a: string;",
+            "b: number;",
+            "c: number;",
+            "d: boolean;",
+            "e: Array<string>;",
+            "f: Record<string, number>;",
+            "g: string | null;",
+            "h?: any;",
+            "i?: number;",
+        ],
+    );
 }
 
 #[test]
@@ -548,9 +593,10 @@ fn test_edge_case_nested_lambdas() {
 fn test_edge_case_list_comprehension_inside_tree() {
     let src = "component A():\n    ul:\n        for x in [i * 2 for i in xs]:\n            li: x\n";
     let out = comp(src);
-    assert_contains(&out, &[
-        "<ul>{xs.map((i) => (i * 2)).map((x) => (<li>{x}</li>))}</ul>",
-    ]);
+    assert_contains(
+        &out,
+        &["<ul>{xs.map((i) => (i * 2)).map((x) => (<li>{x}</li>))}</ul>"],
+    );
 }
 
 #[test]
@@ -566,7 +612,10 @@ fn test_edge_case_comments_in_every_position() {
     let src = "# top comment\ncomponent A():\n    # inside component\n    div:\n        # inside tree\n        span: \"z\"  # inline comment\n    # after tree\n# file end\n";
     let out = comp(src);
     assert_contains(&out, &["export function A()", "<span>z</span>"]);
-    assert_not_contains(&out, &["# top", "# inside", "# inline", "# after", "# file"]);
+    assert_not_contains(
+        &out,
+        &["# top", "# inside", "# inline", "# after", "# file"],
+    );
 }
 
 #[test]
@@ -618,17 +667,20 @@ component TodoApp():
                     li(key=item): item
 "#;
     let out = comp(src);
-    assert_contains(&out, &[
-        "export function TodoApp()",
-        "const [todos, set_todos] = state([\"Belajar Python\", \"Bikin Framework\"]);",
-        "const [text, set_text] = state(\"\");",
-        "const count = todos.length;",
-        "const add_todo = () => {",
-        "set_todos([...todos, ...[text]]);",
-        "<div className=\"max-w-md mx-auto\">",
-        "<h1>{`Total: ${count}`}</h1>",
-        "<li key={item}>{item}</li>",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "export function TodoApp()",
+            "const [todos, set_todos] = state([\"Belajar Python\", \"Bikin Framework\"]);",
+            "const [text, set_text] = state(\"\");",
+            "const count = todos.length;",
+            "const add_todo = () => {",
+            "set_todos([...todos, ...[text]]);",
+            "<div className=\"max-w-md mx-auto\">",
+            "<h1>{`Total: ${count}`}</h1>",
+            "<li key={item}>{item}</li>",
+        ],
+    );
 
     // Balance checks
     assert_eq!(out.matches('{').count(), out.matches('}').count());
@@ -653,7 +705,10 @@ fn comp_hx_err(src: &str) -> CompileError {
 fn test_hx_while_loop() {
     let src = "def countdown(n: int):\n    while n > 0:\n        n -= 1\n";
     let out = comp_hx(src);
-    assert_contains(&out, &["function countdown(n) {", "while ((n > 0)) {", "n -= 1;"]);
+    assert_contains(
+        &out,
+        &["function countdown(n) {", "while ((n > 0)) {", "n -= 1;"],
+    );
 }
 
 #[test]
@@ -667,37 +722,43 @@ fn test_hx_break_continue_pass() {
 fn test_hx_try_except_finally() {
     let src = "def parse(s):\n    try:\n        return int(s)\n    except ValueError as e:\n        return None\n    finally:\n        print(\"done\")\n";
     let out = comp_hx(src);
-    assert_contains(&out, &[
-        "import { ValueError, int } from 'serpent-js';",
-        "try {",
-        "catch (__err) {",
-        "if (__err instanceof ValueError) {",
-        "const e = __err;",
-        "return null;",
-        "finally {",
-        "console.log(\"done\");",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "import { ValueError, int } from 'serpent-js';",
+            "try {",
+            "catch (__err) {",
+            "if (__err instanceof ValueError) {",
+            "const e = __err;",
+            "return null;",
+            "finally {",
+            "console.log(\"done\");",
+        ],
+    );
 }
 
 #[test]
 fn test_hx_async_def_and_await() {
     let src = "async def fetch_user(id):\n    res = await fetch(f\"/api/{id}\")\n    return await res.json()\n";
     let out = comp_hx(src);
-    assert_contains(&out, &[
-        "async function fetch_user(id) {",
-        "const res = await fetch(`/api/${id}`);",
-        "return await res.json();",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "async function fetch_user(id) {",
+            "const res = await fetch(`/api/${id}`);",
+            "return await res.json();",
+        ],
+    );
 }
 
 #[test]
 fn test_hx_export() {
     let src = "export def add(a: int, b: int) -> int:\n    return a + b\nexport PI = 3.14\n";
     let out = comp_hx(src);
-    assert_contains(&out, &[
-        "export function add(a, b) {",
-        "export const PI = 3.14;",
-    ]);
+    assert_contains(
+        &out,
+        &["export function add(a, b) {", "export const PI = 3.14;"],
+    );
 }
 
 #[test]
@@ -710,7 +771,10 @@ fn test_hx_slice() {
 #[test]
 fn test_hx_rejects_component_and_tree() {
     let err1 = comp_hx_err("component App():\n    div: \"x\"\n");
-    assert_contains(&err1.msg, &["`component App` is not available in a .hx file"]);
+    assert_contains(
+        &err1.msg,
+        &["`component App` is not available in a .hx file"],
+    );
 
     let err2 = comp_hx_err("div:\n    span: \"x\"\n");
     assert_contains(&err2.msg, &["a tree block is not available in a .hx file"]);
@@ -720,13 +784,16 @@ fn test_hx_rejects_component_and_tree() {
 fn test_hx_modern_js_features() {
     let src = "def test_modern():\n    name = user?.name\n    item = items?.[0]\n    val = a ?? b\n    { title, content } = props\n    if \"admin\" in roles:\n        return True\n";
     let out = comp_hx(src);
-    assert_contains(&out, &[
-        "const name = user?.name;",
-        "const item = items?.[0];",
-        "const val = (a ?? b);",
-        "const { title, content } = props;",
-        "(\"admin\" in roles)",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "const name = user?.name;",
+            "const item = items?.[0];",
+            "const val = (a ?? b);",
+            "const { title, content } = props;",
+            "(\"admin\" in roles)",
+        ],
+    );
     assert_not_contains(&out, &["const ({ title, content })"]);
 }
 
@@ -747,11 +814,14 @@ fn test_feature_match_case_in_tree() {
                 span: "Ready"
 "#;
     let out = comp(src);
-    assert_contains(&out, &[
-        "(status === \"loading\") ? (<span>Loading...</span>)",
-        ": (status === \"error\") ? (<span className=\"text-red\">Failed</span>)",
-        ": (<span>Ready</span>)",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "(status === \"loading\") ? (<span>Loading...</span>)",
+            ": (status === \"error\") ? (<span className=\"text-red\">Failed</span>)",
+            ": (<span>Ready</span>)",
+        ],
+    );
 }
 
 #[test]
@@ -766,15 +836,18 @@ fn test_feature_match_case_statement() {
             return 500
 "#;
     let out = comp_hx(src);
-    assert_contains(&out, &[
-        "switch (status) {",
-        "case \"ok\": {",
-        "return 200;",
-        "case \"not_found\": {",
-        "return 404;",
-        "default: {",
-        "return 500;",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "switch (status) {",
+            "case \"ok\": {",
+            "return 200;",
+            "case \"not_found\": {",
+            "return 404;",
+            "default: {",
+            "return 500;",
+        ],
+    );
 }
 
 #[test]
@@ -783,10 +856,13 @@ fn test_feature_cls_conditional_dict() {
     button(cls={"btn": True, "active": is_active, "opacity-50": is_disabled}): "Click"
 "#;
     let out = comp(src);
-    assert_contains(&out, &[
-        "import { cx } from 'serpent';",
-        "className={cx(({\"btn\": true, \"active\": is_active, \"opacity-50\": is_disabled}))}",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "import { cx } from 'serpent';",
+            "className={cx(({\"btn\": true, \"active\": is_active, \"opacity-50\": is_disabled}))}",
+        ],
+    );
 }
 
 #[test]
@@ -812,10 +888,13 @@ fn test_feature_event_modifiers() {
         button(on_click_stop=on_click): "Submit"
 "#;
     let out = comp(src);
-    assert_contains(&out, &[
-        "onSubmit={(e: any) => { e.preventDefault(); (on_submit)(e); }}",
-        "onClick={(e: any) => { e.stopPropagation(); (on_click)(e); }}",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "onSubmit={(e: any) => { e.preventDefault(); (on_submit)(e); }}",
+            "onClick={(e: any) => { e.stopPropagation(); (on_click)(e); }}",
+        ],
+    );
 }
 
 #[test]
@@ -826,28 +905,39 @@ fn test_feature_auto_fragment_multiple_roots() {
     div: "Content"
 "#;
     let out = comp(src);
-    assert_contains(&out, &[
-        "return (",
-        "<>",
-        "<h1>Title</h1>",
-        "<p>Subtitle</p>",
-        "<div>Content</div>",
-        "</>",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "return (",
+            "<>",
+            "<h1>Title</h1>",
+            "<p>Subtitle</p>",
+            "<div>Content</div>",
+            "</>",
+        ],
+    );
 }
 
 #[test]
 fn test_feature_cli_run() {
     let tmp_dir = std::env::temp_dir();
     let script_path = tmp_dir.join("test_run.hys");
-    std::fs::write(&script_path, "def add(a, b):\n    return a + b\nprint(f\"result={add(20, 22)}\")\n").unwrap();
+    std::fs::write(
+        &script_path,
+        "def add(a, b):\n    return a + b\nprint(f\"result={add(20, 22)}\")\n",
+    )
+    .unwrap();
     let code = hydra::cli::run_script(&[script_path.to_string_lossy().to_string()]);
     assert_eq!(code, std::process::ExitCode::SUCCESS);
     let _ = std::fs::remove_file(&script_path);
 
     // Test backward compatibility with .hs
     let legacy_script = tmp_dir.join("test_run_legacy.hs");
-    std::fs::write(&legacy_script, "def sub(a, b):\n    return a - b\nprint(f\"result={sub(50, 8)}\")\n").unwrap();
+    std::fs::write(
+        &legacy_script,
+        "def sub(a, b):\n    return a - b\nprint(f\"result={sub(50, 8)}\")\n",
+    )
+    .unwrap();
     let legacy_code = hydra::cli::run_script(&[legacy_script.to_string_lossy().to_string()]);
     assert_eq!(legacy_code, std::process::ExitCode::SUCCESS);
     let _ = std::fs::remove_file(&legacy_script);
@@ -857,11 +947,14 @@ fn test_feature_cli_run() {
 fn test_feature_opt_chaining_and_nullish() {
     let src = "component A():\n    name = user?.name\n    item = items?.[0]\n    val = a ?? b\n    div: name\n";
     let out = comp(src);
-    assert_contains(&out, &[
-        "const name = user?.name;",
-        "const item = items?.[0];",
-        "const val = (a ?? b);",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "const name = user?.name;",
+            "const item = items?.[0];",
+            "const val = (a ?? b);",
+        ],
+    );
 }
 
 #[test]
@@ -888,22 +981,29 @@ fn test_feature_jsx_spread_and_svg_and_compound() {
         Tabs.Trigger(value="1"): "Tab 1"
 "#;
     let out = comp(src);
-    assert_contains(&out, &[
-        "<svg {...props} className=\"icon\">",
-        "<path d=\"M0 0 L10 10\"",
-        "<Tabs.List className=\"tab-list\">",
-        "<Tabs.Trigger value=\"1\">Tab 1</Tabs.Trigger>",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "<svg {...props} className=\"icon\">",
+            "<path d=\"M0 0 L10 10\"",
+            "<Tabs.List className=\"tab-list\">",
+            "<Tabs.Trigger value=\"1\">Tab 1</Tabs.Trigger>",
+        ],
+    );
 }
 
 #[test]
 fn test_feature_hsx_slice_and_await() {
-    let src = "component A():\n    sub = items[1:3]\n    res = await fetchData()\n    div: \"ok\"\n";
+    let src =
+        "component A():\n    sub = items[1:3]\n    res = await fetchData()\n    div: \"ok\"\n";
     let out = comp(src);
-    assert_contains(&out, &[
-        "const sub = items.slice(1, 3);",
-        "const res = await fetchData();",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "const sub = items.slice(1, 3);",
+            "const res = await fetchData();",
+        ],
+    );
 }
 
 #[test]
@@ -912,12 +1012,15 @@ fn test_feature_aria_and_data_attributes() {
     button(aria_label="Close", aria_expanded=True, data_testid="btn-close", data_custom_val="123"): "X"
 "#;
     let out = comp(src);
-    assert_contains(&out, &[
-        "aria-label=\"Close\"",
-        "aria-expanded={true}",
-        "data-testid=\"btn-close\"",
-        "data-custom-val=\"123\"",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "aria-label=\"Close\"",
+            "aria-expanded={true}",
+            "data-testid=\"btn-close\"",
+            "data-custom-val=\"123\"",
+        ],
+    );
 }
 
 #[test]
@@ -926,9 +1029,7 @@ fn test_feature_jsx_double_star_spread() {
     div(**props): "content"
 "#;
     let out = comp(src);
-    assert_contains(&out, &[
-        "<div {...props}>content</div>",
-    ]);
+    assert_contains(&out, &["<div {...props}>content</div>"]);
 }
 
 // [xihanzu-NR]
@@ -960,9 +1061,7 @@ fn test_react_capabilities_svg_namespaced_spread_aria() {
 fn test_feature_comprehension_tuple_target() {
     let src = "component A():\n    vals = [v for k, v in items]\n    div: \"ok\"\n";
     let out = comp(src);
-    assert_contains(&out, &[
-        "const vals = items.map(([k, v]) => v);",
-    ]);
+    assert_contains(&out, &["const vals = items.map(([k, v]) => v);"]);
 }
 
 #[test]
@@ -981,7 +1080,11 @@ fn test_error_unclosed_brace_fstring() {
 
 #[test]
 fn test_error_recursion_depth_limit() {
-    let nested = format!("component A():\n    x = {}1{}\n", "(".repeat(270), ")".repeat(270));
+    let nested = format!(
+        "component A():\n    x = {}1{}\n",
+        "(".repeat(270),
+        ")".repeat(270)
+    );
     let err = compile(&nested, "App.hsx").expect_err("should reject deep nesting");
     assert_contains(&err.msg, &["maximum recursion depth exceeded"]);
 }
@@ -1003,63 +1106,62 @@ fn test_multiline_component_and_attributes() {
             h1: title
 "#;
     let out = comp(src);
-    assert_contains(&out, &[
-        "export function Card({ title, count = 0, is_active = false }: CardProps)",
-        "className={cx(({\"btn\": true, \"active\": is_active}))}",
-        "id=\"main-card\"",
-        "<h1>{title}</h1>",
-    ]);
+    assert_contains(
+        &out,
+        &[
+            "export function Card({ title, count = 0, is_active = false }: CardProps)",
+            "className={cx(({\"btn\": true, \"active\": is_active}))}",
+            "id=\"main-card\"",
+            "<h1>{title}</h1>",
+        ],
+    );
 }
 
 #[test]
 fn test_feature_interface_declaration() {
     let src = "interface UserProps:\n    name: str\n    age: int\n    email: str\n";
     let (code, _) = compile(src, "test.hsx").expect("compilation failed");
-    assert_contains(&code, &[
-        "export interface UserProps {",
-        "name",
-        "string",
-        "age",
-        "number",
-        "email",
-        "}",
-    ]);
+    assert_contains(
+        &code,
+        &[
+            "export interface UserProps {",
+            "name",
+            "string",
+            "age",
+            "number",
+            "email",
+            "}",
+        ],
+    );
 }
 
 #[test]
 fn test_feature_type_alias() {
     let src = "type OrderStatus = 'pending' | 'completed' | 'failed'\n";
     let (code, _) = compile(src, "test.hsx").expect("compilation failed");
-    assert_contains(&code, &[
-        "export type OrderStatus = 'pending' | 'completed' | 'failed';",
-    ]);
+    assert_contains(
+        &code,
+        &["export type OrderStatus = 'pending' | 'completed' | 'failed';"],
+    );
 }
 
 #[test]
 fn test_feature_typeof_operator() {
     let src = "component A():\n    if typeof x == 'string':\n        div: \"yes\"\n";
     let out = comp(src);
-    assert_contains(&out, &[
-        "typeof x",
-    ]);
+    assert_contains(&out, &["typeof x"]);
 }
 
 #[test]
 fn test_feature_import_type() {
     let src = "from '../types' import type AmAccountResult, AlightLinkItem\n\ncomponent A():\n    div: \"ok\"\n";
     let out = comp(src);
-    assert_contains(&out, &[
-        "AmAccountResult, AlightLinkItem",
-        "'../types'",
-    ]);
+    assert_contains(&out, &["AmAccountResult, AlightLinkItem", "'../types'"]);
 }
 
 #[test]
 fn test_feature_import_as_alias() {
     let src = "from 'lucide-react' import Image as ImageIcon, Download\n\ncomponent A():\n    div: \"ok\"\n";
     let out = comp(src);
-    assert_contains(&out, &[
-        "Image as ImageIcon",
-        "Download",
-    ]);
+    assert_contains(&out, &["Image as ImageIcon", "Download"]);
 }

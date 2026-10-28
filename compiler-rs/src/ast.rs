@@ -15,63 +15,166 @@ pub struct Node {
 pub enum Kind {
     // ---- statements
     Module(Vec<Node>),
-    Component { name: String, params: Vec<Param>, body: Vec<Node> },
-    Def { name: String, params: Vec<Param>, body: Vec<Node> },
-    Import { from: Option<String>, names: Vec<String> },
-    Assign { target: Box<Node>, value: Box<Node> },
-    AugAssign { target: Box<Node>, op: String, value: Box<Node> },
+    Component {
+        name: String,
+        params: Vec<Param>,
+        body: Vec<Node>,
+    },
+    Def {
+        name: String,
+        params: Vec<Param>,
+        body: Vec<Node>,
+    },
+    Import {
+        from: Option<String>,
+        names: Vec<String>,
+    },
+    Assign {
+        target: Box<Node>,
+        value: Box<Node>,
+    },
+    AugAssign {
+        target: Box<Node>,
+        op: String,
+        value: Box<Node>,
+    },
     Return(Option<Box<Node>>),
     ExprStmt(Box<Node>),
-    If { test: Box<Node>, body: Vec<Node>, orelse: Option<Vec<Node>> },
-    For { target: String, iter: Box<Node>, body: Vec<Node> },
-    While { test: Box<Node>, body: Vec<Node> },
-    Try { body: Vec<Node>, handlers: Vec<Except>, orelse: Option<Vec<Node>>, finally: Option<Vec<Node>> },
+    If {
+        test: Box<Node>,
+        body: Vec<Node>,
+        orelse: Option<Vec<Node>>,
+    },
+    For {
+        target: String,
+        iter: Box<Node>,
+        body: Vec<Node>,
+    },
+    While {
+        test: Box<Node>,
+        body: Vec<Node>,
+    },
+    Try {
+        body: Vec<Node>,
+        handlers: Vec<Except>,
+        orelse: Option<Vec<Node>>,
+        finally: Option<Vec<Node>>,
+    },
     Break,
     Continue,
     Pass,
     /// `async def name(...)` — emits `async function`.
-    AsyncDef { name: String, params: Vec<Param>, body: Vec<Node> },
+    AsyncDef {
+        name: String,
+        params: Vec<Param>,
+        body: Vec<Node>,
+    },
     /// `export def` / `export NAME = ...` — emits a JS `export`.
     Export(Box<Node>),
     /// A `tag:` or `tag(props):` block — the thing that becomes JSX.
-    Tree { head: Box<Node>, body: Vec<Node> },
+    Tree {
+        head: Box<Node>,
+        body: Vec<Node>,
+    },
     /// `interface Name: ...` — TypeScript interface, passed through verbatim.
-    Interface { name: String, body: String },
+    Interface {
+        name: String,
+        body: String,
+    },
     /// `type Name = ...` — TypeScript type alias, passed through verbatim.
-    TypeAlias { name: String, body: String },
+    TypeAlias {
+        name: String,
+        body: String,
+    },
     /// Raw TypeScript/JavaScript passthrough — lines starting with `@raw`.
     RawTS(String),
 
     // ---- expressions
     Name(String),
-    Str { value: String, is_f: bool },
+    Str {
+        value: String,
+        is_f: bool,
+    },
     /// A parsed f-string. The interpolation is compiled, not copied — otherwise
     /// `f"{'a' if x else 'b'}"` would leak Python syntax into the JS output.
     FString(Vec<FPart>),
     Num(String),
     Bool(bool),
     Null,
-    Attr { obj: Box<Node>, name: String },
-    OptAttr { obj: Box<Node>, name: String },
-    Index { obj: Box<Node>, index: Box<Node> },
-    OptIndex { obj: Box<Node>, index: Box<Node> },
-    Bin { op: String, left: Box<Node>, right: Box<Node> },
-    Unary { op: String, operand: Box<Node> },
-    Ternary { test: Box<Node>, body: Box<Node>, orelse: Box<Node> },
-    Lambda { params: Vec<String>, defaults: Vec<Option<Node>>, body: Box<Node> },
+    Attr {
+        obj: Box<Node>,
+        name: String,
+    },
+    OptAttr {
+        obj: Box<Node>,
+        name: String,
+    },
+    Index {
+        obj: Box<Node>,
+        index: Box<Node>,
+    },
+    OptIndex {
+        obj: Box<Node>,
+        index: Box<Node>,
+    },
+    Bin {
+        op: String,
+        left: Box<Node>,
+        right: Box<Node>,
+    },
+    Unary {
+        op: String,
+        operand: Box<Node>,
+    },
+    Ternary {
+        test: Box<Node>,
+        body: Box<Node>,
+        orelse: Box<Node>,
+    },
+    Lambda {
+        params: Vec<String>,
+        defaults: Vec<Option<Node>>,
+        body: Box<Node>,
+    },
     List(Vec<Node>),
     Tuple(Vec<Node>),
     Dict(Vec<(Option<Node>, Node)>),
     Spread(Box<Node>),
-    Call { func: Box<Node>, args: Vec<Node>, kwargs: Vec<(String, Node)> },
+    Call {
+        func: Box<Node>,
+        args: Vec<Node>,
+        kwargs: Vec<(String, Node)>,
+    },
+    /// `fn?.(x)` — optional call. Emits `fn?.(x)`, not a guarded if.
+    OptCall {
+        func: Box<Node>,
+        args: Vec<Node>,
+        kwargs: Vec<(String, Node)>,
+    },
     /// `[expr for x in iter if cond]`
-    Comprehension { expr: Box<Node>, target: String, iter: Box<Node>, cond: Option<Box<Node>> },
+    Comprehension {
+        expr: Box<Node>,
+        target: String,
+        iter: Box<Node>,
+        cond: Option<Box<Node>>,
+    },
     /// `xs[start:stop]` — Python slicing, no JS equivalent.
-    Slice { obj: Box<Node>, start: Option<Box<Node>>, stop: Option<Box<Node>> },
+    Slice {
+        obj: Box<Node>,
+        start: Option<Box<Node>>,
+        stop: Option<Box<Node>>,
+    },
     /// `await expr`
     Await(Box<Node>),
+    /// `new expr` — JS constructor call. Python has no equivalent, but every
+    /// browser API a UI needs (IntersectionObserver, ResizeObserver, Date,
+    /// WebSocket, Worker, AbortController) is reached by constructing one.
+    New(Box<Node>),
     /// `match subject:` with `case pattern:` arms
-    Match { subject: Box<Node>, cases: Vec<CaseArm> },
+    Match {
+        subject: Box<Node>,
+        cases: Vec<CaseArm>,
+    },
 }
 
 #[derive(Debug, Clone)]

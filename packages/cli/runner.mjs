@@ -47,10 +47,11 @@ async function loadBundlerDeps(cwd) {
 }
 
 function findNativeAddon() {
+  // No absolute paths: this file ships with the package, so anything anchored
+  // to the author's home directory works on exactly one machine and silently
+  // picks up a stranger's binary everywhere else.
   const candidates = [
     process.env.HYDRA_NATIVE,
-    '/root/projects/hydra/bin/hydra.node',
-    '/root/projects/hydra/bin/serpent.node',
     path.join(HERE, '../../bin/hydra.node'),
     path.join(HERE, '../../bin/serpent.node'),
   ].filter(Boolean);
@@ -69,8 +70,6 @@ function cliFallbackCompile(file, source) {
   const candidates = [
     process.env.HYDRA_COMPILER,
     process.env.SERPENT_COMPILER,
-    '/root/projects/hydra/bin/hydra',
-    '/root/projects/hydra/bin/serpent',
     path.join(HERE, '../../bin/hydra'),
     path.join(HERE, '../../bin/serpent'),
   ].filter(Boolean);
@@ -252,12 +251,23 @@ export async function runBuild(cwd = process.cwd()) {
     throw new Error('[hydra] Entrypoint not found: expected src/main.hyx');
   }
 
-  // 2. Discover hydra runtime alias
-  const hydraAlias = [
+  // 2. Discover the runtime alias
+  //
+  // The compiler emits `import { capitalize } from 'serpent'` for every helper
+  // a source used but did not import. Nothing aliased that specifier, so any
+  // project using a Python string method failed to bundle with a bare
+  // "Could not resolve 'serpent'". Resolve it to the runtime that ships in
+  // this package, and keep the legacy `hydra` specifier working.
+  const pkgRoot = path.resolve(HERE, '../..');
+  const runtimeCandidates = [
+    process.env.HYDRA_RUNTIME_PATH,
     path.resolve(cwd, 'src/hydra.hys'),
     path.resolve(cwd, 'src/hydra.hs'),
-    '/root/projects/hydra/runtime-js/serpent-js.js',
-  ].find((f) => fs.existsSync(f)) || path.resolve(cwd, 'src/hydra.hys');
+    path.join(pkgRoot, 'runtime', 'serpent.ts'),
+    path.join(pkgRoot, 'runtime-js', 'serpent-js.js'),
+  ];
+  const runtimeAlias = runtimeCandidates.find((f) => fs.existsSync(f));
+  const hydraAlias = runtimeAlias || path.resolve(cwd, 'src/hydra.hys');
 
   // 3. Bundle JavaScript via esbuild
   const jsOutFile = path.join(assetsDir, 'index.js');
@@ -272,8 +282,21 @@ export async function runBuild(cwd = process.cwd()) {
     target: 'es2020',
     outfile: jsOutFile,
     plugins: [createHydraEsbuildPlugin()],
+    // The runtime file lives in this package, but it imports 'react' and
+    // 'react-dom/client'. esbuild resolves those relative to the IMPORTING
+    // file, so it looked inside the toolchain's own node_modules — where React
+    // usually is not — and failed with a bare "Could not resolve
+    // react-dom/client". nodePaths makes the project's own node_modules
+    // available too, which is where the app's React actually lives.
+    nodePaths: [
+      path.join(cwd, 'node_modules'),
+      path.join(pkgRoot, 'node_modules'),
+    ],
     resolveExtensions: ['.hyx', '.hys', '.hsx', '.hs', '.mjs', '.js', '.jsx', '.ts', '.tsx', '.json'],
     alias: {
+      // Both specifiers point at the same runtime: `serpent` is what the
+      // compiler emits today, `hydra` is what older sources import.
+      serpent: hydraAlias,
       hydra: hydraAlias,
       '@': path.resolve(cwd, 'src'),
     },
@@ -373,7 +396,11 @@ export async function runBuild(cwd = process.cwd()) {
             },
           ],
           resolveExtensions: ['.hyx', '.hys', '.hsx', '.hs', '.mjs', '.js', '.jsx', '.ts', '.tsx', '.json'],
+          nodePaths: [path.join(cwd, 'node_modules'), path.join(pkgRoot, 'node_modules')],
           alias: {
+            // Same two specifiers as the browser build: missing `serpent` here
+            // made the SSG pass fail after a successful client build.
+            serpent: hydraAlias,
             hydra: hydraAlias,
             '@': path.resolve(cwd, 'src'),
           },

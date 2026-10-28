@@ -39,16 +39,47 @@ pub struct Token {
 }
 
 pub const KEYWORDS: &[&str] = &[
-    "component", "if", "elif", "else", "for", "in", "def", "return", "import", "from", "as",
-    "and", "or", "not", "True", "False", "None", "lambda",
+    "component",
+    "if",
+    "elif",
+    "else",
+    "for",
+    "in",
+    "def",
+    "return",
+    "import",
+    "from",
+    "as",
+    "and",
+    "or",
+    "not",
+    "True",
+    "False",
+    "None",
+    "lambda",
     // Statement keywords used by the .hx (plain JS) target. Kept in the shared
     // lexer because a keyword is a lexical concept, not a target one — the
     // parser decides whether a construct is legal for the target.
     // while, break, continue, pass, try, except, finally, raise,
     // async, await, export, with, match, case.
-    "while", "break", "continue", "pass", "try", "except", "finally", "raise",
-    "async", "await", "export", "with", "match", "case",
-    "interface", "type",
+    "while",
+    "break",
+    "continue",
+    "pass",
+    "try",
+    "except",
+    "finally",
+    "raise",
+    "async",
+    "await",
+    "export",
+    "with",
+    "match",
+    "case",
+    "interface",
+    "type",
+    // `new` is a JavaScript construct the .hyx target needs for browser APIs.
+    "new",
 ];
 
 fn keyword(s: &str) -> Option<&'static str> {
@@ -101,7 +132,10 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
             continue;
         }
 
-        let leading_ws_len = raw.len() - raw.trim_start_matches(|c: char| c == ' ' || c == '\t').len();
+        let leading_ws_len = raw.len()
+            - raw
+                .trim_start_matches(|c: char| c == ' ' || c == '\t')
+                .len();
         let leading_ws = &raw[..leading_ws_len];
         if let Some(tab_pos) = leading_ws.find('\t') {
             return Err(CompileError::new(
@@ -118,11 +152,21 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
             let top = *stack.last().unwrap();
             if indent > top {
                 stack.push(indent);
-                out.push(Token { ty: TokType::Indent, value: indent.to_string(), line: line_no, col: 0 });
+                out.push(Token {
+                    ty: TokType::Indent,
+                    value: indent.to_string(),
+                    line: line_no,
+                    col: 0,
+                });
             } else {
                 while indent < *stack.last().unwrap() {
                     stack.pop();
-                    out.push(Token { ty: TokType::Dedent, value: indent.to_string(), line: line_no, col: 0 });
+                    out.push(Token {
+                        ty: TokType::Dedent,
+                        value: indent.to_string(),
+                        line: line_no,
+                        col: 0,
+                    });
                 }
                 if indent != *stack.last().unwrap() {
                     return Err(CompileError::new(
@@ -156,7 +200,12 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
             let start = pos;
 
             // f-string or plain string
-            if c == b'"' || c == b'\'' || (c == b'f' && pos + 1 < bytes.len() && (bytes[pos + 1] == b'"' || bytes[pos + 1] == b'\'')) {
+            if c == b'"'
+                || c == b'\''
+                || (c == b'f'
+                    && pos + 1 < bytes.len()
+                    && (bytes[pos + 1] == b'"' || bytes[pos + 1] == b'\''))
+            {
                 let end = match scan_string(bytes, pos) {
                     Some(end) => end,
                     None => {
@@ -172,7 +221,11 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
                 let text = &raw[start..end];
                 let is_f = text.starts_with('f');
                 out.push(Token {
-                    ty: if is_f { TokType::FString } else { TokType::String },
+                    ty: if is_f {
+                        TokType::FString
+                    } else {
+                        TokType::String
+                    },
                     value: text.to_string(),
                     line: line_no,
                     col: start,
@@ -187,7 +240,12 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
                 while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'.') {
                     end += 1;
                 }
-                out.push(Token { ty: TokType::Number, value: raw[start..end].to_string(), line: line_no, col: start });
+                out.push(Token {
+                    ty: TokType::Number,
+                    value: raw[start..end].to_string(),
+                    line: line_no,
+                    col: start,
+                });
                 pos = end;
                 continue;
             }
@@ -208,7 +266,12 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
                     Some(k) => TokType::Kw(k),
                     None => TokType::Ident,
                 };
-                out.push(Token { ty, value: word.to_string(), line: line_no, col: start });
+                out.push(Token {
+                    ty,
+                    value: word.to_string(),
+                    line: line_no,
+                    col: start,
+                });
                 pos = end;
                 continue;
             }
@@ -219,7 +282,23 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
             let three = raw[pos..].chars().take(3).collect::<String>();
             let (ty, len) = if three == "**=" || three == "//=" {
                 (TokType::Op, 3)
-            } else if matches!(two.as_str(), "==" | "!=" | "<=" | ">=" | "+=" | "-=" | "*=" | "/=" | "**" | "//" | "&&" | "||" | "->" | "?." | "??") {
+            } else if matches!(
+                two.as_str(),
+                "==" | "!="
+                    | "<="
+                    | ">="
+                    | "+="
+                    | "-="
+                    | "*="
+                    | "/="
+                    | "**"
+                    | "//"
+                    | "&&"
+                    | "||"
+                    | "->"
+                    | "?."
+                    | "??"
+            ) {
                 if two == "->" {
                     (TokType::Arrow, 2)
                 } else {
@@ -254,12 +333,14 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
                         bracket_depth = bracket_depth.saturating_sub(1);
                         (TokType::RBrace, 1)
                     }
-                    b'=' | b'+' | b'-' | b'*' | b'/' | b'%' | b'<' | b'>' | b'!' | b'&' | b'|' | b'?' => {
-                        (TokType::Op, 1)
-                    }
+                    b'=' | b'+' | b'-' | b'*' | b'/' | b'%' | b'<' | b'>' | b'!' | b'&' | b'|'
+                    | b'?' => (TokType::Op, 1),
                     _ => {
                         return Err(CompileError::new(
-                            format!("unexpected character {:?}", raw[pos..].chars().next().unwrap_or('\0')),
+                            format!(
+                                "unexpected character {:?}",
+                                raw[pos..].chars().next().unwrap_or('\0')
+                            ),
                             line_no,
                             start,
                             lines.iter().map(|s| s.to_string()).collect(),
@@ -277,15 +358,30 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
         }
 
         if bracket_depth == 0 {
-            out.push(Token { ty: TokType::Newline, value: "\n".to_string(), line: line_no, col: raw.len() });
+            out.push(Token {
+                ty: TokType::Newline,
+                value: "\n".to_string(),
+                line: line_no,
+                col: raw.len(),
+            });
         }
     }
 
     while stack.len() > 1 {
         stack.pop();
-        out.push(Token { ty: TokType::Dedent, value: "0".to_string(), line: lines.len(), col: 0 });
+        out.push(Token {
+            ty: TokType::Dedent,
+            value: "0".to_string(),
+            line: lines.len(),
+            col: 0,
+        });
     }
-    out.push(Token { ty: TokType::Eof, value: String::new(), line: lines.len() + 1, col: 0 });
+    out.push(Token {
+        ty: TokType::Eof,
+        value: String::new(),
+        line: lines.len() + 1,
+        col: 0,
+    });
     Ok(out)
 }
 
@@ -294,11 +390,19 @@ mod tests {
     use super::*;
 
     fn kinds(src: &str) -> Vec<TokType> {
-        lex(src).expect("lex failed").into_iter().map(|t| t.ty).collect()
+        lex(src)
+            .expect("lex failed")
+            .into_iter()
+            .map(|t| t.ty)
+            .collect()
     }
 
     fn vals(src: &str) -> Vec<String> {
-        lex(src).expect("lex failed").into_iter().map(|t| t.value).collect()
+        lex(src)
+            .expect("lex failed")
+            .into_iter()
+            .map(|t| t.value)
+            .collect()
     }
 
     fn count(src: &str, ty: TokType) -> usize {
@@ -349,15 +453,25 @@ mod tests {
     fn tabs_are_whitespace_not_indentation_width() {
         // A tab after the indent is skipped as whitespace, not counted.
         let toks = lex("a:\n    b\tc\n").unwrap();
-        assert!(toks.iter().any(|t| t.ty == TokType::Ident && t.value == "c"));
+        assert!(toks
+            .iter()
+            .any(|t| t.ty == TokType::Ident && t.value == "c"));
     }
 
     #[test]
     fn tabs_in_indentation_are_disallowed() {
         let err = lex("a:\n\tb\n").unwrap_err();
-        assert!(err.msg.contains("tab indentation is not allowed"), "msg was {:?}", err.msg);
+        assert!(
+            err.msg.contains("tab indentation is not allowed"),
+            "msg was {:?}",
+            err.msg
+        );
         let err2 = lex("a:\n  \tb\n").unwrap_err();
-        assert!(err2.msg.contains("tab indentation is not allowed"), "msg was {:?}", err2.msg);
+        assert!(
+            err2.msg.contains("tab indentation is not allowed"),
+            "msg was {:?}",
+            err2.msg
+        );
     }
 
     // ---------------------------------------------------------------- skipping
@@ -366,7 +480,9 @@ mod tests {
     fn comments_are_stripped() {
         let toks = lex("a: # trailing\n# whole line\n    b\n").unwrap();
         assert!(toks.iter().all(|t| !t.value.contains('#')));
-        assert!(toks.iter().all(|t| t.ty != TokType::Ident || t.value != "trailing"));
+        assert!(toks
+            .iter()
+            .all(|t| t.ty != TokType::Ident || t.value != "trailing"));
     }
 
     #[test]
@@ -394,20 +510,28 @@ mod tests {
     #[test]
     fn plain_and_f_strings_are_distinguished() {
         let toks = lex("a: \"plain\"\nb: f\"interp\"\n").unwrap();
-        assert!(toks.iter().any(|t| t.ty == TokType::String && t.value == "\"plain\""));
-        assert!(toks.iter().any(|t| t.ty == TokType::FString && t.value == "f\"interp\""));
+        assert!(toks
+            .iter()
+            .any(|t| t.ty == TokType::String && t.value == "\"plain\""));
+        assert!(toks
+            .iter()
+            .any(|t| t.ty == TokType::FString && t.value == "f\"interp\""));
     }
 
     #[test]
     fn single_quoted_strings_are_accepted() {
         let toks = lex("a: 'single'\n").unwrap();
-        assert!(toks.iter().any(|t| t.ty == TokType::String && t.value == "'single'"));
+        assert!(toks
+            .iter()
+            .any(|t| t.ty == TokType::String && t.value == "'single'"));
     }
 
     #[test]
     fn escapes_do_not_terminate_the_string() {
         let toks = lex("a: \"he said \\\"hi\\\"\"\n").unwrap();
-        assert!(toks.iter().any(|t| t.ty == TokType::String && t.value == "\"he said \\\"hi\\\"\""));
+        assert!(toks
+            .iter()
+            .any(|t| t.ty == TokType::String && t.value == "\"he said \\\"hi\\\"\""));
     }
 
     #[test]
@@ -447,13 +571,17 @@ mod tests {
     fn unicode_identifiers_lex_without_panicking() {
         // A multi-byte letter used to slice mid-character and abort the process.
         let toks = lex("café = 1\n").unwrap();
-        assert!(toks.iter().any(|t| t.ty == TokType::Ident && t.value == "café"));
+        assert!(toks
+            .iter()
+            .any(|t| t.ty == TokType::Ident && t.value == "café"));
     }
 
     #[test]
     fn unicode_identifier_can_start_a_name() {
         let toks = lex("ünïcode = 1\n").unwrap();
-        assert!(toks.iter().any(|t| t.ty == TokType::Ident && t.value == "ünïcode"));
+        assert!(toks
+            .iter()
+            .any(|t| t.ty == TokType::Ident && t.value == "ünïcode"));
     }
 
     #[test]
@@ -476,7 +604,9 @@ mod tests {
 
     #[test]
     fn two_char_operators_lex_as_one_token() {
-        for op in ["==", "!=", "<=", ">=", "+=", "-=", "*=", "/=", "**", "//", "&&", "||", "?.", "??"] {
+        for op in [
+            "==", "!=", "<=", ">=", "+=", "-=", "*=", "/=", "**", "//", "&&", "||", "?.", "??",
+        ] {
             let toks = lex(&format!("a {} b\n", op)).unwrap();
             assert!(
                 toks.iter().any(|t| t.ty == TokType::Op && t.value == op),
@@ -491,14 +621,20 @@ mod tests {
     fn three_char_operators_lex_as_one_token() {
         for op in ["**=", "//="] {
             let toks = lex(&format!("a {} b\n", op)).unwrap();
-            assert!(toks.iter().any(|t| t.ty == TokType::Op && t.value == op), "{} failed", op);
+            assert!(
+                toks.iter().any(|t| t.ty == TokType::Op && t.value == op),
+                "{} failed",
+                op
+            );
         }
     }
 
     #[test]
     fn arrow_is_its_own_token_type() {
         let toks = lex("def f() -> int:\n").unwrap();
-        assert!(toks.iter().any(|t| t.ty == TokType::Arrow && t.value == "->"));
+        assert!(toks
+            .iter()
+            .any(|t| t.ty == TokType::Arrow && t.value == "->"));
     }
 
     #[test]
@@ -523,14 +659,22 @@ mod tests {
     fn single_char_operators_are_recognised() {
         for op in ["=", "+", "-", "*", "/", "%", "<", ">", "!", "&", "|", "?"] {
             let toks = lex(&format!("a {} b\n", op)).unwrap();
-            assert!(toks.iter().any(|t| t.ty == TokType::Op && t.value == op), "{} failed", op);
+            assert!(
+                toks.iter().any(|t| t.ty == TokType::Op && t.value == op),
+                "{} failed",
+                op
+            );
         }
     }
 
     #[test]
     fn unexpected_character_is_an_error() {
         let err = lex("a = ~~~\n").unwrap_err();
-        assert!(err.msg.contains("unexpected character"), "msg was {:?}", err.msg);
+        assert!(
+            err.msg.contains("unexpected character"),
+            "msg was {:?}",
+            err.msg
+        );
         assert_eq!(err.line, 1);
         assert_eq!(err.col, 4);
     }
@@ -539,7 +683,11 @@ mod tests {
     fn non_ascii_operator_position_errors_instead_of_panicking() {
         // `€` is three bytes; slicing two bytes from it used to abort.
         let err = lex("a = €\n").unwrap_err();
-        assert!(err.msg.contains("unexpected character"), "msg was {:?}", err.msg);
+        assert!(
+            err.msg.contains("unexpected character"),
+            "msg was {:?}",
+            err.msg
+        );
     }
 
     // ------------------------------------------------------------------ numbers
@@ -547,8 +695,12 @@ mod tests {
     #[test]
     fn integers_and_floats_lex_as_numbers() {
         let toks = lex("a = 42\nb = 3.14\n").unwrap();
-        assert!(toks.iter().any(|t| t.ty == TokType::Number && t.value == "42"));
-        assert!(toks.iter().any(|t| t.ty == TokType::Number && t.value == "3.14"));
+        assert!(toks
+            .iter()
+            .any(|t| t.ty == TokType::Number && t.value == "42"));
+        assert!(toks
+            .iter()
+            .any(|t| t.ty == TokType::Number && t.value == "3.14"));
     }
 
     // --------------------------------------------------------------- positions
@@ -575,7 +727,9 @@ mod tests {
         // A `\r` used to reach the operator table and fail as a bad character.
         let toks = lex("component A():\r\n    div: \"z\"\r\n").unwrap();
         assert!(toks.iter().all(|t| !t.value.contains('\r')));
-        assert!(toks.iter().any(|t| t.ty == TokType::Ident && t.value == "div"));
+        assert!(toks
+            .iter()
+            .any(|t| t.ty == TokType::Ident && t.value == "div"));
     }
 
     #[test]
@@ -588,8 +742,13 @@ mod tests {
     #[test]
     fn missing_trailing_newline_still_lexes() {
         let toks = lex("component A():\n    div: \"z\"").unwrap();
-        assert!(toks.iter().any(|t| t.ty == TokType::Ident && t.value == "div"));
-        assert_eq!(*kinds("component A():\n    div: \"z\"").last().unwrap(), TokType::Eof);
+        assert!(toks
+            .iter()
+            .any(|t| t.ty == TokType::Ident && t.value == "div"));
+        assert_eq!(
+            *kinds("component A():\n    div: \"z\"").last().unwrap(),
+            TokType::Eof
+        );
     }
 
     #[test]

@@ -10,8 +10,8 @@
 //! Everything else (f-strings, comprehensions, builtins, operators) is shared.
 
 use crate::ast::{Kind, Node, Param};
-use crate::error::CompileError;
 use crate::emitter::{free_func, str_method, Scope};
+use crate::error::CompileError;
 
 pub struct JsEmitter {
     pub lines: Vec<String>,
@@ -43,7 +43,11 @@ impl JsEmitter {
     }
 
     pub fn w(&mut self, s: &str) {
-        let line = if s.is_empty() { String::new() } else { format!("{}{}", self.pad(), s) };
+        let line = if s.is_empty() {
+            String::new()
+        } else {
+            format!("{}{}", self.pad(), s)
+        };
         let count = line.matches('\n').count() + 1;
         self.lines.push(line);
         for _ in 0..count {
@@ -111,13 +115,29 @@ impl JsEmitter {
                 Ok(format!("({} {} {})", l, op, r))
             }
             Kind::Unary { op, operand } => Ok(format!("({}{})", op, self.js(operand)?)),
+            Kind::New(inner) => Ok(format!("new {}", self.js(inner)?)),
+            Kind::OptCall { func, args, kwargs } => {
+                let f = self.js(func)?;
+                let mut all: Vec<String> = Vec::new();
+                for a in args {
+                    all.push(self.js(a)?);
+                }
+                for (k, v) in kwargs {
+                    all.push(format!("{}: {}", k, self.js(v)?));
+                }
+                Ok(format!("{}?.({})", f, all.join(", ")))
+            }
             Kind::Ternary { test, body, orelse } => {
                 let c = self.js(test)?;
                 let b = self.js(body)?;
                 let o = self.js(orelse)?;
                 Ok(format!("({} ? {} : {})", c, b, o))
             }
-            Kind::Lambda { params, defaults, body } => {
+            Kind::Lambda {
+                params,
+                defaults,
+                body,
+            } => {
                 let b = self.js(body)?;
                 let ps: Result<Vec<String>, CompileError> = params
                     .iter()
@@ -159,7 +179,12 @@ impl JsEmitter {
                 }
                 Ok(format!("({{{}}})", ps.join(", ")))
             }
-            Kind::Comprehension { expr, target, iter, cond } => {
+            Kind::Comprehension {
+                expr,
+                target,
+                iter,
+                cond,
+            } => {
                 let it = self.js(iter)?;
                 let exp = self.js(expr)?;
                 let mut res = it;
@@ -234,12 +259,22 @@ impl JsEmitter {
                 }
                 Ok(format!("{}({})", fn_str, all.join(", ")))
             }
-            Kind::Return(_) | Kind::If { .. } | Kind::For { .. } | Kind::Assign { .. }
-            | Kind::AugAssign { .. } | Kind::ExprStmt(_) | Kind::Def { .. }
-            | Kind::Import { .. } | Kind::Tree { .. } | Kind::Component { .. }
-            | Kind::Match { .. } => Err(
-                CompileError::new("statement in expression position", n.line, n.col, Vec::new()),
-            ),
+            Kind::Return(_)
+            | Kind::If { .. }
+            | Kind::For { .. }
+            | Kind::Assign { .. }
+            | Kind::AugAssign { .. }
+            | Kind::ExprStmt(_)
+            | Kind::Def { .. }
+            | Kind::Import { .. }
+            | Kind::Tree { .. }
+            | Kind::Component { .. }
+            | Kind::Match { .. } => Err(CompileError::new(
+                "statement in expression position",
+                n.line,
+                n.col,
+                Vec::new(),
+            )),
             _ => Err(CompileError::new(
                 format!("cannot compile expression {:?}", n.kind),
                 n.line,
@@ -305,10 +340,8 @@ impl JsEmitter {
                 self.w(&format!("{};", val));
             }
             Kind::Def { name, params, body } => {
-                let ps: Result<Vec<String>, CompileError> = params
-                    .iter()
-                    .map(|p| self.param(p))
-                    .collect();
+                let ps: Result<Vec<String>, CompileError> =
+                    params.iter().map(|p| self.param(p)).collect();
                 self.w(&format!("function {}({}) {{", name, ps?.join(", ")));
                 self.depth += 1;
                 let scope = Scope::scan(body);
@@ -363,10 +396,8 @@ impl JsEmitter {
             Kind::Continue => self.w("continue;"),
             Kind::Pass => self.w("/* pass */"),
             Kind::AsyncDef { name, params, body } => {
-                let ps: Result<Vec<String>, CompileError> = params
-                    .iter()
-                    .map(|p| self.param(p))
-                    .collect();
+                let ps: Result<Vec<String>, CompileError> =
+                    params.iter().map(|p| self.param(p)).collect();
                 self.w(&format!("async function {}({}) {{", name, ps?.join(", ")));
                 self.depth += 1;
                 let scope = Scope::scan(body);
@@ -382,23 +413,33 @@ impl JsEmitter {
                 // `export def` -> `export function`
                 match &inner.kind {
                     Kind::Def { name, params, body } => {
-                        let ps: Result<Vec<String>, CompileError> = params.iter().map(|p| self.param(p)).collect();
+                        let ps: Result<Vec<String>, CompileError> =
+                            params.iter().map(|p| self.param(p)).collect();
                         self.w(&format!("export function {}({}) {{", name, ps?.join(", ")));
                         self.depth += 1;
                         let scope = Scope::scan(body);
                         self.scopes.push(scope);
-                        for stmt in body { self.stmt(stmt)?; }
+                        for stmt in body {
+                            self.stmt(stmt)?;
+                        }
                         self.scopes.pop();
                         self.depth -= 1;
                         self.w("}");
                     }
                     Kind::AsyncDef { name, params, body } => {
-                        let ps: Result<Vec<String>, CompileError> = params.iter().map(|p| self.param(p)).collect();
-                        self.w(&format!("export async function {}({}) {{", name, ps?.join(", ")));
+                        let ps: Result<Vec<String>, CompileError> =
+                            params.iter().map(|p| self.param(p)).collect();
+                        self.w(&format!(
+                            "export async function {}({}) {{",
+                            name,
+                            ps?.join(", ")
+                        ));
                         self.depth += 1;
                         let scope = Scope::scan(body);
                         self.scopes.push(scope);
-                        for stmt in body { self.stmt(stmt)?; }
+                        for stmt in body {
+                            self.stmt(stmt)?;
+                        }
                         self.scopes.pop();
                         self.depth -= 1;
                         self.w("}");
@@ -406,7 +447,8 @@ impl JsEmitter {
                     Kind::Assign { target, value } => {
                         let lhs = match &target.kind {
                             Kind::Tuple(items) => {
-                                let bits: Result<Vec<_>, _> = items.iter().map(|i| self.js(i)).collect();
+                                let bits: Result<Vec<_>, _> =
+                                    items.iter().map(|i| self.js(i)).collect();
                                 format!("[{}]", bits?.join(", "))
                             }
                             Kind::Dict(pairs) => {
@@ -431,10 +473,17 @@ impl JsEmitter {
                     }
                 }
             }
-            Kind::Try { body, handlers, orelse: _, finally } => {
+            Kind::Try {
+                body,
+                handlers,
+                orelse: _,
+                finally,
+            } => {
                 self.w("try {");
                 self.depth += 1;
-                for stmt in body { self.stmt(stmt)?; }
+                for stmt in body {
+                    self.stmt(stmt)?;
+                }
                 self.depth -= 1;
                 self.w("}");
 
@@ -460,17 +509,23 @@ impl JsEmitter {
                             if let Some(n) = &h.name {
                                 self.w(&format!("const {} = {};", n, catch_var));
                             }
-                            for stmt in &h.body { self.stmt(stmt)?; }
+                            for stmt in &h.body {
+                                self.stmt(stmt)?;
+                            }
                             self.depth -= 1;
                             self.w("}");
                         } else {
                             // Bare `except:` catches everything.
                             if first {
-                                for stmt in &h.body { self.stmt(stmt)?; }
+                                for stmt in &h.body {
+                                    self.stmt(stmt)?;
+                                }
                             } else {
                                 self.w("else {");
                                 self.depth += 1;
-                                for stmt in &h.body { self.stmt(stmt)?; }
+                                for stmt in &h.body {
+                                    self.stmt(stmt)?;
+                                }
                                 self.depth -= 1;
                                 self.w("}");
                             }
@@ -489,7 +544,9 @@ impl JsEmitter {
                 if let Some(fin) = finally {
                     self.w("finally {");
                     self.depth += 1;
-                    for stmt in fin { self.stmt(stmt)?; }
+                    for stmt in fin {
+                        self.stmt(stmt)?;
+                    }
                     self.depth -= 1;
                     self.w("}");
                 }
@@ -521,16 +578,26 @@ impl JsEmitter {
             }
             Kind::Import { from, names } => {
                 if let Some(f) = from {
-                    let mod_name = if f == "serpent_js" { "serpent-js" } else { f.as_str() };
+                    let mod_name = if f == "serpent_js" {
+                        "serpent-js"
+                    } else {
+                        f.as_str()
+                    };
                     if names.is_empty() {
                         self.imports.insert(format!("import '{}';", mod_name));
                     } else if names.len() == 1 && names[0].starts_with("* as ") {
-                        self.imports.insert(format!("import {} from '{}';", names[0], mod_name));
+                        self.imports
+                            .insert(format!("import {} from '{}';", names[0], mod_name));
                     } else {
-                        self.imports.insert(format!("import {{ {} }} from '{}';", names.join(", "), mod_name));
+                        self.imports.insert(format!(
+                            "import {{ {} }} from '{}';",
+                            names.join(", "),
+                            mod_name
+                        ));
                     }
                 } else {
-                    self.imports.insert(format!("import {} from 'serpent-js';", names.join(", ")));
+                    self.imports
+                        .insert(format!("import {} from 'serpent-js';", names.join(", ")));
                 }
             }
             // These two only make sense with a component tree.
@@ -582,16 +649,26 @@ impl JsEmitter {
                 Kind::Component { .. } | Kind::Tree { .. } => self.stmt(s)?,
                 Kind::Import { from, names } => {
                     if let Some(f) = from {
-                        let mod_name = if f == "serpent_js" { "serpent-js" } else { f.as_str() };
+                        let mod_name = if f == "serpent_js" {
+                            "serpent-js"
+                        } else {
+                            f.as_str()
+                        };
                         if names.is_empty() {
                             self.imports.insert(format!("import '{}';", mod_name));
                         } else if names.len() == 1 && names[0].starts_with("* as ") {
-                            self.imports.insert(format!("import {} from '{}';", names[0], mod_name));
+                            self.imports
+                                .insert(format!("import {} from '{}';", names[0], mod_name));
                         } else {
-                            self.imports.insert(format!("import {{ {} }} from '{}';", names.join(", "), mod_name));
+                            self.imports.insert(format!(
+                                "import {{ {} }} from '{}';",
+                                names.join(", "),
+                                mod_name
+                            ));
                         }
                     } else {
-                        self.imports.insert(format!("import {} from 'serpent-js';", names.join(", ")));
+                        self.imports
+                            .insert(format!("import {} from 'serpent-js';", names.join(", ")));
                     }
                 }
                 _ => self.stmt(s)?,
@@ -605,7 +682,8 @@ impl JsEmitter {
         if !helpers.is_empty() {
             let mut h = helpers;
             h.sort();
-            self.imports.insert(format!("import {{ {} }} from 'serpent-js';", h.join(", ")));
+            self.imports
+                .insert(format!("import {{ {} }} from 'serpent-js';", h.join(", ")));
         }
 
         let mut head = vec![
@@ -626,13 +704,23 @@ impl JsEmitter {
         let mut segs = Vec::new();
         let mut prev_src: i64 = 0;
         for _ in 0..self.head_lines.len() {
-            segs.push(format!("{}{}{}", encode_vlq(0), encode_vlq(0), encode_vlq(0)));
+            segs.push(format!(
+                "{}{}{}",
+                encode_vlq(0),
+                encode_vlq(0),
+                encode_vlq(0)
+            ));
         }
         for sl in &self.linemap {
             let sl_i = *sl as i64;
             let d = (sl_i - 1) - prev_src;
             prev_src = sl_i - 1;
-            segs.push(format!("{}{}{}", encode_vlq(0), encode_vlq(d), encode_vlq(0)));
+            segs.push(format!(
+                "{}{}{}",
+                encode_vlq(0),
+                encode_vlq(d),
+                encode_vlq(0)
+            ));
         }
         format!(
             "{{\"version\":3,\"file\":\"{}\",\"sources\":[\"{}\"],\"sourcesContent\":[{}],\"names\":[],\"mappings\":\"{}\"}}",

@@ -30,8 +30,12 @@ fn usage() -> String {
          \x20 hydra --json <file.hyx>     emit {{code, map}} JSON\n\
          \x20 hydra --check <file.hyx>    parse only; exit 1 on error\n\
          \x20 hydra --stdin [filename]    read source from stdin\n\
+         \x20 hydra fmt [--check] [files]  format .hyx/.hys sources\n\
+         \x20 hydra stats [dir]           code statistics for a project\n\
+         \x20 hydra doctor                check the local toolchain\n\
+         \x20 hydra init [dir]            scaffold a new project\n\
          \x20 hydra --version\n\
-         \x20 hydra dev|build|preview|run|watch|repl|check|init  project commands\n"
+         \x20 hydra dev|build|preview|run|watch|repl|check|init|fmt|stats|doctor  project commands\n"
     )
 }
 
@@ -49,7 +53,20 @@ fn main() -> ExitCode {
         print!("{}", usage());
         return ExitCode::SUCCESS;
     }
-    if matches!(args[0].as_str(), "dev" | "build" | "preview" | "check" | "init" | "run" | "watch" | "repl") {
+    if matches!(
+        args[0].as_str(),
+        "dev"
+            | "build"
+            | "preview"
+            | "check"
+            | "init"
+            | "run"
+            | "watch"
+            | "repl"
+            | "fmt"
+            | "stats"
+            | "doctor"
+    ) {
         return hydra::cli::run(&args);
     }
 
@@ -129,7 +146,10 @@ fn main() -> ExitCode {
             // Default: append an inline source map so a browser stack trace
             // points back at the .hsx source.
             let b64 = base64(map.as_bytes());
-            let full_out = format!("{}\n//# sourceMappingURL=data:application/json;base64,{}\n", code, b64);
+            let full_out = format!(
+                "{}\n//# sourceMappingURL=data:application/json;base64,{}\n",
+                code, b64
+            );
             if let Some(out_path) = out_file {
                 if let Err(e) = std::fs::write(&out_path, full_out) {
                     eprintln!("serpent: cannot write {}: {}", out_path, e);

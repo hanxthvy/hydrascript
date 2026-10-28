@@ -240,6 +240,31 @@ export {
  * prototype patches — never mutate a built-in.
  */
 
+/**
+ * `isinstance(x, int)` -> `isinstance(x, Number)`
+ *
+ * The compiler maps Python type names to their JS constructors and routes them
+ * here, rather than inlining `typeof` checks: `typeof null === 'object'` and
+ * `typeof [] === 'object'` are exactly the surprises this is meant to avoid,
+ * and a Python developer writing `isinstance` expects Python's answer.
+ */
+export function isinstance(x: unknown, type: unknown): boolean {
+  if (type === Number) return typeof x === 'number' && Number.isFinite(x)
+  if (type === String) return typeof x === 'string'
+  if (type === Boolean) return typeof x === 'boolean'
+  if (type === Array) return Array.isArray(x)
+  if (type === Object) return typeof x === 'object' && x !== null && !Array.isArray(x)
+  if (type === null || type === undefined) return x === null || x === undefined
+  if (typeof type === 'function') {
+    try {
+      return x instanceof (type as new (...a: unknown[]) => unknown)
+    } catch {
+      return false
+    }
+  }
+  return false
+}
+
 /** `"hello world".capitalize()` -> `"Hello world"` */
 export const capitalize = (s: string): string =>
   s.length === 0 ? s : s[0].toUpperCase() + s.slice(1).toLowerCase()

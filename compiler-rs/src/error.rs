@@ -15,7 +15,13 @@ pub struct CompileError {
 
 impl CompileError {
     pub fn new(msg: impl Into<String>, line: usize, col: usize, src: Vec<String>) -> Self {
-        Self { msg: msg.into(), line, col, src, hint: None }
+        Self {
+            msg: msg.into(),
+            line,
+            col,
+            src,
+            hint: None,
+        }
     }
 
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {

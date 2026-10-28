@@ -594,6 +594,45 @@ The compiler recognizes built-in JavaScript globals and ensures calls to their m
 * `ResizeObserver`, `IntersectionObserver`, `MutationObserver`
 * `WebSocket`, `Worker`, `Audio`, `Image`, `FormData`, `URL`, `URLSearchParams`
 
+### Constructors and Optional Calls
+Python has no `new`, but every browser API a UI needs is reached by constructing
+one, so `new` is part of the language:
+
+```python
+def setup():
+    obs = new IntersectionObserver(on_change, {"threshold": 0.25})
+    obs.observe(el)
+    stamp = new Date()
+    return obs
+```
+
+`fn?.(x)` compiles to an optional call, so a callback prop needs no manual guard:
+
+```python
+def notify():
+    fn?.(count)
+```
+
+### Built-in Python Functions
+These compile without an import:
+
+| HydraScript | JavaScript |
+|---|---|
+| `len(xs)` | `xs.length` |
+| `max(a, b)` / `max(xs)` | `Math.max(a, b)` / `Math.max(...xs)` |
+| `min(a, b)` / `min(xs)` | `Math.min(a, b)` / `Math.min(...xs)` |
+| `abs(x)` / `round(x)` | `Math.abs(x)` / `Math.round(x)` |
+| `sum(xs)` | `xs.reduce((a, b) => a + b, 0)` |
+| `sorted(xs)` / `reversed(xs)` | non-mutating `slice()` then sort/reverse |
+| `str(x)` / `int(x)` / `float(x)` / `bool(x)` | `String` / `parseInt` / `parseFloat` / `Boolean` |
+| `isinstance(x, int)` | `isinstance(x, Number)` |
+| `enumerate(xs)` / `range(n)` | runtime helpers, imported automatically |
+| `print(x)` | `console.log(x)` |
+
+Python string methods with no JS equivalent (`s.capitalize()`, `s.title()`,
+`s.zfill(4)`, `s.isdigit()`) become calls into the runtime. The import is
+injected for you, so the source does not need to know the helper exists.
+
 ### Module Imports and Exports
 ```python
 # Named import from package
@@ -633,6 +672,10 @@ COMMANDS:
   run <file.hys> [args] Execute HydraScript script in memory (legacy .hs supported)
   watch [dir]           Watch directory and recompile on change
   check <file.hyx>      Parse and validate syntax without emitting
+  fmt [--check] [files] Format .hyx/.hys sources (idempotent)
+  stats [dir]           Report file/line/definition counts for a codebase
+  doctor                Check the local toolchain and project health
+  init [dir]            Scaffold a new project
   repl                  Start interactive HydraScript REPL session
   --version, -v         Display compiler version information
   --help, -h            Display help information
@@ -640,7 +683,26 @@ COMMANDS:
 ENVIRONMENT VARIABLES:
   HYDRA_NATIVE          Explicit path to hydra.node addon
   HYDRA_COMPILER        Explicit path to hydra CLI binary
+  HYDRA_RUNNER          Explicit path to packages/cli/runner.mjs
+  HYDRA_RUNTIME_PATH    Override the runtime module the `serpent` import resolves to
 ```
+
+### Output validation
+
+Every emit is checked before it leaves the compiler. The check is narrow on
+purpose — it only rejects shapes that are *always* invalid JavaScript, never
+valid code:
+
+- a declaration whose target is a member or index expression
+  (`const node.style.transform = x` is a syntax error, not a declaration)
+- `new` with nothing to construct
+- unbalanced brackets (plain JS target only; JSX element tags are not
+  parenthesised, so the balance check is skipped for `.hyx` → `.tsx`)
+
+A failure here means a compiler bug, and the message says so instead of blaming
+your source. This exists because the compiler previously reported a successful
+build for output no JavaScript engine would accept, which surfaced later as a
+blank page in the browser.
 
 ---
 

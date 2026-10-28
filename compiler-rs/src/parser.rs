@@ -19,12 +19,18 @@ type PResult<T> = Result<T, CompileError>;
 
 impl Parser {
     pub fn new(toks: Vec<Token>, src: Vec<String>) -> Self {
-        Self { toks, i: 0, src, depth: 0 }
+        Self {
+            toks,
+            i: 0,
+            src,
+            depth: 0,
+        }
     }
 
     fn enter_depth(&mut self) -> PResult<()> {
         if self.depth >= 256 {
-            return Err(self.err("maximum recursion depth exceeded (256)".into())
+            return Err(self
+                .err("maximum recursion depth exceeded (256)".into())
                 .with_hint("simplify deeply nested structure"));
         }
         self.depth += 1;
@@ -40,7 +46,9 @@ impl Parser {
     }
 
     fn peek(&self, n: usize) -> &Token {
-        self.toks.get(self.i + n).unwrap_or_else(|| self.toks.last().unwrap())
+        self.toks
+            .get(self.i + n)
+            .unwrap_or_else(|| self.toks.last().unwrap())
     }
 
     fn at(&self, tys: &[TokType]) -> bool {
@@ -166,7 +174,10 @@ impl Parser {
             TokType::Kw("type") => return self.type_alias(),
             TokType::Kw("return") => {
                 self.i += 1;
-                let val = if matches!(self.cur().ty, TokType::Newline | TokType::Dedent | TokType::Eof) {
+                let val = if matches!(
+                    self.cur().ty,
+                    TokType::Newline | TokType::Dedent | TokType::Eof
+                ) {
                     None
                 } else {
                     Some(Box::new(self.expr()?))
@@ -211,18 +222,42 @@ impl Parser {
 
         if self.cur().ty == TokType::Colon {
             let body = self.block()?;
-            return Ok(Node::new(Kind::Tree { head: Box::new(e), body }, t.line, t.col));
+            return Ok(Node::new(
+                Kind::Tree {
+                    head: Box::new(e),
+                    body,
+                },
+                t.line,
+                t.col,
+            ));
         }
         if self.cur().ty == TokType::Op && self.cur().value == "=" {
             self.i += 1;
             let v = self.expr()?;
-            return Ok(Node::new(Kind::Assign { target: Box::new(e), value: Box::new(v) }, t.line, t.col));
+            return Ok(Node::new(
+                Kind::Assign {
+                    target: Box::new(e),
+                    value: Box::new(v),
+                },
+                t.line,
+                t.col,
+            ));
         }
-        if self.cur().ty == TokType::Op && matches!(self.cur().value.as_str(), "+=" | "-=" | "*=" | "/=") {
+        if self.cur().ty == TokType::Op
+            && matches!(self.cur().value.as_str(), "+=" | "-=" | "*=" | "/=")
+        {
             let op = self.cur().value[..1].to_string();
             self.i += 1;
             let v = self.expr()?;
-            return Ok(Node::new(Kind::AugAssign { target: Box::new(e), op, value: Box::new(v) }, t.line, t.col));
+            return Ok(Node::new(
+                Kind::AugAssign {
+                    target: Box::new(e),
+                    op,
+                    value: Box::new(v),
+                },
+                t.line,
+                t.col,
+            ));
         }
         Ok(Node::new(Kind::ExprStmt(Box::new(e)), t.line, t.col))
     }
@@ -237,13 +272,19 @@ impl Parser {
                 self.i += 1;
                 let alias = self.ident_or_kw()?;
                 return Ok(Node::new(
-                    Kind::Import { from: Some(mod_name), names: vec![format!("* as {}", alias)] },
+                    Kind::Import {
+                        from: Some(mod_name),
+                        names: vec![format!("* as {}", alias)],
+                    },
                     t.line,
                     t.col,
                 ));
             }
             return Ok(Node::new(
-                Kind::Import { from: Some(mod_name), names: Vec::new() },
+                Kind::Import {
+                    from: Some(mod_name),
+                    names: Vec::new(),
+                },
                 t.line,
                 t.col,
             ));
@@ -293,15 +334,30 @@ impl Parser {
                 break;
             }
         }
-        Ok(Node::new(Kind::Import { from: Some(module), names }, t.line, t.col))
+        Ok(Node::new(
+            Kind::Import {
+                from: Some(module),
+                names,
+            },
+            t.line,
+            t.col,
+        ))
     }
 
     fn component(&mut self) -> PResult<Node> {
         let t = self.eat(TokType::Kw("component"))?.clone();
         let name = self.ident()?;
-        let params = if self.cur().ty == TokType::LParen { self.params()? } else { Vec::new() };
+        let params = if self.cur().ty == TokType::LParen {
+            self.params()?
+        } else {
+            Vec::new()
+        };
         let body = self.block()?;
-        Ok(Node::new(Kind::Component { name, params, body }, t.line, t.col))
+        Ok(Node::new(
+            Kind::Component { name, params, body },
+            t.line,
+            t.col,
+        ))
     }
 
     /// `interface Name:` block — collect raw lines of the indented body and pass through as TS.
@@ -324,7 +380,14 @@ impl Parser {
         self.eat(TokType::Colon)?;
         let body = self.raw_indented_block()?;
         let full_name = format!("{}{}", name, extends);
-        Ok(Node::new(Kind::Interface { name: full_name, body }, t.line, t.col))
+        Ok(Node::new(
+            Kind::Interface {
+                name: full_name,
+                body,
+            },
+            t.line,
+            t.col,
+        ))
     }
 
     /// `type Name = ...` — collect everything until newline as TS type alias.
@@ -404,7 +467,11 @@ impl Parser {
     fn def(&mut self) -> PResult<Node> {
         let t = self.eat(TokType::Kw("def"))?.clone();
         let name = self.ident()?;
-        let params = if self.cur().ty == TokType::LParen { self.params()? } else { Vec::new() };
+        let params = if self.cur().ty == TokType::LParen {
+            self.params()?
+        } else {
+            Vec::new()
+        };
         if self.cur().ty == TokType::Arrow {
             self.i += 1;
             self.type_expr()?;
@@ -420,7 +487,9 @@ impl Parser {
         let mut out = Vec::new();
         while self.cur().ty != TokType::RParen {
             self.skip_bracket_newlines(&mut depth);
-            let prefix = if self.cur().ty == TokType::Op && (self.cur().value == "*" || self.cur().value == "**") {
+            let prefix = if self.cur().ty == TokType::Op
+                && (self.cur().value == "*" || self.cur().value == "**")
+            {
                 self.i += 1;
                 "..."
             } else {
@@ -442,7 +511,12 @@ impl Parser {
                 default = Some(self.expr()?);
                 has_default = true;
             }
-            out.push(Param { name, ty, default, has_default });
+            out.push(Param {
+                name,
+                ty,
+                default,
+                has_default,
+            });
             self.skip_bracket_newlines(&mut depth);
             if self.cur().ty == TokType::Comma {
                 self.i += 1;
@@ -595,7 +669,8 @@ impl Parser {
                         parts.push(FPart::Lit(std::mem::take(&mut lit)));
                     }
                     let expr_src: String = chars[start..j].iter().collect();
-                    let sub_lines: Vec<String> = expr_src.split('\n').map(|s| s.to_string()).collect();
+                    let sub_lines: Vec<String> =
+                        expr_src.split('\n').map(|s| s.to_string()).collect();
                     let sub_toks = crate::lexer::lex(&expr_src)?;
                     let mut sub = Parser::new(sub_toks, sub_lines);
                     sub.depth = self.depth;
@@ -627,7 +702,11 @@ impl Parser {
             orelse = Some(self.block()?);
         }
         Ok(Node::new(
-            Kind::If { test: Box::new(test), body, orelse },
+            Kind::If {
+                test: Box::new(test),
+                body,
+                orelse,
+            },
             t.line,
             t.col,
         ))
@@ -645,7 +724,11 @@ impl Parser {
             orelse = Some(self.block()?);
         }
         Ok(Node::new(
-            Kind::If { test: Box::new(test), body, orelse },
+            Kind::If {
+                test: Box::new(test),
+                body,
+                orelse,
+            },
             t.line,
             t.col,
         ))
@@ -669,7 +752,11 @@ impl Parser {
         let iter = self.expr()?;
         let body = self.block()?;
         Ok(Node::new(
-            Kind::For { target, iter: Box::new(iter), body },
+            Kind::For {
+                target,
+                iter: Box::new(iter),
+                body,
+            },
             t.line,
             t.col,
         ))
@@ -679,7 +766,14 @@ impl Parser {
         let t = self.eat(TokType::Kw("while"))?.clone();
         let test = self.expr()?;
         let body = self.block()?;
-        Ok(Node::new(Kind::While { test: Box::new(test), body }, t.line, t.col))
+        Ok(Node::new(
+            Kind::While {
+                test: Box::new(test),
+                body,
+            },
+            t.line,
+            t.col,
+        ))
     }
 
     /// `try: ... except Cls as e: ... except: ... else: ... finally: ...`
@@ -713,7 +807,11 @@ impl Parser {
                 }
             }
             let hbody = self.block()?;
-            handlers.push(crate::ast::Except { class, name, body: hbody });
+            handlers.push(crate::ast::Except {
+                class,
+                name,
+                body: hbody,
+            });
         }
 
         let mut orelse = None;
@@ -734,7 +832,12 @@ impl Parser {
         }
 
         Ok(Node::new(
-            Kind::Try { body, handlers, orelse, finally },
+            Kind::Try {
+                body,
+                handlers,
+                orelse,
+                finally,
+            },
             t.line,
             t.col,
         ))
@@ -790,13 +893,21 @@ impl Parser {
         let t = self.eat(TokType::Kw("async"))?.clone();
         self.eat(TokType::Kw("def"))?;
         let name = self.ident()?;
-        let params = if self.cur().ty == TokType::LParen { self.params()? } else { Vec::new() };
+        let params = if self.cur().ty == TokType::LParen {
+            self.params()?
+        } else {
+            Vec::new()
+        };
         if self.cur().ty == TokType::Arrow {
             self.i += 1;
             self.type_expr()?;
         }
         let body = self.block()?;
-        Ok(Node::new(Kind::AsyncDef { name, params, body }, t.line, t.col))
+        Ok(Node::new(
+            Kind::AsyncDef { name, params, body },
+            t.line,
+            t.col,
+        ))
     }
 
     fn export_stmt(&mut self) -> PResult<Node> {
@@ -826,7 +937,11 @@ impl Parser {
             self.leave_depth();
             let (line, col) = (n.line, n.col);
             return Ok(Node::new(
-                Kind::Ternary { test: Box::new(test), body: Box::new(n), orelse: Box::new(orelse) },
+                Kind::Ternary {
+                    test: Box::new(test),
+                    body: Box::new(n),
+                    orelse: Box::new(orelse),
+                },
                 line,
                 col,
             ));
@@ -841,7 +956,15 @@ impl Parser {
             self.i += 1;
             let r = self.or()?;
             let (line, col) = (n.line, n.col);
-            n = Node::new(Kind::Bin { op: "??".into(), left: Box::new(n), right: Box::new(r) }, line, col);
+            n = Node::new(
+                Kind::Bin {
+                    op: "??".into(),
+                    left: Box::new(n),
+                    right: Box::new(r),
+                },
+                line,
+                col,
+            );
         }
         Ok(n)
     }
@@ -853,7 +976,15 @@ impl Parser {
             self.i += 1;
             let r = self.and()?;
             let (line, col) = (n.line, n.col);
-            n = Node::new(Kind::Bin { op: "||".into(), left: Box::new(n), right: Box::new(r) }, line, col);
+            n = Node::new(
+                Kind::Bin {
+                    op: "||".into(),
+                    left: Box::new(n),
+                    right: Box::new(r),
+                },
+                line,
+                col,
+            );
         }
         Ok(n)
     }
@@ -865,7 +996,15 @@ impl Parser {
             self.i += 1;
             let r = self.not()?;
             let (line, col) = (n.line, n.col);
-            n = Node::new(Kind::Bin { op: "&&".into(), left: Box::new(n), right: Box::new(r) }, line, col);
+            n = Node::new(
+                Kind::Bin {
+                    op: "&&".into(),
+                    left: Box::new(n),
+                    right: Box::new(r),
+                },
+                line,
+                col,
+            );
         }
         Ok(n)
     }
@@ -878,7 +1017,14 @@ impl Parser {
             self.i += 1;
             let v = self.not()?;
             self.leave_depth();
-            return Ok(Node::new(Kind::Unary { op: "!".into(), operand: Box::new(v) }, t.line, t.col));
+            return Ok(Node::new(
+                Kind::Unary {
+                    op: "!".into(),
+                    operand: Box::new(v),
+                },
+                t.line,
+                t.col,
+            ));
         }
         self.comparison()
     }
@@ -887,7 +1033,10 @@ impl Parser {
     fn comparison(&mut self) -> PResult<Node> {
         let mut n = self.additive()?;
         while (self.cur().ty == TokType::Op
-            && matches!(self.cur().value.as_str(), "==" | "!=" | "<" | ">" | "<=" | ">="))
+            && matches!(
+                self.cur().value.as_str(),
+                "==" | "!=" | "<" | ">" | "<=" | ">="
+            ))
             || self.cur().ty == TokType::Kw("in")
         {
             let op = if self.cur().ty == TokType::Kw("in") {
@@ -902,7 +1051,15 @@ impl Parser {
             self.i += 1;
             let r = self.additive()?;
             let (line, col) = (n.line, n.col);
-            n = Node::new(Kind::Bin { op, left: Box::new(n), right: Box::new(r) }, line, col);
+            n = Node::new(
+                Kind::Bin {
+                    op,
+                    left: Box::new(n),
+                    right: Box::new(r),
+                },
+                line,
+                col,
+            );
         }
         Ok(n)
     }
@@ -915,7 +1072,15 @@ impl Parser {
             self.i += 1;
             let r = self.multiplicative()?;
             let (line, col) = (n.line, n.col);
-            n = Node::new(Kind::Bin { op, left: Box::new(n), right: Box::new(r) }, line, col);
+            n = Node::new(
+                Kind::Bin {
+                    op,
+                    left: Box::new(n),
+                    right: Box::new(r),
+                },
+                line,
+                col,
+            );
         }
         Ok(n)
     }
@@ -928,7 +1093,15 @@ impl Parser {
             self.i += 1;
             let r = self.unary()?;
             let (line, col) = (n.line, n.col);
-            n = Node::new(Kind::Bin { op, left: Box::new(n), right: Box::new(r) }, line, col);
+            n = Node::new(
+                Kind::Bin {
+                    op,
+                    left: Box::new(n),
+                    right: Box::new(r),
+                },
+                line,
+                col,
+            );
         }
         Ok(n)
     }
@@ -949,14 +1122,39 @@ impl Parser {
             self.i += 1;
             let v = self.unary();
             self.leave_depth();
-            return Ok(Node::new(Kind::Unary { op: "-".into(), operand: Box::new(v?) }, t.line, t.col));
+            return Ok(Node::new(
+                Kind::Unary {
+                    op: "-".into(),
+                    operand: Box::new(v?),
+                },
+                t.line,
+                t.col,
+            ));
+        }
+        // `new Foo(args)` — constructor call. Parsed at unary level, then the
+        // whole postfix chain is wrapped, so `new Foo().bar` keeps JavaScript's
+        // precedence ((new Foo()).bar).
+        if self.cur().ty == TokType::Kw("new") {
+            self.enter_depth()?;
+            let t = self.cur().clone();
+            self.i += 1;
+            let target = self.postfix();
+            self.leave_depth();
+            return Ok(Node::new(Kind::New(Box::new(target?)), t.line, t.col));
         }
         // typeof operator — pass through to JS
         if self.cur().ty == TokType::Ident && self.cur().value == "typeof" {
             let t = self.cur().clone();
             self.i += 1;
             let v = self.unary()?;
-            return Ok(Node::new(Kind::Unary { op: "typeof ".into(), operand: Box::new(v) }, t.line, t.col));
+            return Ok(Node::new(
+                Kind::Unary {
+                    op: "typeof ".into(),
+                    operand: Box::new(v),
+                },
+                t.line,
+                t.col,
+            ));
         }
         self.postfix()
     }
@@ -971,30 +1169,77 @@ impl Parser {
                     self.i += 1;
                     let name = self.ident_or_kw()?;
                     let (line, col) = (n.line, n.col);
-                    n = Node::new(Kind::Attr { obj: Box::new(n), name }, line, col);
+                    n = Node::new(
+                        Kind::Attr {
+                            obj: Box::new(n),
+                            name,
+                        },
+                        line,
+                        col,
+                    );
                 }
                 TokType::Op if self.cur().value == "?." => {
                     self.i += 1;
+                    // `fn?.(x)` — optional CALL. Without this the parser saw `(`
+                    // where it expected a property name and refused to parse,
+                    // which is why callback props had to be guarded by hand.
+                    if self.cur().ty == TokType::LParen {
+                        let (line, col) = (n.line, n.col);
+                        // `call` consumes the parentheses and hands back a
+                        // normal Call; take its pieces and mark them optional.
+                        let inner = self.call(n)?;
+                        match inner.kind {
+                            Kind::Call { func, args, kwargs } => {
+                                n = Node::new(Kind::OptCall { func, args, kwargs }, line, col);
+                            }
+                            other => {
+                                n = Node::new(other, line, col);
+                            }
+                        }
+                        continue;
+                    }
                     if self.cur().ty == TokType::LBrack {
                         self.i += 1;
                         let idx = self.expr()?;
                         self.eat(TokType::RBrack)?;
                         let (line, col) = (n.line, n.col);
-                        n = Node::new(Kind::OptIndex { obj: Box::new(n), index: Box::new(idx) }, line, col);
+                        n = Node::new(
+                            Kind::OptIndex {
+                                obj: Box::new(n),
+                                index: Box::new(idx),
+                            },
+                            line,
+                            col,
+                        );
                     } else {
                         let name = self.ident_or_kw()?;
                         let (line, col) = (n.line, n.col);
-                        n = Node::new(Kind::OptAttr { obj: Box::new(n), name }, line, col);
+                        n = Node::new(
+                            Kind::OptAttr {
+                                obj: Box::new(n),
+                                name,
+                            },
+                            line,
+                            col,
+                        );
                     }
                 }
                 TokType::LBrack => {
                     self.i += 1;
                     // Slice: xs[start:stop]. Python's most-used list idiom and
                     // there is no JS equivalent, so it gets its own node.
-                    let start = if self.cur().ty == TokType::Colon { None } else { Some(self.expr()?) };
+                    let start = if self.cur().ty == TokType::Colon {
+                        None
+                    } else {
+                        Some(self.expr()?)
+                    };
                     if self.cur().ty == TokType::Colon {
                         self.i += 1;
-                        let stop = if self.cur().ty == TokType::RBrack { None } else { Some(self.expr()?) };
+                        let stop = if self.cur().ty == TokType::RBrack {
+                            None
+                        } else {
+                            Some(self.expr()?)
+                        };
                         self.eat(TokType::RBrack)?;
                         let (line, col) = (n.line, n.col);
                         n = Node::new(
@@ -1014,7 +1259,14 @@ impl Parser {
                     };
                     self.eat(TokType::RBrack)?;
                     let (line, col) = (n.line, n.col);
-                    n = Node::new(Kind::Index { obj: Box::new(n), index: Box::new(idx) }, line, col);
+                    n = Node::new(
+                        Kind::Index {
+                            obj: Box::new(n),
+                            index: Box::new(idx),
+                        },
+                        line,
+                        col,
+                    );
                 }
                 _ => break,
             }
@@ -1034,7 +1286,8 @@ impl Parser {
             if self.cur().ty == TokType::RParen {
                 break;
             }
-            if self.cur().ty == TokType::Op && (self.cur().value == "*" || self.cur().value == "**") {
+            if self.cur().ty == TokType::Op && (self.cur().value == "*" || self.cur().value == "**")
+            {
                 self.i += 1;
                 args.push(Node::new(Kind::Spread(Box::new(self.expr()?)), line, col));
             } else if (self.cur().ty == TokType::Ident || matches!(self.cur().ty, TokType::Kw(_)))
@@ -1050,7 +1303,10 @@ impl Parser {
 
             if self.cur().ty == TokType::Comma {
                 self.i += 1;
-            } else if matches!(self.cur().ty, TokType::Newline | TokType::Indent | TokType::Dedent) {
+            } else if matches!(
+                self.cur().ty,
+                TokType::Newline | TokType::Indent | TokType::Dedent
+            ) {
                 continue;
             } else {
                 break;
@@ -1058,7 +1314,15 @@ impl Parser {
         }
         self.skip_bracket_newlines(&mut depth);
         self.eat(TokType::RParen)?;
-        Ok(Node::new(Kind::Call { func: Box::new(func), args, kwargs }, line, col))
+        Ok(Node::new(
+            Kind::Call {
+                func: Box::new(func),
+                args,
+                kwargs,
+            },
+            line,
+            col,
+        ))
     }
 
     fn atom(&mut self) -> PResult<Node> {
@@ -1066,7 +1330,14 @@ impl Parser {
         match t.ty {
             TokType::String => {
                 self.i += 1;
-                Ok(Node::new(Kind::Str { value: t.value, is_f: false }, t.line, t.col))
+                Ok(Node::new(
+                    Kind::Str {
+                        value: t.value,
+                        is_f: false,
+                    },
+                    t.line,
+                    t.col,
+                ))
             }
             TokType::FString => {
                 self.i += 1;
@@ -1122,7 +1393,11 @@ impl Parser {
                 self.eat(TokType::Colon)?;
                 let body = self.expr()?;
                 Ok(Node::new(
-                    Kind::Lambda { params, defaults, body: Box::new(body) },
+                    Kind::Lambda {
+                        params,
+                        defaults,
+                        body: Box::new(body),
+                    },
                     t.line,
                     t.col,
                 ))
@@ -1173,7 +1448,12 @@ impl Parser {
                     self.skip_bracket_newlines(&mut depth);
                     self.eat(TokType::RBrack)?;
                     return Ok(Node::new(
-                        Kind::Comprehension { expr: Box::new(first), target, iter: Box::new(iter), cond },
+                        Kind::Comprehension {
+                            expr: Box::new(first),
+                            target,
+                            iter: Box::new(iter),
+                            cond,
+                        },
                         t.line,
                         t.col,
                     ));
@@ -1286,7 +1566,9 @@ mod tests {
         let lines: Vec<String> = src.split('\n').map(|s| s.to_string()).collect();
         match crate::lexer::lex(src) {
             Err(e) => e,
-            Ok(toks) => Parser::new(toks, lines).module().expect_err("expected a parse error"),
+            Ok(toks) => Parser::new(toks, lines)
+                .module()
+                .expect_err("expected a parse error"),
         }
     }
 
@@ -1364,7 +1646,8 @@ mod tests {
 
     #[test]
     fn params_capture_name_type_and_default() {
-        let s = stmts("component Btn(label: str, count: int = 0, on_click=None):\n    button: label\n");
+        let s =
+            stmts("component Btn(label: str, count: int = 0, on_click=None):\n    button: label\n");
         match &s[0].kind {
             Kind::Component { params, .. } => {
                 assert_eq!(params.len(), 3);
@@ -1375,7 +1658,10 @@ mod tests {
                 assert!(params[1].has_default);
                 assert_eq!(params[2].name, "on_click");
                 assert!(params[2].has_default);
-                assert!(matches!(params[2].default.as_ref().unwrap().kind, Kind::Null));
+                assert!(matches!(
+                    params[2].default.as_ref().unwrap().kind,
+                    Kind::Null
+                ));
             }
             other => panic!("got {:?}", other),
         }
@@ -1410,7 +1696,10 @@ mod tests {
 
     #[test]
     fn generic_types_map_to_typescript() {
-        assert_eq!(ty_of("component A(x: list[str]):\n    div: \"z\"\n"), "Array<string>");
+        assert_eq!(
+            ty_of("component A(x: list[str]):\n    div: \"z\"\n"),
+            "Array<string>"
+        );
         assert_eq!(
             ty_of("component A(x: dict[str, int]):\n    div: \"z\"\n"),
             "Record<string, number>"
@@ -1423,13 +1712,19 @@ mod tests {
 
     #[test]
     fn optional_union_types_map_to_typescript() {
-        assert_eq!(ty_of("component A(x: str | None):\n    div: \"z\"\n"), "string | null");
+        assert_eq!(
+            ty_of("component A(x: str | None):\n    div: \"z\"\n"),
+            "string | null"
+        );
         assert_eq!(ty_of("component A(x: None):\n    div: \"z\"\n"), "null");
     }
 
     #[test]
     fn dotted_and_unknown_types_pass_through() {
-        assert_eq!(ty_of("component A(x: Foo.Bar):\n    div: \"z\"\n"), "Foo.Bar");
+        assert_eq!(
+            ty_of("component A(x: Foo.Bar):\n    div: \"z\"\n"),
+            "Foo.Bar"
+        );
         assert_eq!(ty_of("component A(x: MyType):\n    div: \"z\"\n"), "MyType");
     }
 
@@ -1438,7 +1733,12 @@ mod tests {
     #[test]
     fn comparison_operators_become_strict() {
         for (src, want) in [("x == 1", "==="), ("x != 1", "!==")] {
-            match first_expr(&format!("component A():\n    if {}:\n        p: \"y\"\n", src)).kind {
+            match first_expr(&format!(
+                "component A():\n    if {}:\n        p: \"y\"\n",
+                src
+            ))
+            .kind
+            {
                 Kind::Bin { op, .. } => assert_eq!(op, want, "for {}", src),
                 other => panic!("got {:?}", other),
             }
@@ -1448,7 +1748,12 @@ mod tests {
     #[test]
     fn boolean_words_become_js_operators() {
         for (src, want) in [("a and b", "&&"), ("a or b", "||")] {
-            match first_expr(&format!("component A():\n    if {}:\n        p: \"y\"\n", src)).kind {
+            match first_expr(&format!(
+                "component A():\n    if {}:\n        p: \"y\"\n",
+                src
+            ))
+            .kind
+            {
                 Kind::Bin { op, .. } => assert_eq!(op, want, "for {}", src),
                 other => panic!("got {:?}", other),
             }
@@ -1530,7 +1835,11 @@ mod tests {
         let e = first_expr("component A():\n    f = lambda x: lambda y: x + y\n");
         match e.kind {
             Kind::Lambda { body, .. } => {
-                assert!(matches!(body.kind, Kind::Lambda { .. }), "got {:?}", body.kind)
+                assert!(
+                    matches!(body.kind, Kind::Lambda { .. }),
+                    "got {:?}",
+                    body.kind
+                )
             }
             other => panic!("got {:?}", other),
         }
@@ -1552,15 +1861,25 @@ mod tests {
 
     #[test]
     fn empty_collections_parse() {
-        assert!(matches!(first_expr("component A():\n    x = []\n").kind, Kind::List(ref v) if v.is_empty()));
-        assert!(matches!(first_expr("component A():\n    x = {}\n").kind, Kind::Dict(ref v) if v.is_empty()));
-        assert!(matches!(first_expr("component A():\n    x = ()\n").kind, Kind::Tuple(ref v) if v.is_empty()));
+        assert!(
+            matches!(first_expr("component A():\n    x = []\n").kind, Kind::List(ref v) if v.is_empty())
+        );
+        assert!(
+            matches!(first_expr("component A():\n    x = {}\n").kind, Kind::Dict(ref v) if v.is_empty())
+        );
+        assert!(
+            matches!(first_expr("component A():\n    x = ()\n").kind, Kind::Tuple(ref v) if v.is_empty())
+        );
     }
 
     #[test]
     fn list_literal_keeps_items_and_trailing_comma() {
-        assert!(matches!(first_expr("component A():\n    x = [1, 2, 3]\n").kind, Kind::List(ref v) if v.len() == 3));
-        assert!(matches!(first_expr("component A():\n    x = [1, 2, 3,]\n").kind, Kind::List(ref v) if v.len() == 3));
+        assert!(
+            matches!(first_expr("component A():\n    x = [1, 2, 3]\n").kind, Kind::List(ref v) if v.len() == 3)
+        );
+        assert!(
+            matches!(first_expr("component A():\n    x = [1, 2, 3,]\n").kind, Kind::List(ref v) if v.len() == 3)
+        );
     }
 
     #[test]
@@ -1587,12 +1906,17 @@ mod tests {
 
     #[test]
     fn tuple_literal_becomes_a_tuple_node() {
-        assert!(matches!(first_expr("component A():\n    t = (1, 2)\n").kind, Kind::Tuple(ref v) if v.len() == 2));
+        assert!(
+            matches!(first_expr("component A():\n    t = (1, 2)\n").kind, Kind::Tuple(ref v) if v.len() == 2)
+        );
     }
 
     #[test]
     fn parenthesised_expression_is_not_a_tuple() {
-        assert!(matches!(first_expr("component A():\n    x = (1 + 2)\n").kind, Kind::Bin { .. }));
+        assert!(matches!(
+            first_expr("component A():\n    x = (1 + 2)\n").kind,
+            Kind::Bin { .. }
+        ));
     }
 
     // ----------------------------------------------------------- comprehensions
@@ -1624,7 +1948,11 @@ mod tests {
         // `if` after `in` must bind as the filter, so the iter is just `xs`.
         match first_expr("component A():\n    ys = [x for x in xs if x]\n").kind {
             Kind::Comprehension { iter, cond, .. } => {
-                assert!(matches!(iter.kind, Kind::Name(ref n) if n == "xs"), "iter was {:?}", iter.kind);
+                assert!(
+                    matches!(iter.kind, Kind::Name(ref n) if n == "xs"),
+                    "iter was {:?}",
+                    iter.kind
+                );
                 assert!(cond.is_some());
             }
             other => panic!("got {:?}", other),
@@ -1744,7 +2072,9 @@ mod tests {
 
     #[test]
     fn keyword_kwargs_parse() {
-        match first_expr("component A():\n    button(type=\"button\", as=\"div\", for=\"id\")\n").kind {
+        match first_expr("component A():\n    button(type=\"button\", as=\"div\", for=\"id\")\n")
+            .kind
+        {
             Kind::Call { kwargs, .. } => {
                 assert_eq!(kwargs.len(), 3);
                 assert_eq!(kwargs[0].0, "type");
@@ -1757,7 +2087,8 @@ mod tests {
 
     #[test]
     fn statement_if_captures_orelse() {
-        match &body("component A():\n    if a:\n        go()\n    else:\n        stop()\n")[0].kind {
+        match &body("component A():\n    if a:\n        go()\n    else:\n        stop()\n")[0].kind
+        {
             Kind::If { orelse, .. } => assert!(orelse.is_some()),
             other => panic!("got {:?}", other),
         }
@@ -1767,7 +2098,9 @@ mod tests {
     fn elif_becomes_a_nested_if_in_orelse() {
         match &body("component A():\n    if a:\n        x()\n    elif b:\n        y()\n")[0].kind {
             Kind::If { orelse, .. } => match &orelse.as_ref().unwrap()[0].kind {
-                Kind::If { test, .. } => assert!(matches!(test.kind, Kind::Name(ref n) if n == "b")),
+                Kind::If { test, .. } => {
+                    assert!(matches!(test.kind, Kind::Name(ref n) if n == "b"))
+                }
                 other => panic!("got {:?}", other),
             },
             other => panic!("got {:?}", other),
@@ -1899,7 +2232,9 @@ mod tests {
         let e = first_expr("component A():\n    div: f\"{'a' if x else 'b'}\"\n");
         match e.kind {
             Kind::FString(parts) => match &parts[0] {
-                FPart::Expr(n) => assert!(matches!(n.kind, Kind::Ternary { .. }), "got {:?}", n.kind),
+                FPart::Expr(n) => {
+                    assert!(matches!(n.kind, Kind::Ternary { .. }), "got {:?}", n.kind)
+                }
                 other => panic!("got {:?}", other),
             },
             other => panic!("got {:?}", other),
@@ -1949,7 +2284,11 @@ mod tests {
     #[test]
     fn unexpected_token_reports_position_and_hint() {
         let err = parse_err("component A():\n    div:\n        x = ~~~\n");
-        assert!(err.msg.contains("unexpected character") || err.msg.contains("unexpected"), "msg {:?}", err.msg);
+        assert!(
+            err.msg.contains("unexpected character") || err.msg.contains("unexpected"),
+            "msg {:?}",
+            err.msg
+        );
         assert_eq!(err.line, 3);
     }
 
@@ -2031,17 +2370,31 @@ mod tests {
     #[test]
     fn unclosed_brace_in_fstring_rejected() {
         let err = parse_err("component A():\n    x = f\"hello {world\"\n");
-        assert!(err.msg.contains("unclosed '{' in f-string"), "got {:?}", err.msg);
+        assert!(
+            err.msg.contains("unclosed '{' in f-string"),
+            "got {:?}",
+            err.msg
+        );
     }
 
     #[test]
     fn recursion_depth_limit_enforced() {
-        let nested = format!("component A():\n    x = {}1{}\n", "(".repeat(270), ")".repeat(270));
+        let nested = format!(
+            "component A():\n    x = {}1{}\n",
+            "(".repeat(270),
+            ")".repeat(270)
+        );
         let builder = std::thread::Builder::new().stack_size(8 * 1024 * 1024);
-        let handler = builder.spawn(move || {
-            let err = parse_err(&nested);
-            assert!(err.msg.contains("maximum recursion depth exceeded"), "got {:?}", err.msg);
-        }).unwrap();
+        let handler = builder
+            .spawn(move || {
+                let err = parse_err(&nested);
+                assert!(
+                    err.msg.contains("maximum recursion depth exceeded"),
+                    "got {:?}",
+                    err.msg
+                );
+            })
+            .unwrap();
         handler.join().unwrap();
     }
 }

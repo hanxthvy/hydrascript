@@ -10,30 +10,144 @@ use crate::ast::{Kind, Node, Param};
 use crate::error::CompileError;
 
 pub static HTML_TAGS: &[&str] = &[
-    "div", "span", "p", "a", "ul", "ol", "li", "h1", "h2", "h3", "h4", "h5", "h6", "button",
-    "input", "form", "label", "select", "option", "textarea", "img", "nav", "header", "footer",
-    "main", "section", "article", "aside", "table", "thead", "tbody", "tr", "td", "th", "br",
-    "hr", "pre", "code", "em", "strong", "small", "figure", "figcaption", "video", "audio",
-    "canvas", "svg", "iframe", "dialog",
+    "div",
+    "span",
+    "p",
+    "a",
+    "ul",
+    "ol",
+    "li",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "button",
+    "input",
+    "form",
+    "label",
+    "select",
+    "option",
+    "textarea",
+    "img",
+    "nav",
+    "header",
+    "footer",
+    "main",
+    "section",
+    "article",
+    "aside",
+    "table",
+    "thead",
+    "tbody",
+    "tr",
+    "td",
+    "th",
+    "br",
+    "hr",
+    "pre",
+    "code",
+    "em",
+    "strong",
+    "small",
+    "figure",
+    "figcaption",
+    "video",
+    "audio",
+    "canvas",
+    "svg",
+    "iframe",
+    "dialog",
     // SVG elements
-    "path", "g", "circle", "rect", "line", "polyline", "polygon", "text", "tspan", "defs",
-    "clipPath", "symbol", "use", "ellipse", "mask", "pattern", "marker", "linearGradient",
-    "radialGradient", "stop", "foreignObject",
+    "path",
+    "g",
+    "circle",
+    "rect",
+    "line",
+    "polyline",
+    "polygon",
+    "text",
+    "tspan",
+    "defs",
+    "clipPath",
+    "symbol",
+    "use",
+    "ellipse",
+    "mask",
+    "pattern",
+    "marker",
+    "linearGradient",
+    "radialGradient",
+    "stop",
+    "foreignObject",
     // HTML5 elements
-    "details", "summary", "picture", "source", "track", "time", "slot", "template",
-    "mark", "progress", "meter", "fieldset", "legend", "optgroup", "caption",
-    "colgroup", "col", "tfoot", "kbd", "blockquote", "address",
+    "details",
+    "summary",
+    "picture",
+    "source",
+    "track",
+    "time",
+    "slot",
+    "template",
+    "mark",
+    "progress",
+    "meter",
+    "fieldset",
+    "legend",
+    "optgroup",
+    "caption",
+    "colgroup",
+    "col",
+    "tfoot",
+    "kbd",
+    "blockquote",
+    "address",
 ];
 
 // [xihanzu-NR]
 pub static JS_BUILTIN_GLOBALS: &[&str] = &[
-    "Math", "Date", "Array", "Object", "Number", "String", "Boolean",
-    "RegExp", "JSON", "Promise", "Reflect", "Intl", "Set", "Map",
-    "WeakSet", "WeakMap", "Symbol", "Error", "TypeError", "RangeError",
-    "ResizeObserver", "IntersectionObserver", "MutationObserver",
-    "WebSocket", "Worker", "Audio", "Image", "FormData", "URL", "URLSearchParams",
-    "Console", "console", "window", "document", "globalThis", "navigator", "location",
-    "localStorage", "sessionStorage", "performance", "Performance",
+    "Math",
+    "Date",
+    "Array",
+    "Object",
+    "Number",
+    "String",
+    "Boolean",
+    "RegExp",
+    "JSON",
+    "Promise",
+    "Reflect",
+    "Intl",
+    "Set",
+    "Map",
+    "WeakSet",
+    "WeakMap",
+    "Symbol",
+    "Error",
+    "TypeError",
+    "RangeError",
+    "ResizeObserver",
+    "IntersectionObserver",
+    "MutationObserver",
+    "WebSocket",
+    "Worker",
+    "Audio",
+    "Image",
+    "FormData",
+    "URL",
+    "URLSearchParams",
+    "Console",
+    "console",
+    "window",
+    "document",
+    "globalThis",
+    "navigator",
+    "location",
+    "localStorage",
+    "sessionStorage",
+    "performance",
+    "Performance",
 ];
 
 pub fn prop_map(k: &str) -> String {
@@ -110,6 +224,21 @@ pub struct Scope {
     pub assign_counts: HashMap<String, usize>,
     pub aug_assigned: HashSet<String>,
     pub declared: HashSet<String>,
+    /// Depth at which each name is first assigned: 0 for a direct statement of
+    /// the function body, 1+ for anything inside `if:` / `for:` / `try:`.
+    ///
+    /// This is what makes Python's function scoping survive the trip to
+    /// JavaScript. Python has no block-scoped names, so
+    ///     if ready:
+    ///         signal = 1
+    ///     return signal
+    /// is legal Python. Emitting the binding inside the branch produced
+    /// `let signal = 1;` in one arm and a use of an undeclared name after the
+    /// block. Names whose first assignment is nested get hoisted to the top of
+    /// the function instead.
+    pub first_assign_depth: HashMap<String, usize>,
+    /// Every name assigned anywhere in this scope (excluding nested functions).
+    pub assigned_anywhere: HashSet<String>,
 }
 
 impl Scope {
@@ -120,45 +249,70 @@ impl Scope {
     }
 
     fn scan_nodes(&mut self, nodes: &[Node]) {
+        self.scan_at(nodes, 0);
+    }
+
+    /// `depth` is the nesting level relative to the function body: 0 for a
+    /// statement that sits directly in the body, 1 for one inside `if:`.
+    /// Nested `def`s are separate scopes and are deliberately NOT descended
+    /// into — their bindings belong to them, not to the enclosing function.
+    fn scan_at(&mut self, nodes: &[Node], depth: usize) {
         for s in nodes {
             match &s.kind {
                 Kind::Assign { target, .. } => {
                     if let Kind::Name(id) = &target.kind {
-                        *self.assign_counts.entry(id.clone()).or_insert(0) += 1;
+                        let escaped = self.assign_counts.entry(id.clone()).or_insert(0);
+                        if *escaped == 0 {
+                            self.first_assign_depth.entry(id.clone()).or_insert(depth);
+                        }
+                        *escaped += 1;
+                        self.assigned_anywhere.insert(id.clone());
                     }
                 }
                 Kind::AugAssign { target, .. } => {
                     if let Kind::Name(id) = &target.kind {
                         self.aug_assigned.insert(id.clone());
+                        self.assigned_anywhere.insert(id.clone());
+                        self.first_assign_depth.entry(id.clone()).or_insert(depth);
                     }
                 }
+                // A nested function is its own scope; do not inherit its names.
+                Kind::Def { .. } | Kind::AsyncDef { .. } => {}
                 Kind::If { body, orelse, .. } => {
-                    self.scan_nodes(body);
+                    self.scan_at(body, depth + 1);
                     if let Some(ore) = orelse {
-                        self.scan_nodes(ore);
+                        self.scan_at(ore, depth + 1);
                     }
                 }
                 Kind::For { body, .. } => {
-                    self.scan_nodes(body);
+                    // The loop target is deliberately NOT hoisted: the `for`
+                    // head declares it inline, and hoisting would emit a second
+                    // binding that shadows the loop's own.
+                    self.scan_at(body, depth + 1);
                 }
                 Kind::While { body, .. } => {
-                    self.scan_nodes(body);
+                    self.scan_at(body, depth + 1);
                 }
-                Kind::Try { body, handlers, orelse, finally } => {
-                    self.scan_nodes(body);
+                Kind::Try {
+                    body,
+                    handlers,
+                    orelse,
+                    finally,
+                } => {
+                    self.scan_at(body, depth + 1);
                     for h in handlers {
-                        self.scan_nodes(&h.body);
+                        self.scan_at(&h.body, depth + 1);
                     }
                     if let Some(ore) = orelse {
-                        self.scan_nodes(ore);
+                        self.scan_at(ore, depth + 1);
                     }
                     if let Some(fin) = finally {
-                        self.scan_nodes(fin);
+                        self.scan_at(fin, depth + 1);
                     }
                 }
                 Kind::Match { cases, .. } => {
                     for c in cases {
-                        self.scan_nodes(&c.body);
+                        self.scan_at(&c.body, depth + 1);
                     }
                 }
                 _ => {}
@@ -168,6 +322,22 @@ impl Scope {
 
     pub fn is_mutable(&self, id: &str) -> bool {
         self.assign_counts.get(id).copied().unwrap_or(0) > 1 || self.aug_assigned.contains(id)
+    }
+}
+
+impl Scope {
+    /// Names that must be declared at the top of the enclosing function because
+    /// their first assignment sits inside a nested block. Sorted so the emitted
+    /// order is stable across runs.
+    pub fn hoist_names(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .assigned_anywhere
+            .iter()
+            .filter(|n| self.first_assign_depth.get(*n).copied().unwrap_or(0) > 0)
+            .cloned()
+            .collect();
+        v.sort();
+        v
     }
 }
 
@@ -203,7 +373,11 @@ impl Emitter {
     }
 
     pub fn w(&mut self, s: &str) {
-        let line = if s.is_empty() { String::new() } else { format!("{}{}", self.pad(), s) };
+        let line = if s.is_empty() {
+            String::new()
+        } else {
+            format!("{}{}", self.pad(), s)
+        };
         let count = line.matches('\n').count() + 1;
         self.lines.push(line);
         for _ in 0..count {
@@ -217,7 +391,8 @@ impl Emitter {
                 if JS_BUILTIN_GLOBALS.contains(&id.as_str()) {
                     return false;
                 }
-                HTML_TAGS.contains(&id.as_str()) || id.chars().next().map_or(false, |c| c.is_uppercase())
+                HTML_TAGS.contains(&id.as_str())
+                    || id.chars().next().map_or(false, |c| c.is_uppercase())
             }
             Kind::Attr { obj, name } => {
                 if JS_BUILTIN_GLOBALS.contains(&name.as_str()) {
@@ -250,9 +425,7 @@ impl Emitter {
                         FPart::Lit(s) => {
                             for c in s.chars() {
                                 // Escape what a template literal treats specially.
-                                if c == '`' || c == '\\' {
-                                    out.push('\\');
-                                } else if c == '$' {
+                                if c == '`' || c == '\\' || c == '$' {
                                     out.push('\\');
                                 }
                                 out.push(c);
@@ -317,7 +490,11 @@ impl Emitter {
                 let o = self.js(orelse)?;
                 Ok(format!("({} ? {} : {})", c, b, o))
             }
-            Kind::Lambda { params, defaults, body } => {
+            Kind::Lambda {
+                params,
+                defaults,
+                body,
+            } => {
                 let b = self.js(body)?;
                 // `lambda m=mode: ...` -> `((m = mode) => ...)`. JS default
                 // parameters have exactly Python's early-binding semantics, so
@@ -356,7 +533,12 @@ impl Emitter {
                 // e.g. `todos.map((t) => {...t})` — esbuild reads that as a block.
                 Ok(format!("({{{}}})", ps.join(", ")))
             }
-            Kind::Comprehension { expr, target, iter, cond } => {
+            Kind::Comprehension {
+                expr,
+                target,
+                iter,
+                cond,
+            } => {
                 let it = self.js(iter)?;
                 let exp = self.js(expr)?;
                 let mut res = it;
@@ -386,6 +568,43 @@ impl Emitter {
 
                 // Python builtins: len(xs) -> xs.length
                 if let Kind::Name(id) = &func.kind {
+                    if kwargs.is_empty() {
+                        // Two-argument and variadic forms first: max(a, b),
+                        // min(a, b), max(xs, key=...) is unsupported on purpose.
+                        if args.len() >= 2 {
+                            let mut all = Vec::new();
+                            for a in args {
+                                all.push(self.js(a)?);
+                            }
+                            match id.as_str() {
+                                "max" => return Ok(format!("Math.max({})", all.join(", "))),
+                                "min" => return Ok(format!("Math.min({})", all.join(", "))),
+                                "isinstance" => {
+                                    self.used_helpers.borrow_mut().insert("isinstance".into());
+                                    let ty = &all[1];
+                                    let mapped = match ty.as_str() {
+                                        "str" => "String",
+                                        "int" | "float" => "Number",
+                                        "bool" => "Boolean",
+                                        "list" => "Array",
+                                        "dict" => "Object",
+                                        "None" | "NoneType" => "null",
+                                        other => other,
+                                    };
+                                    return Ok(format!("isinstance({}, {})", all[0], mapped));
+                                }
+                                _ => {}
+                            }
+                        }
+                        if args.len() == 1 {
+                            let arg = self.js(&args[0])?;
+                            match id.as_str() {
+                                "max" => return Ok(format!("Math.max(...{})", arg)),
+                                "min" => return Ok(format!("Math.min(...{})", arg)),
+                                _ => {}
+                            }
+                        }
+                    }
                     if args.len() == 1 && kwargs.is_empty() {
                         let arg = self.js(&args[0])?;
                         match id.as_str() {
@@ -403,6 +622,20 @@ impl Emitter {
                             // Python's print is the obvious debugging verb; a
                             // Python dev reaches for it without thinking.
                             "print" => return Ok(format!("console.log({})", arg)),
+                            "isinstance" => {
+                                self.used_helpers.borrow_mut().insert("isinstance".into());
+                                return Ok(format!("isinstance({})", arg));
+                            }
+                            "range" => {
+                                self.used_helpers.borrow_mut().insert("range".into());
+                                return Ok(format!("range({})", arg));
+                            }
+                            "enumerate" => {
+                                self.used_helpers.borrow_mut().insert("enumerate".into());
+                                return Ok(format!("enumerate({})", arg));
+                            }
+                            "ord" => return Ok(format!("{}.charCodeAt(0)", arg)),
+                            "chr" => return Ok(format!("String.fromCharCode({})", arg)),
                             _ => {}
                         }
                     }
@@ -434,6 +667,18 @@ impl Emitter {
                 Ok(format!("{}.slice({}{})", o, a, b))
             }
             Kind::Await(v) => Ok(format!("await {}", self.js(v)?)),
+            Kind::New(inner) => Ok(format!("new {}", self.js(inner)?)),
+            Kind::OptCall { func, args, kwargs } => {
+                let f = self.js(func)?;
+                let mut all: Vec<String> = Vec::new();
+                for a in args {
+                    all.push(self.js(a)?);
+                }
+                for (k, v) in kwargs {
+                    all.push(format!("{}: {}", prop_map(k), self.js(v)?));
+                }
+                Ok(format!("{}?.({})", f, all.join(", ")))
+            }
             _ => Err(CompileError::new(
                 format!("cannot compile expression {:?}", n.kind),
                 n.line,
@@ -519,7 +764,10 @@ impl Emitter {
     ) -> Result<String, CompileError> {
         let tag = self.js(func)?;
         let a = self.attr_str(args, kwargs)?;
-        let non_spread_args: Vec<_> = args.iter().filter(|a| !matches!(a.kind, Kind::Spread(_))).collect();
+        let non_spread_args: Vec<_> = args
+            .iter()
+            .filter(|a| !matches!(a.kind, Kind::Spread(_)))
+            .collect();
         if non_spread_args.is_empty() {
             return Ok(format!("<{}{} />", tag, a));
         }
@@ -585,7 +833,10 @@ impl Emitter {
             .map(|k| format!("{}{}", pad_inner, k))
             .collect::<Vec<_>>()
             .join("\n");
-        Ok(format!("<{}{}>\n{}\n{}</{}>", tag, a, inner, pad_close, tag))
+        Ok(format!(
+            "<{}{}>\n{}\n{}</{}>",
+            tag, a, inner, pad_close, tag
+        ))
     }
 
     fn child(&self, s: &Node, ind: usize) -> Result<String, CompileError> {
@@ -633,7 +884,13 @@ impl Emitter {
                     } else {
                         let cond = match &c.pattern.kind {
                             Kind::Bin { op, left, right } if op == "|" => {
-                                format!("(({} === {}) || ({} === {}))", s_val, self.js(left)?, s_val, self.js(right)?)
+                                format!(
+                                    "(({} === {}) || ({} === {}))",
+                                    s_val,
+                                    self.js(left)?,
+                                    s_val,
+                                    self.js(right)?
+                                )
                             }
                             _ => format!("({} === {})", s_val, self.js(&c.pattern)?),
                         };
@@ -652,7 +909,9 @@ impl Emitter {
                 s.col,
                 Vec::new(),
             )
-            .with_hint("move logic above the tree — tree blocks only accept elements, if, and for")),
+            .with_hint(
+                "move logic above the tree — tree blocks only accept elements, if, and for",
+            )),
         }
     }
 
@@ -698,19 +957,43 @@ impl Emitter {
                 };
                 let rhs = self.js(value)?;
 
+                // A declaration only makes sense when the target IS a name.
+                // `node.style.transform = x` or `rows[i] = v` must emit a plain
+                // assignment — emitting `const` in front of a member access
+                // produced `const node.style.transform = ...`, which is a
+                // syntax error that nevertheless used to build "successfully".
                 if let Kind::Name(id) = &target.kind {
                     if let Some(scope) = self.scopes.last_mut() {
-                        if scope.is_mutable(id) {
-                            if scope.declared.insert(id.clone()) {
-                                self.w(&format!("let {} = {};", lhs, rhs));
-                            } else {
-                                self.w(&format!("{} = {};", lhs, rhs));
-                            }
-                            return Ok(());
+                        // Mutable names get `let` at their first assignment so
+                        // later writes are legal; everything else is `const`.
+                        let declare = if scope.is_mutable(id) { "let" } else { "const" };
+                        // `declared` already holds hoisted names, so a name that
+                        // was declared at the top of the function falls through
+                        // to a plain assignment here instead of being declared
+                        // a second time.
+                        if scope.declared.insert(id.clone()) {
+                            self.w(&format!("{} {} = {};", declare, lhs, rhs));
+                        } else {
+                            self.w(&format!("{} = {};", lhs, rhs));
                         }
+                        return Ok(());
                     }
+                    self.w(&format!("const {} = {};", lhs, rhs));
+                    return Ok(());
                 }
-                self.w(&format!("const {} = {};", lhs, rhs));
+                // Destructuring (`a, b = pair()`) binds names, so it declares.
+                // Member and index targets do NOT: `const x.y = 1` is a syntax
+                // error, so those always emit a plain assignment.
+                let binds_names = match &target.kind {
+                    Kind::Tuple(items) => items.iter().all(|i| matches!(i.kind, Kind::Name(_))),
+                    Kind::Dict(_) => true,
+                    _ => false,
+                };
+                if binds_names {
+                    self.w(&format!("const {} = {};", lhs, rhs));
+                } else {
+                    self.w(&format!("{} = {};", lhs, rhs));
+                }
             }
             Kind::AugAssign { target, op, value } => {
                 let lhs = self.js(target)?;
@@ -740,6 +1023,7 @@ impl Emitter {
                 self.depth += 1;
                 let scope = Scope::scan(body);
                 self.scopes.push(scope);
+                self.hoist_nested_assignments();
                 for stmt in body {
                     self.stmt(stmt)?;
                 }
@@ -806,12 +1090,18 @@ impl Emitter {
                     if names.is_empty() {
                         self.imports.insert(format!("import '{}';", f));
                     } else if names.len() == 1 && names[0].starts_with("* as ") {
-                        self.imports.insert(format!("import {} from '{}';", names[0], f));
+                        self.imports
+                            .insert(format!("import {} from '{}';", names[0], f));
                     } else {
-                        self.imports.insert(format!("import {{ {} }} from '{}';", names.join(", "), f));
+                        self.imports.insert(format!(
+                            "import {{ {} }} from '{}';",
+                            names.join(", "),
+                            f
+                        ));
                     }
                 } else {
-                    self.imports.insert(format!("import {} from 'serpent';", names.join(", ")));
+                    self.imports
+                        .insert(format!("import {} from 'serpent';", names.join(", ")));
                 }
             }
             Kind::Interface { name, body } => {
@@ -845,6 +1135,29 @@ impl Emitter {
         Ok(())
     }
 
+    /// Declare, at the top of the current function, every name whose first
+    /// assignment sits inside a nested block. Python's names are function
+    /// scoped; without this, `if c: v = 1` followed by `return v` emitted a
+    /// binding that only existed inside the branch. `let` (never `const`)
+    /// because the declaration is intentionally uninitialised.
+    fn hoist_nested_assignments(&mut self) {
+        let Some(scope) = self.scopes.last_mut() else {
+            return;
+        };
+        let names = scope.hoist_names();
+        if names.is_empty() {
+            return;
+        }
+        // Recording them as declared is what stops the first assignment inside
+        // the branch from emitting a second, shadowing binding.
+        for n in &names {
+            scope.declared.insert(n.clone());
+        }
+        for n in names {
+            self.w(&format!("let {};", n));
+        }
+    }
+
     fn format_params(&self, params: &[Param]) -> Result<String, CompileError> {
         let mut out = Vec::new();
         for p in params {
@@ -860,7 +1173,12 @@ impl Emitter {
         Ok(out.join(", "))
     }
 
-    pub fn component(&mut self, name: &str, params: &[Param], body: &[Node]) -> Result<(), CompileError> {
+    pub fn component(
+        &mut self,
+        name: &str,
+        params: &[Param],
+        body: &[Node],
+    ) -> Result<(), CompileError> {
         let ps = self.format_params(params)?;
         let arg = if params.is_empty() {
             String::new()
@@ -872,8 +1190,12 @@ impl Emitter {
 
         let scope = Scope::scan(body);
         self.scopes.push(scope);
+        self.hoist_nested_assignments();
 
-        let tree_count = body.iter().filter(|s| matches!(s.kind, Kind::Tree { .. })).count();
+        let tree_count = body
+            .iter()
+            .filter(|s| matches!(s.kind, Kind::Tree { .. }))
+            .count();
         if tree_count > 1 {
             for s in body {
                 if !matches!(s.kind, Kind::Tree { .. }) {
@@ -888,8 +1210,15 @@ impl Emitter {
             }
             let pad = self.pad();
             let pad2 = "  ".repeat(self.depth + 1);
-            let inner = parts.into_iter().map(|p| format!("{}{}", pad2, p)).collect::<Vec<_>>().join("\n");
-            self.w(&format!("return (\n{}<>\n{}\n{}</>\n{});", pad, inner, pad, pad));
+            let inner = parts
+                .into_iter()
+                .map(|p| format!("{}{}", pad2, p))
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.w(&format!(
+                "return (\n{}<>\n{}\n{}</>\n{});",
+                pad, inner, pad, pad
+            ));
         } else {
             for s in body {
                 self.stmt(s)?;
@@ -930,12 +1259,18 @@ impl Emitter {
                     if names.is_empty() {
                         self.imports.insert(format!("import '{}';", f));
                     } else if names.len() == 1 && names[0].starts_with("* as ") {
-                        self.imports.insert(format!("import {} from '{}';", names[0], f));
+                        self.imports
+                            .insert(format!("import {} from '{}';", names[0], f));
                     } else {
-                        self.imports.insert(format!("import {{ {} }} from '{}';", names.join(", "), f));
+                        self.imports.insert(format!(
+                            "import {{ {} }} from '{}';",
+                            names.join(", "),
+                            f
+                        ));
                     }
                 } else {
-                    self.imports.insert(format!("import {} from 'serpent';", names.join(", ")));
+                    self.imports
+                        .insert(format!("import {} from 'serpent';", names.join(", ")));
                 }
             }
         }
@@ -965,7 +1300,8 @@ impl Emitter {
         if !helpers.is_empty() {
             let mut h = helpers;
             h.sort();
-            self.imports.insert(format!("import {{ {} }} from 'serpent';", h.join(", ")));
+            self.imports
+                .insert(format!("import {{ {} }} from 'serpent';", h.join(", ")));
         }
 
         let mut head = vec![
@@ -987,13 +1323,23 @@ impl Emitter {
         let mut segs = Vec::new();
         let mut prev_src: i64 = 0;
         for _ in 0..self.head_lines.len() {
-            segs.push(format!("{}{}{}", encode_vlq(0), encode_vlq(0), encode_vlq(0)));
+            segs.push(format!(
+                "{}{}{}",
+                encode_vlq(0),
+                encode_vlq(0),
+                encode_vlq(0)
+            ));
         }
         for sl in &self.linemap {
             let sl_i = *sl as i64;
             let d = (sl_i - 1) - prev_src;
             prev_src = sl_i - 1;
-            segs.push(format!("{}{}{}", encode_vlq(0), encode_vlq(d), encode_vlq(0)));
+            segs.push(format!(
+                "{}{}{}",
+                encode_vlq(0),
+                encode_vlq(d),
+                encode_vlq(0)
+            ));
         }
         // `file` names the artifact this map describes: same path as the
         // source, with the extension swapped for `.tsx` (matching the name the
@@ -1056,19 +1402,31 @@ mod tests {
     fn emit_tsx(src: &str) -> String {
         let lines: Vec<String> = src.split('\n').map(|s| s.to_string()).collect();
         let toks = crate::lexer::lex(src).expect("lex failed");
-        let module = crate::parser::Parser::new(toks, lines).module().expect("parse failed");
+        let module = crate::parser::Parser::new(toks, lines)
+            .module()
+            .expect("parse failed");
         let mut em = Emitter::new();
         em.run(&module).expect("emit failed")
     }
 
     fn has_all(out: &str, frags: &[&str]) {
         for f in frags {
-            assert!(out.contains(f), "missing fragment {:?} in output:\n{}", f, out);
+            assert!(
+                out.contains(f),
+                "missing fragment {:?} in output:\n{}",
+                f,
+                out
+            );
         }
     }
 
     fn lacks(out: &str, frag: &str) {
-        assert!(!out.contains(frag), "unexpected fragment {:?} in output:\n{}", frag, out);
+        assert!(
+            !out.contains(frag),
+            "unexpected fragment {:?} in output:\n{}",
+            frag,
+            out
+        );
     }
 
     // ----------------------------------------------------------------- prop map
@@ -1168,14 +1526,17 @@ mod tests {
     #[test]
     fn string_number_builtins_map_to_js() {
         let out = emit_tsx("component A():\n    a = str(x)\n    b = int(x)\n    c = float(x)\n    d = abs(x)\n    e = round(x)\n    f = bool(x)\n");
-        has_all(&out, &[
-            "String(x)",
-            "parseInt(x)",
-            "parseFloat(x)",
-            "Math.abs(x)",
-            "Math.round(x)",
-            "Boolean(x)",
-        ]);
+        has_all(
+            &out,
+            &[
+                "String(x)",
+                "parseInt(x)",
+                "parseFloat(x)",
+                "Math.abs(x)",
+                "Math.round(x)",
+                "Boolean(x)",
+            ],
+        );
     }
 
     #[test]
@@ -1186,26 +1547,37 @@ mod tests {
 
     #[test]
     fn sorted_reversed_list_map_to_slice() {
-        let out = emit_tsx("component A():\n    a = sorted(xs)\n    b = reversed(xs)\n    c = list(xs)\n");
-        has_all(&out, &["xs.slice().sort()", "xs.slice().reverse()", "xs.slice()"]);
+        let out = emit_tsx(
+            "component A():\n    a = sorted(xs)\n    b = reversed(xs)\n    c = list(xs)\n",
+        );
+        has_all(
+            &out,
+            &["xs.slice().sort()", "xs.slice().reverse()", "xs.slice()"],
+        );
     }
 
     #[test]
     fn string_methods_emitted() {
         let out = emit_tsx("component A():\n    a = t.strip()\n    b = t.upper()\n    c = t.lower()\n    d = t.startswith(\"x\")\n    e = t.endswith(\"y\")\n");
-        has_all(&out, &[
-            "t.trim()",
-            "t.toUpperCase()",
-            "t.toLowerCase()",
-            "t.startsWith(\"x\")",
-            "t.endsWith(\"y\")",
-        ]);
+        has_all(
+            &out,
+            &[
+                "t.trim()",
+                "t.toUpperCase()",
+                "t.toLowerCase()",
+                "t.startsWith(\"x\")",
+                "t.endsWith(\"y\")",
+            ],
+        );
     }
 
     #[test]
     fn runtime_helpers_are_auto_imported() {
         let out = emit_tsx("component A():\n    s = t.capitalize()\n");
-        has_all(&out, &["import { capitalize } from 'serpent';", "capitalize(t)"]);
+        has_all(
+            &out,
+            &["import { capitalize } from 'serpent';", "capitalize(t)"],
+        );
     }
 
     // ----------------------------------------------------------- comprehensions
@@ -1260,7 +1632,8 @@ mod tests {
 
     #[test]
     fn nested_tree_elements_render() {
-        let out = emit_tsx("component A():\n    div:\n        h1: \"Hello\"\n        p: \"World\"\n");
+        let out =
+            emit_tsx("component A():\n    div:\n        h1: \"Hello\"\n        p: \"World\"\n");
         has_all(&out, &["<div>", "<h1>Hello</h1>", "<p>World</p>", "</div>"]);
     }
 
@@ -1274,7 +1647,9 @@ mod tests {
 
     #[test]
     fn self_closing_elements() {
-        let out = emit_tsx("component A():\n    div:\n        br:\n        hr:\n        input(value=x)\n");
+        let out = emit_tsx(
+            "component A():\n    div:\n        br:\n        hr:\n        input(value=x)\n",
+        );
         has_all(&out, &["<br />", "<hr />", "<input value={x} />"]);
     }
 
@@ -1314,7 +1689,9 @@ mod tests {
 
     #[test]
     fn tree_for_becomes_map() {
-        let out = emit_tsx("component A():\n    ul:\n        for it in items:\n            li(key=it): it\n");
+        let out = emit_tsx(
+            "component A():\n    ul:\n        for it in items:\n            li(key=it): it\n",
+        );
         has_all(&out, &["items.map((it) => (", "<li key={it}>"]);
     }
 
@@ -1328,14 +1705,19 @@ mod tests {
 
     #[test]
     fn component_props_and_interface_emitted() {
-        let out = emit_tsx("component Btn(label: str, count: int = 0, on_click=None):\n    button: label\n");
-        has_all(&out, &[
-            "export function Btn({ label, count = 0, on_click }: BtnProps)",
-            "export interface BtnProps {",
-            "label: string;",
-            "count?: number;",
-            "on_click?: any;",
-        ]);
+        let out = emit_tsx(
+            "component Btn(label: str, count: int = 0, on_click=None):\n    button: label\n",
+        );
+        has_all(
+            &out,
+            &[
+                "export function Btn({ label, count = 0, on_click }: BtnProps)",
+                "export interface BtnProps {",
+                "label: string;",
+                "count?: number;",
+                "on_click?: any;",
+            ],
+        );
         lacks(&out, "label?:");
         lacks(&out, "= null");
     }
@@ -1380,7 +1762,9 @@ mod tests {
 
     #[test]
     fn def_reassigned_and_augmented_emits_let() {
-        let out = emit_tsx("def calc():\n    x = 1\n    x = 2\n    z = 0\n    z += 1\n    return x + z\n");
+        let out = emit_tsx(
+            "def calc():\n    x = 1\n    x = 2\n    z = 0\n    z += 1\n    return x + z\n",
+        );
         has_all(&out, &["let x = 1;", "x = 2;", "let z = 0;", "z += 1;"]);
         lacks(&out, "const x = 1;");
         lacks(&out, "const z = 0;");
@@ -1406,7 +1790,8 @@ mod tests {
 
     #[test]
     fn statement_level_if_and_for_emit_native_blocks() {
-        let out = emit_tsx("component A():\n    if a:\n        go()\n    for x in xs:\n        run(x)\n");
+        let out =
+            emit_tsx("component A():\n    if a:\n        go()\n    for x in xs:\n        run(x)\n");
         has_all(&out, &["if (a) {", "for (const x of xs) {"]);
     }
 
@@ -1450,7 +1835,9 @@ mod tests {
 
     #[test]
     fn keyword_kwargs_emit_cleanly() {
-        let out = emit_tsx("component A():\n    button(type=\"button\", for=\"my-id\"):\n        \"Click\"\n");
+        let out = emit_tsx(
+            "component A():\n    button(type=\"button\", for=\"my-id\"):\n        \"Click\"\n",
+        );
         has_all(&out, &["<button type=\"button\" htmlFor=\"my-id\">"]);
     }
 
@@ -1458,12 +1845,14 @@ mod tests {
 
     #[test]
     fn imports_are_deduplicated_and_sorted() {
-        let out = emit_tsx("from b import y\nfrom a import x\nfrom b import y\n\ncomponent A():\n    div: \"z\"\n");
+        let out = emit_tsx(
+            "from b import y\nfrom a import x\nfrom b import y\n\ncomponent A():\n    div: \"z\"\n",
+        );
         let lines: Vec<_> = out.lines().filter(|l| l.starts_with("import ")).collect();
-        assert_eq!(lines, vec![
-            "import { x } from 'a';",
-            "import { y } from 'b';",
-        ]);
+        assert_eq!(
+            lines,
+            vec!["import { x } from 'a';", "import { y } from 'b';",]
+        );
     }
 
     // ----------------------------------------------------------------- sourcemap
@@ -1510,7 +1899,9 @@ mod tests {
         let marker = "\"mappings\":\"";
         let start = s.find(marker).unwrap() + marker.len();
         let end = s[start..].find('"').unwrap() + start;
-        SerdeJsonLite { mappings: s[start..end].to_string() }
+        SerdeJsonLite {
+            mappings: s[start..end].to_string(),
+        }
     }
 
     // ---------------------------------------------------------------- edge cases
@@ -1535,7 +1926,9 @@ mod tests {
 
     #[test]
     fn key_prop_is_preserved_in_for_loop() {
-        let out = emit_tsx("component A():\n    ul:\n        for it in items:\n            li(key=it): it\n");
+        let out = emit_tsx(
+            "component A():\n    ul:\n        for it in items:\n            li(key=it): it\n",
+        );
         has_all(&out, &["<li key={it}>"]);
         lacks(&out, "key={key}");
     }

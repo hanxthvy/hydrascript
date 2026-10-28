@@ -8,10 +8,13 @@ pub mod ast;
 pub mod cli;
 pub mod emitter;
 pub mod error;
+pub mod fmt;
 pub mod hx_target;
 pub mod lexer;
 pub mod napi;
 pub mod parser;
+pub mod scaffold;
+pub mod validate;
 
 pub use error::CompileError;
 
@@ -45,21 +48,34 @@ pub fn compile(src: &str, filename: &str) -> Result<(String, String), CompileErr
 }
 
 /// Compile for an explicit target, ignoring the filename extension.
-pub fn compile_for(src: &str, filename: &str, target: Target) -> Result<(String, String), CompileError> {
+pub fn compile_for(
+    src: &str,
+    filename: &str,
+    target: Target,
+) -> Result<(String, String), CompileError> {
     let lines: Vec<String> = src.split('\n').map(|s| s.to_string()).collect();
     let toks = lexer::lex(src)?;
     let module = parser::Parser::new(toks, lines).module()?;
+    // Every emit is sanity-checked before it leaves the compiler. Checking here
+    // rather than in the CLI means the Vite plugin, `run`, the REPL and the
+    // napi binding all get the protection — the failure mode this guards
+    // against (a build that reports success on unparseable output) was only
+    // reachable through `hydra build` when the check lived in the CLI.
+    let lines: Vec<String> = src.split('\n').map(|s| s.to_string()).collect();
     match target {
         Target::React => {
             let mut em = emitter::Emitter::new();
             let code = em.run(&module)?;
             let map = em.sourcemap(filename, src);
+            // TSX: element tags make bracket counting meaningless.
+            validate::check_output(&code, &em.linemap, &lines, false)?;
             Ok((code, map))
         }
         Target::Js => {
             let mut em = hx_target::JsEmitter::new();
             let code = em.run(&module)?;
             let map = em.sourcemap(filename, src);
+            validate::check_output(&code, &em.linemap, &lines, true)?;
             Ok((code, map))
         }
     }
