@@ -1082,8 +1082,9 @@ fn test_error_unclosed_brace_fstring() {
 fn test_error_recursion_depth_limit() {
     let nested = format!(
         "component A():\n    x = {}1{}\n",
-        "(".repeat(270),
-        ")".repeat(270)
+        // Beyond MAX_DEPTH but well short of what a stack overflow needs.
+        "(".repeat(200),
+        ")".repeat(200)
     );
     let err = compile(&nested, "App.hsx").expect_err("should reject deep nesting");
     assert_contains(&err.msg, &["maximum recursion depth exceeded"]);

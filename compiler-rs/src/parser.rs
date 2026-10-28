@@ -17,6 +17,11 @@ pub struct Parser {
 
 type PResult<T> = Result<T, CompileError>;
 
+/// Maximum expression nesting the parser accepts. Chosen empirically: the
+/// deepest recursive chain per nesting level means a higher limit reaches a
+/// real stack overflow (SIGABRT) before the guard fires.
+const MAX_DEPTH: usize = 128;
+
 impl Parser {
     pub fn new(toks: Vec<Token>, src: Vec<String>) -> Self {
         Self {
@@ -28,9 +33,14 @@ impl Parser {
     }
 
     fn enter_depth(&mut self) -> PResult<()> {
-        if self.depth >= 256 {
+        // The limit exists so deep nesting produces a readable error instead of
+        // a stack overflow. It is set below the point where the deepest parse
+        // chain (expr -> ternary -> ... -> atom) actually exhausts the stack:
+        // an over-high limit corrupts into SIGABRT before it ever fires, which
+        // is a crash, not a diagnostic.
+        if self.depth >= MAX_DEPTH {
             return Err(self
-                .err("maximum recursion depth exceeded (256)".into())
+                .err(format!("maximum recursion depth exceeded ({})", MAX_DEPTH))
                 .with_hint("simplify deeply nested structure"));
         }
         self.depth += 1;
@@ -340,11 +350,136 @@ impl Parser {
 
     fn stmt_inner(&mut self) -> PResult<Node> {
         let t = self.cur().clone();
+        // A decorator before a top-level `def` / `class`:
+        //     @memo
+        //     def f(): ...
+        // desugars to `f = memo(f)`, which is what Python does.
+        if t.ty == TokType::Op && t.value == "@" {
+            self.i += 1;
+            let deco = self.ident_or_dotted()?;
+            self.skip_newlines();
+            let inner = self.stmt()?;
+            let name = match &inner.kind {
+                Kind::Def { name, .. }
+                | Kind::AsyncDef { name, .. }
+                | Kind::Class { name, .. } => name.clone(),
+                _ => {
+                    return Err(self
+                        .err("a decorator must be followed by `def` or `class`".to_string())
+                        .with_hint("remove the decorator or move it above a definition"))
+                }
+            };
+            // `@dataclass` is special: it synthesises `__init__` from the
+            // annotated class attributes, which is the whole point of the
+            // decorator. Anything else wraps the definition in a call.
+            if deco == "dataclass" {
+                if let Kind::Class {
+                    name,
+                    base,
+                    methods,
+                    body,
+                } = &inner.kind
+                {
+                    let mut new_methods: Vec<Node> = Vec::new();
+                    let mut fields: Vec<(String, Option<Node>)> = Vec::new();
+                    let mut kept_body: Vec<Node> = Vec::new();
+                    // Annotated field declarations (`x: int = 0`) are stored
+                    // as `Assign` with the spelling kept in the target, so the
+                    // default expression is what identifies a field here.
+                    for st in body {
+                        if let Kind::Assign { target, value } = &st.kind {
+                            if let Kind::Name(n) = &target.kind {
+                                fields.push((n.clone(), Some((**value).clone())));
+                                continue;
+                            }
+                        }
+                        kept_body.push(st.clone());
+                    }
+                    if !fields.is_empty() {
+                        // __init__(self, x=default, y=default): self.x = x ...
+                        let mut params: Vec<Param> = vec![Param {
+                            name: "self".to_string(),
+                            ty: None,
+                            default: None,
+                            has_default: false,
+                        }];
+                        let mut assigns: Vec<Node> = Vec::new();
+                        for (fname, fdefault) in &fields {
+                            params.push(Param {
+                                name: fname.clone(),
+                                ty: None,
+                                default: fdefault.clone(),
+                                has_default: fdefault.is_some(),
+                            });
+                            assigns.push(Node::new(
+                                Kind::Assign {
+                                    target: Box::new(Node::new(
+                                        Kind::Attr {
+                                            obj: Box::new(Node::new(
+                                                Kind::Name("self".to_string()),
+                                                t.line,
+                                                t.col,
+                                            )),
+                                            name: fname.clone(),
+                                        },
+                                        t.line,
+                                        t.col,
+                                    )),
+                                    value: Box::new(Node::new(
+                                        Kind::Name(fname.clone()),
+                                        t.line,
+                                        t.col,
+                                    )),
+                                },
+                                t.line,
+                                t.col,
+                            ));
+                        }
+                        new_methods.push(Node::new(
+                            Kind::Method {
+                                name: "__init__".to_string(),
+                                params,
+                                body: assigns,
+                                is_async: false,
+                                decorator: None,
+                            },
+                            t.line,
+                            t.col,
+                        ));
+                    }
+                    new_methods.extend(methods.clone());
+                    return Ok(Node::new(
+                        Kind::Class {
+                            name: name.clone(),
+                            base: base.clone(),
+                            methods: new_methods,
+                            body: kept_body,
+                        },
+                        t.line,
+                        t.col,
+                    ));
+                }
+            }
+            // A decorated definition is emitted as the definition followed by
+            // `name = deco(name)`, which is exactly Python's order of events.
+            // Emitting `deco(def ...)` instead puts a statement inside an
+            // expression, which is not JavaScript and not what we want.
+            let _ = name;
+            return Ok(Node::new(
+                Kind::DecoratedDef {
+                    decorators: vec![deco],
+                    inner: Box::new(inner),
+                },
+                t.line,
+                t.col,
+            ));
+        }
         match &t.ty {
             TokType::Kw("component") => return self.component(),
             TokType::Kw("async") => return self.async_def(),
             TokType::Kw("export") => return self.export_stmt(),
             TokType::Kw("def") => return self.def(),
+            TokType::Kw("class") => return self.class_def(),
             TokType::Kw("import") => return self.import(),
             TokType::Kw("from") => return self.from_import(),
             TokType::Kw("interface") => return self.interface_decl(),
@@ -1129,6 +1264,107 @@ impl Parser {
         ))
     }
 
+    /// A possibly dotted name: `Base`, `foo.Bar`.
+    fn ident_or_dotted(&mut self) -> PResult<String> {
+        let mut name = self.ident_or_kw()?;
+        while self.cur().ty == TokType::Dot {
+            self.i += 1;
+            name.push('.');
+            name.push_str(&self.ident_or_kw()?);
+        }
+        Ok(name)
+    }
+
+    /// `class Name(Base):` with `def` methods and `NAME = value` properties.
+    fn class_def(&mut self) -> PResult<Node> {
+        let t = self.eat(TokType::Kw("class"))?.clone();
+        let name = self.ident()?;
+        let base = if self.cur().ty == TokType::LParen {
+            self.i += 1;
+            if self.cur().ty == TokType::RParen {
+                self.i += 1;
+                None
+            } else {
+                let b = self.ident_or_dotted()?;
+                // `class Foo(Base, Mixin)` — the first base is the JS `extends`;
+                // the rest are a documented limitation rather than silence.
+                if self.cur().ty == TokType::Comma {
+                    return Err(self
+                        .err("multiple inheritance is not supported in the JS target".to_string())
+                        .with_hint("extend one base and compose the rest, or use a .hys file"));
+                }
+                self.eat(TokType::RParen)?;
+                Some(b)
+            }
+        } else {
+            None
+        };
+        self.eat(TokType::Colon)?;
+        self.skip_newlines();
+        self.eat(TokType::Indent)?;
+        let mut methods: Vec<Node> = Vec::new();
+        let mut body: Vec<Node> = Vec::new();
+        while !matches!(self.cur().ty, TokType::Dedent | TokType::Eof) {
+            self.skip_newlines();
+            if matches!(self.cur().ty, TokType::Dedent | TokType::Eof) {
+                break;
+            }
+            // `@staticmethod` / `@property` / `@classmethod` before a method.
+            let decorator = if self.cur().ty == TokType::Op && self.cur().value == "@" {
+                self.i += 1;
+                Some(self.ident()?)
+            } else {
+                None
+            };
+            // The decorated `def` sits on the next line.
+            if decorator.is_some() {
+                self.skip_newlines();
+            }
+            let mt = self.cur().clone();
+            let is_async = self.cur().ty == TokType::Kw("async");
+            if is_async {
+                self.i += 1;
+            }
+            if self.cur().ty == TokType::Kw("def") {
+                self.i += 1;
+                let mname = self.ident()?;
+                let params = self.params()?;
+                let mbody = self.block()?;
+                methods.push(Node::new(
+                    Kind::Method {
+                        name: mname,
+                        params,
+                        body: mbody,
+                        is_async,
+                        decorator,
+                    },
+                    mt.line,
+                    mt.col,
+                ));
+            } else {
+                // A plain statement in the class body (usually `NAME = value`).
+                body.push(self.stmt()?);
+            }
+        }
+        // The class body's `Dedent` closes the block; consume it so the next
+        // top-level statement starts cleanly.
+        if self.cur().ty == TokType::Dedent {
+            self.i += 1;
+        }
+        // `class Foo: pass` — the `pass` lands in the class body.
+        body.retain(|n| !matches!(n.kind, Kind::Pass));
+        Ok(Node::new(
+            Kind::Class {
+                name,
+                base,
+                methods,
+                body,
+            },
+            t.line,
+            t.col,
+        ))
+    }
+
     fn export_stmt(&mut self) -> PResult<Node> {
         let t = self.eat(TokType::Kw("export"))?.clone();
         // `export default ...` is a distinct JS form — emitting `export` and
@@ -1652,6 +1888,12 @@ impl Parser {
 
     fn atom(&mut self) -> PResult<Node> {
         let t = self.cur().clone();
+        // `super` — Python's `super().__init__(x)` becomes JS `super(x)`, and
+        // a bare `super()` becomes `super`.
+        if t.ty == TokType::Kw("super") {
+            self.i += 1;
+            return Ok(Node::new(Kind::Super, t.line, t.col));
+        }
         // A JavaScript template literal: its contents are already JS, so the
         // whole raw token is passed through rather than re-parsed.
         if t.ty == TokType::Template {

@@ -49,6 +49,9 @@ pub const KEYWORDS: &[&str] = &[
     "for",
     "in",
     "def",
+    // `class Name(Base):` — emitted as a real JS class.
+    "class",
+    "super",
     "return",
     "import",
     "from",
@@ -383,7 +386,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
                         (TokType::RBrace, 1)
                     }
                     b'=' | b'+' | b'-' | b'*' | b'/' | b'%' | b'<' | b'>' | b'!' | b'&' | b'|'
-                    | b'?' => (TokType::Op, 1),
+                    | b'?' | b'@' => (TokType::Op, 1),
                     _ => {
                         return Err(CompileError::new(
                             format!(

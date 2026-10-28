@@ -441,6 +441,9 @@ pub struct Emitter {
     pub fn_params: std::cell::RefCell<std::collections::HashMap<String, Vec<String>>>,
     /// Names bound by a walrus (`:=`), which must be declared before use.
     pub walrus_names: std::cell::RefCell<HashSet<String>>,
+    /// Names declared by `class`, so calling one emits `new` — in
+    /// Python, `Foo(1)` constructs an instance.
+    pub class_names: std::cell::RefCell<std::collections::HashSet<String>>,
     pub head_lines: Vec<String>,
     pub scopes: Vec<Scope>,
 }
@@ -456,6 +459,7 @@ impl Emitter {
             used_helpers: std::cell::RefCell::new(HashSet::new()),
             fn_params: std::cell::RefCell::new(std::collections::HashMap::new()),
             walrus_names: std::cell::RefCell::new(HashSet::new()),
+            class_names: std::cell::RefCell::new(std::collections::HashSet::new()),
             head_lines: Vec::new(),
             scopes: Vec::new(),
         }
@@ -537,8 +541,12 @@ impl Emitter {
             Kind::Num(v) => Ok(v.clone()),
             Kind::Bool(b) => Ok(if *b { "true".into() } else { "false".into() }),
             Kind::Null => Ok("null".into()),
+            // Inside a class method `self` is JS `this`.
+            Kind::Name(id) if id == "self" => Ok("this".to_string()),
             Kind::Name(id) => Ok(id.clone()),
             Kind::Attr { obj, name } => {
+                // `self.x` -> `this.x` (see Kind::Name above) — routed through
+                // the same code path by rewriting the object first.
                 let o = self.js(obj)?;
                 Ok(format!("{}.{}", o, str_method(name)))
             }
@@ -659,6 +667,15 @@ impl Emitter {
                 Ok(res)
             }
             Kind::Call { func, args, kwargs } => {
+                // `Point(1, 2)` constructs an instance in Python; JS needs
+                // the `new` keyword.
+                if let Kind::Name(id) = &func.kind {
+                    if self.class_names.borrow().contains(id) {
+                        let bits: Result<Vec<_>, _> =
+                            args.iter().map(|a| self.js(a)).collect();
+                        return Ok(format!("new {}({})", id, bits?.join(", ")));
+                    }
+                }
                 // Free-function rewrite for Python string methods with no JS equivalent:
                 // `s.capitalize()` -> `capitalize(s)`. The helper is imported from
                 // the runtime, so record the use here.
@@ -1102,6 +1119,7 @@ impl Emitter {
             // A template literal is passed through untouched: its contents are
             // already JavaScript, and re-escaping would change the output.
             Kind::TemplateLiteral(raw) => Ok(raw.clone()),
+            Kind::Super => Ok("super".to_string()),
             Kind::Await(v) => Ok(format!("await {}", self.js(v)?)),
             Kind::New(inner) => Ok(format!("new {}", self.js(inner)?)),
             Kind::OptCall { func, args, kwargs } => {
@@ -1505,6 +1523,101 @@ impl Emitter {
                     }
                 }
                 self.w(&format!("{} = {};", exprs.join(" = "), rhs));
+            }
+            // `class Foo(Base):` in a .hyx file — custom error types, data
+            // classes used by components, or a legacy-style helper.
+            Kind::Class {
+                name,
+                base,
+                methods,
+                body,
+            } => {
+                // Recorded so `Point(1, 2)` emits `new Point(1, 2)`: calling a
+                // class in Python constructs an instance.
+                self.class_names.borrow_mut().insert(name.clone());
+                let head = match base {
+                    Some(b) => format!("class {} extends {}", name, b),
+                    None => format!("class {}", name),
+                };
+                self.w(&format!("{} {{", head));
+                self.depth += 1;
+                for st in body {
+                    if let Kind::Assign { target, value } = &st.kind {
+                        if let Kind::Name(n) = &target.kind {
+                            let v = self.js(value)?;
+                            self.w(&format!("{} = {};", n, v));
+                        }
+                    }
+                }
+                for m in methods {
+                    if let Kind::Method {
+                        name: mname,
+                        params,
+                        body: mbody,
+                        is_async,
+                        decorator,
+                    } = &m.kind
+                    {
+                        let js_name = if mname == "__init__" {
+                            "constructor"
+                        } else if mname == "__str__" {
+                            "toString"
+                        } else {
+                            mname.as_str()
+                        };
+                        let is_static = decorator.as_deref() == Some("staticmethod");
+                        let filtered: Vec<Param> = params
+                            .iter()
+                            .filter(|p| p.name != "self" && p.name != "cls")
+                            .cloned()
+                            .collect();
+                        let ps = self.format_params(&filtered)?;
+                        let keyword = if *is_async { "async " } else { "" };
+                        self.w(&format!(
+                            "{}{}{}({}) {{",
+                            keyword,
+                            if is_static { "static " } else { "" },
+                            js_name,
+                            ps
+                        ));
+                        self.depth += 1;
+                        let mut scope = Scope::scan(mbody);
+                        for p in params {
+                            let bare = p.name.trim_start_matches("...").to_string();
+                            scope.params.insert(bare.clone());
+                            scope.declared.insert(bare);
+                        }
+                        self.scopes.push(scope);
+                        for stmt in mbody {
+                            self.stmt(stmt)?;
+                        }
+                        self.scopes.pop();
+                        self.depth -= 1;
+                        self.w("}");
+                    }
+                }
+                self.depth -= 1;
+                self.w("}");
+            }
+            // `@deco` on a `def`: define first, then apply — Python's order.
+            Kind::DecoratedDef { decorators, inner } => {
+                let name = match &inner.kind {
+                    Kind::Def { name, .. }
+                    | Kind::AsyncDef { name, .. }
+                    | Kind::Class { name, .. } => name.clone(),
+                    _ => {
+                        return Err(CompileError::new(
+                            "a decorator must be applied to a def or class".to_string(),
+                            s.line,
+                            s.col,
+                            Vec::new(),
+                        ))
+                    }
+                };
+                self.stmt(inner)?;
+                for d in decorators {
+                    self.w(&format!("{} = {}({});", name, d, name));
+                }
             }
             // `yield x` is a statement in Python's grammar even though it
             // produces a value, so it must not be routed through ExprStmt.
@@ -2501,29 +2614,3 @@ mod tests {
     }
 }
 
-/// True when a function body contains `yield` at its own level (nested
-/// functions excluded): such a function is a generator, and JS requires the
-/// `*` on the declaration or the emitted `yield` is a syntax error.
-fn body_has_yield(body: &[Node]) -> bool {
-    fn walk(n: &Node) -> bool {
-        match &n.kind {
-            Kind::Yield(_) => true,
-            Kind::If { body, orelse, .. } => {
-                body.iter().any(walk) || orelse.as_ref().is_some_and(|b| b.iter().any(walk))
-            }
-            Kind::While { body, .. } | Kind::For { body, .. } => body.iter().any(walk),
-            Kind::Try {
-                body,
-                handlers,
-                finally,
-                ..
-            } => {
-                body.iter().any(walk)
-                    || handlers.iter().any(|c| c.body.iter().any(walk))
-                    || finally.as_ref().is_some_and(|f| f.iter().any(walk))
-            }
-            _ => false,
-        }
-    }
-    body.iter().any(walk)
-}

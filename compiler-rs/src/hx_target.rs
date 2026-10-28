@@ -27,6 +27,9 @@ pub struct JsEmitter {
     pub fn_params: std::cell::RefCell<std::collections::HashMap<String, Vec<String>>>,
     /// Names bound by a walrus (`:=`).
     pub walrus_names: std::cell::RefCell<std::collections::HashSet<String>>,
+    /// Names declared by `class`, so calling one emits `new` — in
+    /// Python, `Foo(1)` constructs an instance.
+    pub class_names: std::cell::RefCell<std::collections::HashSet<String>>,
     pub head_lines: Vec<String>,
     pub scopes: Vec<Scope>,
 }
@@ -42,6 +45,7 @@ impl JsEmitter {
             used_helpers: std::cell::RefCell::new(std::collections::HashSet::new()),
             fn_params: std::cell::RefCell::new(std::collections::HashMap::new()),
             walrus_names: std::cell::RefCell::new(std::collections::HashSet::new()),
+            class_names: std::cell::RefCell::new(std::collections::HashSet::new()),
             head_lines: Vec::new(),
             scopes: Vec::new(),
         }
@@ -93,8 +97,12 @@ impl JsEmitter {
             Kind::Num(v) => Ok(v.clone()),
             Kind::Bool(b) => Ok(if *b { "true".into() } else { "false".into() }),
             Kind::Null => Ok("null".into()),
+            // Inside a class method `self` is JS `this`.
+            Kind::Name(id) if id == "self" => Ok("this".to_string()),
             Kind::Name(id) => Ok(id.clone()),
             Kind::Attr { obj, name } => {
+                // `self.x` -> `this.x` (see Kind::Name above) — routed through
+                // the same code path by rewriting the object first.
                 let o = self.js(obj)?;
                 Ok(format!("{}.{}", o, str_method(name)))
             }
@@ -102,6 +110,7 @@ impl JsEmitter {
                 let o = self.js(obj)?;
                 Ok(format!("{}?.{}", o, str_method(name)))
             }
+            Kind::Super => Ok("super".to_string()),
             Kind::Index { obj, index } => {
                 let o = self.js(obj)?;
                 let i = self.js(index)?;
@@ -341,6 +350,28 @@ impl JsEmitter {
                 Ok(res)
             }
             Kind::Call { func, args, kwargs } => {
+                // `Point(1, 2)` constructs in Python; JS needs the `new`.
+                if let Kind::Name(id) = &func.kind {
+                    if self.class_names.borrow().contains(id) {
+                        let bits: Result<Vec<_>, _> =
+                            args.iter().map(|a| self.js(a)).collect();
+                        return Ok(format!("new {}({})", id, bits?.join(", ")));
+                    }
+                }
+                // `super().__init__(x)` -> `super(x)`; other calls on `super`
+                // become `super.name(...)`, which is JS semantics exactly.
+                if let Kind::Attr { obj, name } = &func.kind {
+                    if matches!(obj.kind, Kind::Super) {
+                        let bits: Result<Vec<_>, _> =
+                            args.iter().map(|a| self.js(a)).collect();
+                        let all = bits?;
+                        return Ok(if name == "__init__" {
+                            format!("super({})", all.join(", "))
+                        } else {
+                            format!("super.{}({})", str_method(name), all.join(", "))
+                        });
+                    }
+                }
                 if let Kind::Attr { obj, name } = &func.kind {
                     if let Some(f) = free_func(name) {
                         self.used_helpers.borrow_mut().insert(f.to_string());
@@ -652,7 +683,30 @@ impl JsEmitter {
                         }
                     }
                 }
-                self.w(&format!("const {} = {};", lhs, rhs));
+                // Fallbacks, in order: a plain name that the scope did not
+                // claim is still a NEW binding, so it declares. A destructuring
+                // pattern binds names too. Member and index targets
+                // (`this.x = 1`, `rows[i] = v`) bind nothing and must never take
+                // `const`: `const this.x` is not JavaScript.
+                match &target.kind {
+                    Kind::Name(_) => {
+                        self.w(&format!("const {} = {};", lhs, rhs));
+                    }
+                    Kind::Tuple(items) => {
+                        let all_names = items.iter().all(|i| matches!(i.kind, Kind::Name(_)));
+                        if all_names {
+                            self.w(&format!("const {} = {};", lhs, rhs));
+                        } else {
+                            self.w(&format!("{} = {};", lhs, rhs));
+                        }
+                    }
+                    Kind::Dict(_) | Kind::List(_) => {
+                        self.w(&format!("const {} = {};", lhs, rhs));
+                    }
+                    _ => {
+                        self.w(&format!("{} = {};", lhs, rhs));
+                    }
+                }
             }
             // `x, y = y, x` — parallel assignment. `let [x, y] = ...` evaluates
             // the right side before binding, which is Python's semantics.
@@ -720,6 +774,26 @@ impl JsEmitter {
             // `assert` and `raise` are statements, so they must not be routed
             // through ExprStmt where a bare expression would silently do
             // nothing.
+            // `@deco` on a `def`: define first, then apply — Python's order.
+            Kind::DecoratedDef { decorators, inner } => {
+                let name = match &inner.kind {
+                    Kind::Def { name, .. }
+                    | Kind::AsyncDef { name, .. }
+                    | Kind::Class { name, .. } => name.clone(),
+                    _ => {
+                        return Err(CompileError::new(
+                            "a decorator must be applied to a def or class".to_string(),
+                            s.line,
+                            s.col,
+                            Vec::new(),
+                        ))
+                    }
+                };
+                self.stmt(inner)?;
+                for d in decorators {
+                    self.w(&format!("{} = {}({});", name, d, name));
+                }
+            }
             // `yield x` is a statement in Python's grammar even though it
             // produces a value, so it must not be routed through ExprStmt.
             Kind::Yield(_) => {
@@ -836,6 +910,90 @@ impl JsEmitter {
                     self.stmt(stmt)?;
                 }
                 self.scopes.pop();
+                self.depth -= 1;
+                self.w("}");
+            }
+            // `class Foo(Base):` -> a real JS class. Semantics that matter:
+            // `__init__` becomes `constructor`, methods keep their names, and
+            // `self` is stripped from the parameter list (JS uses `this`).
+            Kind::Class {
+                name,
+                base,
+                methods,
+                body,
+            } => {
+                // Recorded so `Point(1, 2)` emits `new Point(1, 2)`: calling a
+                // class in Python constructs an instance.
+                self.class_names.borrow_mut().insert(name.clone());
+                let head = match base {
+                    Some(b) => format!("class {} extends {}", name, b),
+                    None => format!("class {}", name),
+                };
+                self.w(&format!("{} {{", head));
+                self.depth += 1;
+                // Class-level assignments become fields, which is what Python
+                // class attributes are for in practice.
+                for st in body {
+                    if let Kind::Assign { target, value } = &st.kind {
+                        if let Kind::Name(n) = &target.kind {
+                            let v = self.js(value)?;
+                            self.w(&format!("{} = {};", n, v));
+                        }
+                    }
+                }
+                for m in methods {
+                    if let Kind::Method {
+                        name: mname,
+                        params,
+                        body: mbody,
+                        is_async,
+                        decorator,
+                    } = &m.kind
+                    {
+                        let js_name = if mname == "__init__" {
+                            "constructor"
+                        } else if mname == "__str__" {
+                            "toString"
+                        } else if mname.starts_with("__") && mname.ends_with("__") {
+                            // Other dunders have no JS counterpart; keep the
+                            // Python name so behaviour is at least explicit.
+                            mname.as_str()
+                        } else {
+                            mname.as_str()
+                        };
+                        let is_static = decorator.as_deref() == Some("staticmethod");
+                        // Drop `self`: it is implicit as `this` in JS.
+                        let ps: Result<Vec<String>, CompileError> = params
+                            .iter()
+                            .filter(|p| p.name != "self" && p.name != "cls")
+                            .map(|p| self.param(p))
+                            .collect();
+                        let star = if body_has_yield(mbody) { "*" } else { "" };
+                        let keyword = if *is_async { "async " } else { "" };
+                        self.w(&format!(
+                            "{}{}{}{}({}) {{",
+                            keyword,
+                            if is_static { "static " } else { "" },
+                            star,
+                            js_name,
+                            ps?.join(", ")
+                        ));
+                        self.depth += 1;
+                        let mut scope = Scope::scan(mbody);
+                        for p in params {
+                            let bare = p.name.trim_start_matches("...").to_string();
+                            scope.params.insert(bare.clone());
+                            scope.declared.insert(bare);
+                        }
+                        self.scopes.push(scope);
+                        for stmt in mbody {
+                            self.stmt(stmt)?;
+                        }
+                        self.scopes.pop();
+                        self.depth -= 1;
+                        self.w("}");
+                    }
+                }
                 self.depth -= 1;
                 self.w("}");
             }

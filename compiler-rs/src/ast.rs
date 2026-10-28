@@ -69,10 +69,41 @@ pub enum Kind {
         params: Vec<Param>,
         body: Vec<Node>,
     },
+    /// `class Name(Base):` with method definitions — emits a JS class.
+    /// Needed for the React ecosystem itself: `class Error extends ...`,
+    /// libraries' legacy class components, and custom error types.
+    Class {
+        name: String,
+        /// Base class name, if any (`class Foo(Bar):`).
+        base: Option<String>,
+        methods: Vec<Node>,
+        /// `class Foo:` with no body yet — `pass` or a bare docstring.
+        body: Vec<Node>,
+    },
+    /// A method inside a class: `def speak(self):`.
+    Method {
+        name: String,
+        params: Vec<Param>,
+        body: Vec<Node>,
+        /// `async def` inside a class.
+        is_async: bool,
+        /// `@staticmethod` / `@property` / `@classmethod` decorator, if present.
+        decorator: Option<String>,
+    },
+    /// `super().__init__(...)` — resolves to the parent constructor.
+    Super,
     /// `export def` / `export NAME = ...` — emits a JS `export`.
     Export(Box<Node>),
     /// `export default X` — a distinct JS form, not `export default` glued on.
     ExportDefault(Box<Node>),
+    /// `@deco` above a `def`/`class`. Python applies the decorator AFTER the
+    /// definition, so this emits the definition first and then `name = deco(name)`.
+    /// Modelling it as one node (rather than a call on a function expression)
+    /// keeps the emitted code inside what the rest of the emitter supports.
+    DecoratedDef {
+        decorators: Vec<String>,
+        inner: Box<Node>,
+    },
     /// A `tag:` or `tag(props):` block — the thing that becomes JSX.
     Tree {
         head: Box<Node>,
