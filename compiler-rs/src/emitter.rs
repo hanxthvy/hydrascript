@@ -1747,6 +1747,14 @@ impl Emitter {
                     } else if names.len() == 1 && names[0].starts_with("* as ") {
                         self.imports
                             .insert(format!("import {} from '{}';", names[0], f));
+                    } else if crate::hx_target::asset_import(f) && names.len() == 1 {
+                        // Asset modules expose a single default export, never a
+                        // named one: `from "./logo.svg" import logo` has to become
+                        // `import logo from './logo.svg'` or the bundler fails
+                        // with `No matching export in "logo.svg" for import
+                        // "logo"`. See `asset_import` for the reasoning.
+                        self.imports
+                            .insert(format!("import {} from '{}';", names[0], f));
                     } else {
                         self.imports.insert(format!(
                             "import {{ {} }} from '{}';",
@@ -1936,6 +1944,14 @@ impl Emitter {
                     if names.is_empty() {
                         self.imports.insert(format!("import '{}';", f));
                     } else if names.len() == 1 && names[0].starts_with("* as ") {
+                        self.imports
+                            .insert(format!("import {} from '{}';", names[0], f));
+                    } else if crate::hx_target::asset_import(f) && names.len() == 1 {
+                        // Asset modules expose a single default export, never a
+                        // named one: `from "./logo.svg" import logo` has to become
+                        // `import logo from './logo.svg'` or the bundler fails
+                        // with `No matching export in "logo.svg" for import
+                        // "logo"`. See `asset_import` for the reasoning.
                         self.imports
                             .insert(format!("import {} from '{}';", names[0], f));
                     } else {

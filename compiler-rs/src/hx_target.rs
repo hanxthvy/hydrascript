@@ -13,6 +13,25 @@ use crate::ast::{Kind, Node, Param};
 use crate::emitter::{free_func, str_method, Scope};
 use crate::error::CompileError;
 
+/// True when a module specifier points at an asset the bundler loads as a
+/// default export rather than at a JavaScript module with named exports.
+///
+/// `import { logo } from './logo.svg'` is unresolvable in every bundler: asset
+/// loaders (esbuild `file`, webpack asset modules, vite assets) hand back one
+/// default value. `from "./logo.svg" import logo` used to emit the named form,
+/// so importing an image, font or stylesheet failed the build with
+/// `No matching export in "logo.svg" for import "logo"`.
+pub fn asset_import(spec: &str) -> bool {
+    let lower = spec.to_ascii_lowercase();
+    let path = lower.split(['?', '#']).next().unwrap_or(&lower);
+    const EXTS: &[&str] = &[
+        ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico", ".bmp", ".css", ".scss",
+        ".sass", ".less", ".woff", ".woff2", ".ttf", ".otf", ".eot", ".mp4", ".webm", ".mp3",
+        ".wav", ".ogg", ".glb", ".gltf", ".wasm", ".pdf",
+    ];
+    EXTS.iter().any(|e| path.ends_with(e))
+}
+
 pub struct JsEmitter {
     pub lines: Vec<String>,
     pub linemap: Vec<usize>,
@@ -1244,6 +1263,15 @@ impl JsEmitter {
                     if names.is_empty() {
                         self.imports.insert(format!("import '{}';", mod_name));
                     } else if names.len() == 1 && names[0].starts_with("* as ") {
+                        self.imports
+                            .insert(format!("import {} from '{}';", names[0], mod_name));
+                    } else if asset_import(mod_name) && names.len() == 1 {
+                        // Asset modules (bundlers: esbuild `file` loader, webpack
+                        // asset modules, vite assets) expose a single DEFAULT
+                        // export — never a named one. `from "./logo.svg" import
+                        // logo` must emit `import logo from './logo.svg'`, or the
+                        // build dies with `No matching export in "logo.svg" for
+                        // import "logo"`.
                         self.imports
                             .insert(format!("import {} from '{}';", names[0], mod_name));
                     } else {
