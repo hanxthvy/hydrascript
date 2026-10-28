@@ -130,18 +130,13 @@ pub fn run_script(args: &[String]) -> ExitCode {
 
     let parent_dir = file_arg.parent().unwrap_or_else(|| Path::new("."));
 
-    let mut child = match std::process::Command::new("node")
-        .current_dir(parent_dir)
-        .arg("--input-type=module")
-        .arg("-")
-        .args(script_args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => match std::process::Command::new("bun")
+    let use_bun = code.contains("bun:")
+        || code.contains("Bun.")
+        || std::env::var("HYDRA_RUNTIME").as_deref() == Ok("bun")
+        || std::env::var("npm_config_user_agent").map_or(false, |s| s.contains("bun"));
+
+    let spawn_bun = || {
+        std::process::Command::new("bun")
             .current_dir(parent_dir)
             .arg("-")
             .args(script_args)
@@ -149,13 +144,42 @@ pub fn run_script(args: &[String]) -> ExitCode {
             .stdout(std::process::Stdio::inherit())
             .stderr(std::process::Stdio::inherit())
             .spawn()
-        {
+    };
+
+    let spawn_node = || {
+        std::process::Command::new("node")
+            .current_dir(parent_dir)
+            .arg("--input-type=module")
+            .arg("-")
+            .args(script_args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+    };
+
+    let mut child = if use_bun {
+        match spawn_bun() {
             Ok(c) => c,
-            Err(e) => {
-                eprintln!("hydra: neither node nor bun runtime found: {}", e);
-                return ExitCode::from(1);
-            }
-        },
+            Err(_) => match spawn_node() {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("hydra: neither bun nor node runtime found: {}", e);
+                    return ExitCode::from(1);
+                }
+            },
+        }
+    } else {
+        match spawn_node() {
+            Ok(c) => c,
+            Err(_) => match spawn_bun() {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("hydra: neither node nor bun runtime found: {}", e);
+                    return ExitCode::from(1);
+                }
+            },
+        }
     };
 
     if let Some(mut stdin) = child.stdin.take() {
