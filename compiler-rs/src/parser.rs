@@ -161,56 +161,84 @@ impl Parser {
         res
     }
 
-    fn stmt_inner(&mut self) -> PResult<Node> {
-        let t = self.cur().clone();
-        match &t.ty {
-            TokType::Kw("component") => return self.component(),
-            TokType::Kw("async") => return self.async_def(),
-            TokType::Kw("export") => return self.export_stmt(),
-            TokType::Kw("def") => return self.def(),
-            TokType::Kw("import") => return self.import(),
-            TokType::Kw("from") => return self.from_import(),
-            TokType::Kw("interface") => return self.interface_decl(),
-            TokType::Kw("type") => return self.type_alias(),
-            TokType::Kw("return") => {
-                self.i += 1;
-                let val = if matches!(
-                    self.cur().ty,
-                    TokType::Newline | TokType::Dedent | TokType::Eof
-                ) {
-                    None
-                } else {
-                    Some(Box::new(self.expr()?))
-                };
-                return Ok(Node::new(Kind::Return(val), t.line, t.col));
+    /// The `for x in xs if cond` tail of a comprehension. `key`/`value` are the
+    /// parts emitted per element; for a set comprehension `value` is None and
+    /// the key doubles as the element.
+    fn comprehension_tail(
+        &mut self,
+        key: Node,
+        value: Option<Node>,
+        is_dict: bool,
+        t: &Token,
+    ) -> PResult<Node> {
+        self.eat(TokType::Kw("for"))?;
+        let target = self.ident()?;
+        self.eat(TokType::Kw("in"))?;
+        // `coalesce()` rather than `expr()`: an `if` after the iterable filters,
+        // it is not a ternary.
+        let iter = self.coalesce()?;
+        let cond = if self.cur().ty == TokType::Kw("if") {
+            self.i += 1;
+            Some(Box::new(self.coalesce()?))
+        } else {
+            None
+        };
+        let kind = if is_dict {
+            Kind::DictComprehension {
+                key: Box::new(key),
+                value: Box::new(value.unwrap_or_else(|| Node::new(Kind::Null, t.line, t.col))),
+                target,
+                iter: Box::new(iter),
+                cond,
             }
-            TokType::Kw("if") => return self.if_stmt(),
-            TokType::Kw("for") => return self.for_stmt(),
-            TokType::Kw("while") => return self.while_stmt(),
-            TokType::Kw("try") => return self.try_stmt(),
-            TokType::Kw("match") => return self.match_stmt(),
-            TokType::Kw("break") => {
-                self.i += 1;
-                return Ok(Node::new(Kind::Break, t.line, t.col));
+        } else {
+            Kind::SetComprehension {
+                expr: Box::new(key),
+                target,
+                iter: Box::new(iter),
+                cond,
             }
-            TokType::Kw("continue") => {
-                self.i += 1;
-                return Ok(Node::new(Kind::Continue, t.line, t.col));
-            }
-            TokType::Kw("pass") => {
-                self.i += 1;
-                return Ok(Node::new(Kind::Pass, t.line, t.col));
-            }
-            _ => {}
-        }
+        };
+        Ok(Node::new(kind, t.line, t.col))
+    }
 
-        let e = self.expr()?;
+    /// Parse an expression list: `a, b, c` becomes a Tuple. Python allows a
+    /// bare comma sequence on the right of an assignment and in a return, and
+    /// treating those as separate statements is how `x, y = y, x` broke.
+    fn expr_list(&mut self) -> PResult<Node> {
+        let t = self.cur().clone();
+        let first = self.expr()?;
+        if self.cur().ty != TokType::Comma {
+            return Ok(first);
+        }
+        let mut items = vec![first];
+        while self.cur().ty == TokType::Comma {
+            self.i += 1;
+            if matches!(
+                self.cur().ty,
+                TokType::Newline | TokType::Dedent | TokType::Eof
+            ) {
+                break;
+            }
+            items.push(self.expr()?);
+        }
+        Ok(Node::new(Kind::Tuple(items), t.line, t.col))
+    }
+
+    /// Parse `a, b = ...` / `a = b = ...` / plain `a = ...` after the target
+    /// expression has been read. All three are Python assignment forms that do
+    /// not exist in JavaScript; each gets its own node so the emitter can pick
+    /// the right shape (`let [a, b] = ...`, `let a, b, c; a = b = c = 0`).
+    fn finish_assignment(&mut self, e: Node, t: &Token) -> PResult<Node> {
         // tuple target:  a, b = ...
         let e = if self.cur().ty == TokType::Comma {
             let mut items = vec![e];
             while self.cur().ty == TokType::Comma {
                 self.i += 1;
                 if self.cur().ty == TokType::Op && self.cur().value == "=" {
+                    break;
+                }
+                if matches!(self.cur().ty, TokType::Newline | TokType::Dedent | TokType::Eof) {
                     break;
                 }
                 items.push(self.expr()?);
@@ -233,26 +261,74 @@ impl Parser {
         }
         if self.cur().ty == TokType::Op && self.cur().value == "=" {
             self.i += 1;
-            let v = self.expr()?;
+            // Chained assignment: `a = b = c = 0`. The inner chain is parsed
+            // recursively and flattened, so the emitter can declare all the
+            // names it must declare.
+            let mut value = self.expr_list()?;
+            let mut targets: Vec<Node> = Vec::new();
+            let tuple_target = matches!(e.kind, Kind::Tuple(_));
+            if let Kind::Tuple(items) = e.kind.clone() {
+                targets.extend(items);
+            } else {
+                targets.push(e);
+            }
+            while self.cur().ty == TokType::Op && self.cur().value == "=" {
+                self.i += 1;
+                let next = self.expr_list()?;
+                // The right-hand side of the previous step becomes a target.
+                let prev_value = value;
+                match prev_value.kind.clone() {
+                    Kind::Tuple(items) => targets.extend(items),
+                    _ => targets.push(prev_value),
+                }
+                value = next;
+            }
+            if targets.len() == 1 {
+                return Ok(Node::new(
+                    Kind::Assign {
+                        target: Box::new(targets.pop().unwrap()),
+                        value: Box::new(value),
+                    },
+                    t.line,
+                    t.col,
+                ));
+            }
+            // `a = b = c = 0` is a chain; `a, b = b, a` is a parallel
+            // assignment, and the two must not be confused: treating the second
+            // as a chain produced `a = b = [b, a]`, which is valid JS that
+            // assigns the whole array to both names.
+            if tuple_target {
+                return Ok(Node::new(
+                    Kind::TupleAssign {
+                        targets,
+                        value: Box::new(value),
+                    },
+                    t.line,
+                    t.col,
+                ));
+            }
             return Ok(Node::new(
-                Kind::Assign {
-                    target: Box::new(e),
-                    value: Box::new(v),
+                Kind::ChainedAssign {
+                    targets,
+                    value: Box::new(value),
                 },
                 t.line,
                 t.col,
             ));
         }
         if self.cur().ty == TokType::Op
-            && matches!(self.cur().value.as_str(), "+=" | "-=" | "*=" | "/=")
+            && matches!(
+                self.cur().value.as_str(),
+                "+=" | "-=" | "*=" | "/=" | "%=" | "**=" | "//="
+            )
         {
-            let op = self.cur().value[..1].to_string();
+            let raw = self.cur().value.clone();
             self.i += 1;
             let v = self.expr()?;
             return Ok(Node::new(
                 Kind::AugAssign {
                     target: Box::new(e),
-                    op,
+                    op: raw,
                     value: Box::new(v),
                 },
                 t.line,
@@ -260,6 +336,133 @@ impl Parser {
             ));
         }
         Ok(Node::new(Kind::ExprStmt(Box::new(e)), t.line, t.col))
+    }
+
+    fn stmt_inner(&mut self) -> PResult<Node> {
+        let t = self.cur().clone();
+        match &t.ty {
+            TokType::Kw("component") => return self.component(),
+            TokType::Kw("async") => return self.async_def(),
+            TokType::Kw("export") => return self.export_stmt(),
+            TokType::Kw("def") => return self.def(),
+            TokType::Kw("import") => return self.import(),
+            TokType::Kw("from") => return self.from_import(),
+            TokType::Kw("interface") => return self.interface_decl(),
+            // `type` is a TypeScript keyword (`type X = ...`) but also Python's
+            // most-used introspection builtin. A `(` after it means the builtin.
+            TokType::Kw("type") if self.peek(1).ty == TokType::LParen => {}
+            TokType::Kw("type") => return self.type_alias(),
+            TokType::Kw("raise") => {
+                self.i += 1;
+                let val = if matches!(
+                    self.cur().ty,
+                    TokType::Newline | TokType::Dedent | TokType::Eof
+                ) {
+                    None
+                } else {
+                    Some(Box::new(self.expr()?))
+                };
+                return Ok(Node::new(Kind::Raise(val), t.line, t.col));
+            }
+            TokType::Kw("assert") => {
+                self.i += 1;
+                let test = self.expr()?;
+                let message = if self.cur().ty == TokType::Comma {
+                    self.i += 1;
+                    Some(Box::new(self.expr()?))
+                } else {
+                    None
+                };
+                return Ok(Node::new(
+                    Kind::Assert {
+                        test: Box::new(test),
+                        message,
+                    },
+                    t.line,
+                    t.col,
+                ));
+            }
+            TokType::Kw("return") => {
+                self.i += 1;
+                let val = if matches!(
+                    self.cur().ty,
+                    TokType::Newline | TokType::Dedent | TokType::Eof
+                ) {
+                    None
+                } else {
+                    // `return 1, 2` returns a tuple, which is an array — the
+                    // comma is not a statement separator here.
+                    let first = self.expr()?;
+                    if self.cur().ty == TokType::Comma {
+                        let mut items = vec![first];
+                        while self.cur().ty == TokType::Comma {
+                            self.i += 1;
+                            if matches!(
+                                self.cur().ty,
+                                TokType::Newline | TokType::Dedent | TokType::Eof
+                            ) {
+                                break;
+                            }
+                            items.push(self.expr()?);
+                        }
+                        Some(Box::new(Node::new(Kind::Tuple(items), t.line, t.col)))
+                    } else {
+                        Some(Box::new(first))
+                    }
+                };
+                return Ok(Node::new(Kind::Return(val), t.line, t.col));
+            }
+            TokType::Kw("if") => return self.if_stmt(),
+            TokType::Kw("for") => return self.for_stmt(),
+            TokType::Kw("while") => return self.while_stmt(),
+            TokType::Kw("try") => return self.try_stmt(),
+            TokType::Kw("match") => return self.match_stmt(),
+            TokType::Kw("break") => {
+                self.i += 1;
+                return Ok(Node::new(Kind::Break, t.line, t.col));
+            }
+            TokType::Kw("continue") => {
+                self.i += 1;
+                return Ok(Node::new(Kind::Continue, t.line, t.col));
+            }
+            TokType::Kw("pass") => {
+                self.i += 1;
+                return Ok(Node::new(Kind::Pass, t.line, t.col));
+            }
+            TokType::Kw("yield") => {
+                self.i += 1;
+                let val = if matches!(
+                    self.cur().ty,
+                    TokType::Newline | TokType::Dedent | TokType::Eof
+                ) {
+                    None
+                } else {
+                    Some(Box::new(self.expr()?))
+                };
+                return Ok(Node::new(Kind::Yield(val), t.line, t.col));
+            }
+            _ => {}
+        }
+
+        // Arrow function: `x => x * 2`. JavaScript's lambda syntax reaches
+        // HydraScript sources often enough (callbacks, event maps) that it is
+        // worth accepting directly rather than rejecting as a stray operator.
+        if self.cur().ty == TokType::Ident && self.peek(1).ty == TokType::Arrow {
+            let params = vec![self.ident()?];
+            self.i += 1; // =>
+            let body = self.expr()?;
+            return Ok(Node::new(
+                Kind::Lambda {
+                    params,
+                    defaults: vec![None],
+                    body: Box::new(body),
+                },
+                t.line,
+                t.col,
+            ));
+        }
+        let e = self.expr()?;
+        self.finish_assignment(e, &t)
     }
 
     fn import(&mut self) -> PResult<Node> {
@@ -289,7 +492,23 @@ impl Parser {
                 t.col,
             ));
         }
-        let mut names = vec![self.ident_or_kw()?];
+        // Bare `import x` / `import x as y`. The `as` form is a namespace
+        // import (`import * as y from 'x'`), which is what makes a library's
+        // members reachable as `y.member`.
+        let first = self.ident_or_kw()?;
+        if self.cur().ty == TokType::Kw("as") {
+            self.i += 1;
+            let alias = self.ident_or_kw()?;
+            return Ok(Node::new(
+                Kind::Import {
+                    from: Some(first),
+                    names: vec![format!("* as {}", alias)],
+                },
+                t.line,
+                t.col,
+            ));
+        }
+        let mut names = vec![first];
         while self.cur().ty == TokType::Comma {
             self.i += 1;
             names.push(self.ident_or_kw()?);
@@ -912,6 +1131,13 @@ impl Parser {
 
     fn export_stmt(&mut self) -> PResult<Node> {
         let t = self.eat(TokType::Kw("export"))?.clone();
+        // `export default ...` is a distinct JS form — emitting `export` and
+        // then `default` produced the two broken lines `export` / `default;`.
+        if self.cur().ty == TokType::Ident && self.cur().value == "default" {
+            self.i += 1;
+            let inner = self.stmt()?;
+            return Ok(Node::new(Kind::ExportDefault(Box::new(inner)), t.line, t.col));
+        }
         let inner = self.stmt()?;
         Ok(Node::new(Kind::Export(Box::new(inner)), t.line, t.col))
     }
@@ -1031,16 +1257,33 @@ impl Parser {
 
     #[inline(always)]
     fn comparison(&mut self) -> PResult<Node> {
-        let mut n = self.additive()?;
-        while (self.cur().ty == TokType::Op
-            && matches!(
-                self.cur().value.as_str(),
-                "==" | "!=" | "<" | ">" | "<=" | ">="
-            ))
-            || self.cur().ty == TokType::Kw("in")
-        {
-            let op = if self.cur().ty == TokType::Kw("in") {
+        let first = self.additive()?;
+        let mut ops: Vec<String> = Vec::new();
+        let mut operands: Vec<Node> = vec![first];
+        loop {
+            // `not in` is written with `not` FIRST, so it is checked before the
+            // plain operator cases. `is not` is the mirror image.
+            let negated_membership = self.cur().ty == TokType::Kw("not")
+                && self.peek(1).ty == TokType::Kw("in");
+            let is_is = self.cur().ty == TokType::Kw("is");
+            let is_in = self.cur().ty == TokType::Kw("in");
+            if !negated_membership
+                && !is_is
+                && !is_in
+                && !(self.cur().ty == TokType::Op
+                    && matches!(
+                        self.cur().value.as_str(),
+                        "==" | "!=" | "<" | ">" | "<=" | ">="
+                    ))
+            {
+                break;
+            }
+
+            let membership = is_in || negated_membership;
+            let mut op = if membership {
                 "in".to_string()
+            } else if is_is {
+                "is".to_string()
             } else {
                 match self.cur().value.as_str() {
                     "==" => "===".to_string(),
@@ -1049,19 +1292,59 @@ impl Parser {
                 }
             };
             self.i += 1;
+            if negated_membership {
+                self.i += 1; // consume `in`
+            }
+            // `is not` — the negation belongs to the operator, not to the operand.
+            if is_is && self.cur().ty == TokType::Kw("not") {
+                self.i += 1;
+                op = "is not".to_string();
+            }
             let r = self.additive()?;
-            let (line, col) = (n.line, n.col);
-            n = Node::new(
+
+            if membership {
+                let (line, col) = (operands[operands.len() - 1].line, operands[operands.len() - 1].col);
+                let left = operands.pop().unwrap();
+                operands.push(Node::new(
+                    Kind::Contains {
+                        item: Box::new(left),
+                        container: Box::new(r),
+                        negated: negated_membership,
+                    },
+                    line,
+                    col,
+                ));
+            } else {
+                ops.push(op);
+                operands.push(r);
+            }
+        }
+        if ops.is_empty() {
+            return Ok(operands.pop().unwrap());
+        }
+        if ops.len() == 1 && operands.len() == 2 {
+            let (line, col) = (operands[0].line, operands[0].col);
+            let right = operands.pop().unwrap();
+            let left = operands.pop().unwrap();
+            return Ok(Node::new(
                 Kind::Bin {
-                    op,
-                    left: Box::new(n),
-                    right: Box::new(r),
+                    op: ops.pop().unwrap(),
+                    left: Box::new(left),
+                    right: Box::new(right),
                 },
                 line,
                 col,
-            );
+            ));
         }
-        Ok(n)
+        // `0 < x < 10` — Python chains, JavaScript does not. Comparing a boolean
+        // with a number is valid JS that answers the wrong question, so this
+        // becomes an `&&` chain.
+        let (line, col) = (operands[0].line, operands[0].col);
+        Ok(Node::new(
+            Kind::ChainedCompare { ops, operands },
+            line,
+            col,
+        ))
     }
 
     #[inline(always)]
@@ -1086,12 +1369,40 @@ impl Parser {
     }
 
     #[inline(always)]
-    fn multiplicative(&mut self) -> PResult<Node> {
-        let mut n = self.unary()?;
-        while self.cur().ty == TokType::Op && matches!(self.cur().value.as_str(), "*" | "/" | "%") {
-            let op = self.cur().value.clone();
+    fn power(&mut self) -> PResult<Node> {
+        // Python's `**` is right-associative and binds tighter than unary minus
+        // on the right: `-2 ** 2` is `-(2 ** 2)`, and `2 ** 3 ** 2` is `2 ** (3 ** 2)`.
+        // JS `Math.pow` has neither property, so the call form carries it.
+        let base = self.unary()?;
+        if self.cur().ty == TokType::Op && self.cur().value == "**" {
             self.i += 1;
-            let r = self.unary()?;
+            let exp = self.power()?;
+            let (line, col) = (base.line, base.col);
+            return Ok(Node::new(
+                Kind::Call {
+                    func: Box::new(Node::new(Kind::Name("pow".into()), line, col)),
+                    args: vec![base, exp],
+                    kwargs: Vec::new(),
+                },
+                line,
+                col,
+            ));
+        }
+        Ok(base)
+    }
+
+    #[inline(always)]
+    fn multiplicative(&mut self) -> PResult<Node> {
+        let mut n = self.power()?;
+        while self.cur().ty == TokType::Op
+            && matches!(self.cur().value.as_str(), "*" | "/" | "%" | "//")
+        {
+            let raw = self.cur().value.clone();
+            self.i += 1;
+            let r = self.power()?;
+            // `//` is floor division; JS `/` truncates toward zero, which is a
+            // different answer for negatives, so it goes through Math.floor.
+            let op = if raw == "//" { "floordiv".to_string() } else { raw };
             let (line, col) = (n.line, n.col);
             n = Node::new(
                 Kind::Bin {
@@ -1235,10 +1546,23 @@ impl Parser {
                     };
                     if self.cur().ty == TokType::Colon {
                         self.i += 1;
-                        let stop = if self.cur().ty == TokType::RBrack {
+                        let stop = if self.cur().ty == TokType::Colon
+                            || self.cur().ty == TokType::RBrack
+                        {
                             None
                         } else {
                             Some(self.expr()?)
+                        };
+                        // `xs[::step]` — a second colon carries the step.
+                        let step = if self.cur().ty == TokType::Colon {
+                            self.i += 1;
+                            if self.cur().ty == TokType::RBrack {
+                                None
+                            } else {
+                                Some(self.expr()?)
+                            }
+                        } else {
+                            None
                         };
                         self.eat(TokType::RBrack)?;
                         let (line, col) = (n.line, n.col);
@@ -1247,6 +1571,7 @@ impl Parser {
                                 obj: Box::new(n),
                                 start: start.map(Box::new),
                                 stop: stop.map(Box::new),
+                                step: step.map(Box::new),
                             },
                             line,
                             col,
@@ -1327,6 +1652,26 @@ impl Parser {
 
     fn atom(&mut self) -> PResult<Node> {
         let t = self.cur().clone();
+        // A JavaScript template literal: its contents are already JS, so the
+        // whole raw token is passed through rather than re-parsed.
+        if t.ty == TokType::Template {
+            self.i += 1;
+            return Ok(Node::new(Kind::TemplateLiteral(t.value), t.line, t.col));
+        }
+        // `import("./Page.hyx")` — the dynamic form. React.lazy needs it, and
+        // without it code splitting is unreachable from the language.
+        if t.ty == TokType::Kw("import")
+            && self.peek(1).ty == TokType::LParen
+        {
+            self.i += 1;
+            self.eat(TokType::LParen)?;
+            let mut depth: i32 = 0;
+            self.skip_bracket_newlines(&mut depth);
+            let spec = self.expr()?;
+            self.skip_bracket_newlines(&mut depth);
+            self.eat(TokType::RParen)?;
+            return Ok(Node::new(Kind::DynamicImport(Box::new(spec)), t.line, t.col));
+        }
         match t.ty {
             TokType::String => {
                 self.i += 1;
@@ -1469,6 +1814,17 @@ impl Parser {
                     if self.cur().ty == TokType::RBrack {
                         break;
                     }
+                    // `[1, *xs, 2]` — Python's unpack-in-literal. JS spells it
+                    // `[...xs]`, so the star becomes a Spread node here rather
+                    // than being rejected as a stray operator.
+                    if self.cur().ty == TokType::Op
+                        && (self.cur().value == "*" || self.cur().value == "**")
+                    {
+                        self.i += 1;
+                        let v = self.expr()?;
+                        items.push(Node::new(Kind::Spread(Box::new(v)), t.line, t.col));
+                        continue;
+                    }
                     items.push(self.expr()?);
                 }
                 self.skip_bracket_newlines(&mut depth);
@@ -1495,12 +1851,24 @@ impl Parser {
                         break;
                     }
                     let key = self.expr()?;
-                    if self.cur().ty == TokType::Colon {
+                    // Dict comprehension `{k: v for k in xs}` and set
+                    // comprehension `{x for x in xs}`. Neither has a JS
+                    // equivalent, so both compile to a reducer expression.
+                    let (is_dict, value_node) = if self.cur().ty == TokType::Colon {
                         self.i += 1;
-                        let v = self.expr()?;
-                        pairs.push((Some(key), v));
+                        (true, Some(self.expr()?))
                     } else {
-                        pairs.push((None, key));
+                        (false, None)
+                    };
+                    if self.cur().ty == TokType::Kw("for") {
+                        let comp = self.comprehension_tail(key.clone(), value_node, is_dict, &t)?;
+                        self.skip_bracket_newlines(&mut depth);
+                        self.eat(TokType::RBrace)?;
+                        return Ok(comp);
+                    }
+                    match value_node {
+                        Some(v) => pairs.push((Some(key), v)),
+                        None => pairs.push((None, key)),
                     }
                     self.skip_bracket_newlines(&mut depth);
                     if self.cur().ty == TokType::Comma {
@@ -1522,7 +1890,50 @@ impl Parser {
                     self.i += 1;
                     return Ok(Node::new(Kind::Tuple(Vec::new()), t.line, t.col));
                 }
+                // `(n := len(xs))` — the walrus binds a name inside an
+                // expression, which is how Python reads a value and tests it at
+                // the same time.
+                if self.cur().ty == TokType::Ident
+                    && self.peek(1).ty == TokType::Op
+                    && self.peek(1).value == ":="
+                {
+                    let name = self.cur().value.clone();
+                    self.i += 2;
+                    let value = self.coalesce()?;
+                    self.skip_bracket_newlines(&mut depth);
+                    self.eat(TokType::RParen)?;
+                    return Ok(Node::new(
+                        Kind::Walrus {
+                            name,
+                            value: Box::new(value),
+                        },
+                        t.line,
+                        t.col,
+                    ));
+                }
                 let first = self.expr()?;
+                // `(x) => expr` with exactly one parameter.
+                if self.cur().ty == TokType::RParen
+                    && self.peek(1).ty == TokType::Arrow
+                    && matches!(first.kind, Kind::Name(_))
+                {
+                    self.i += 1; // )
+                    self.i += 1; // =>
+                    let params = match first.kind {
+                        Kind::Name(n) => vec![n],
+                        _ => unreachable!(),
+                    };
+                    let body = self.expr()?;
+                    return Ok(Node::new(
+                        Kind::Lambda {
+                            params,
+                            defaults: vec![None],
+                            body: Box::new(body),
+                        },
+                        t.line,
+                        t.col,
+                    ));
+                }
                 if self.cur().ty == TokType::Comma {
                     let mut items = vec![first];
                     while self.cur().ty == TokType::Comma {
@@ -1535,11 +1946,47 @@ impl Parser {
                     }
                     self.skip_bracket_newlines(&mut depth);
                     self.eat(TokType::RParen)?;
+                    // `(a, b) => expr` — JavaScript arrow with a parameter list.
+                    // The parenthesised names parse as a tuple expression, so the
+                    // arrow is recognised after the fact and turned into a lambda.
+                    if self.cur().ty == TokType::Arrow
+                        && items.iter().all(|i| matches!(i.kind, Kind::Name(_)))
+                    {
+                        self.i += 1;
+                        let params: Vec<String> = items
+                            .into_iter()
+                            .map(|i| match i.kind {
+                                Kind::Name(n) => n,
+                                _ => unreachable!(),
+                            })
+                            .collect();
+                        let body = self.expr()?;
+                        let defaults = vec![None; params.len()];
+                        return Ok(Node::new(
+                            Kind::Lambda {
+                                params,
+                                defaults,
+                                body: Box::new(body),
+                            },
+                            t.line,
+                            t.col,
+                        ));
+                    }
                     return Ok(Node::new(Kind::Tuple(items), t.line, t.col));
                 }
                 self.skip_bracket_newlines(&mut depth);
                 self.eat(TokType::RParen)?;
                 Ok(first)
+            }
+            // A keyword used as a callable: `type(x)`, `assert(x)`, `match(x)`.
+            // Python has no reserved words in this position, and the builtin
+            // names collide with the TypeScript/statement keywords the lexer
+            // reserves for the other target.
+            TokType::Kw(kw)
+                if self.peek(1).ty == TokType::LParen && kw != "not" =>
+            {
+                self.i += 1;
+                Ok(Node::new(Kind::Name(kw.to_string()), t.line, t.col))
             }
             _ => Err(self
                 .err(format!(
@@ -2022,10 +2469,22 @@ mod tests {
 
     #[test]
     fn tuple_unpack_becomes_a_tuple_target() {
+        // Parallel assignment gets its own node: routing it through Assign
+        // produced `a = b = [b, a]` for a swap.
         match &body("component A():\n    a, b = pair()\n")[0].kind {
-            Kind::Assign { target, .. } => {
-                assert!(matches!(target.kind, Kind::Tuple(ref v) if v.len() == 2))
+            Kind::TupleAssign { targets, .. } => {
+                assert_eq!(targets.len(), 2);
+                assert!(matches!(targets[0].kind, Kind::Name(ref n) if n == "a"));
             }
+            other => panic!("got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn chained_assignment_is_not_a_tuple_assign() {
+        // `a = b = 0` declares both names and assigns once.
+        match &body("component A():\n    a = b = 0\n")[0].kind {
+            Kind::ChainedAssign { targets, .. } => assert_eq!(targets.len(), 2),
             other => panic!("got {:?}", other),
         }
     }
@@ -2035,7 +2494,10 @@ mod tests {
         for (src, want) in [("+=", "+"), ("-=", "-"), ("*=", "*"), ("/=", "/")] {
             let n = &body(&format!("component A():\n    x {}= 1\n", want))[0];
             match &n.kind {
-                Kind::AugAssign { op, .. } => assert_eq!(op, want, "for {}", src),
+                // The node keeps the full operator (`+=`, not `+`) because the
+                // emitter must distinguish `**=` and `//=`, which need special
+                // code rather than string concatenation.
+                Kind::AugAssign { op, .. } => assert_eq!(op, src, "for {}", src),
                 other => panic!("got {:?}", other),
             }
         }
@@ -2345,14 +2807,42 @@ mod tests {
 
     #[test]
     fn in_comparison_parses() {
+        // `x in xs` is a membership test, not a Bin — JS `in` asks about keys,
+        // so it needs its own node to compile to the right thing.
         let e = first_expr("component A():\n    x = item in items\n");
         match e.kind {
-            Kind::Bin { op, left, right } => {
-                assert_eq!(op, "in");
-                assert!(matches!(left.kind, Kind::Name(ref n) if n == "item"));
-                assert!(matches!(right.kind, Kind::Name(ref n) if n == "items"));
+            Kind::Contains {
+                item,
+                container,
+                negated,
+            } => {
+                assert!(!negated);
+                assert!(matches!(item.kind, Kind::Name(ref n) if n == "item"));
+                assert!(matches!(container.kind, Kind::Name(ref n) if n == "items"));
             }
-            other => panic!("expected Bin with in, got {:?}", other),
+            other => panic!("expected Contains, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn not_in_parses_with_negation() {
+        let e = first_expr("component A():\n    x = item not in items\n");
+        match e.kind {
+            Kind::Contains { negated, .. } => assert!(negated),
+            other => panic!("expected negated Contains, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn chained_comparison_stays_one_node() {
+        // `0 < x < 10` must not become `(0 < x) < 10`.
+        let e = first_expr("component A():\n    y = 0 < x < 10\n");
+        match e.kind {
+            Kind::ChainedCompare { ops, operands } => {
+                assert_eq!(ops.len(), 2);
+                assert_eq!(operands.len(), 3);
+            }
+            other => panic!("expected ChainedCompare, got {:?}", other),
         }
     }
 

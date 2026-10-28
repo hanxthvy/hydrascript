@@ -12,6 +12,9 @@ pub enum TokType {
     Number,
     String,
     FString,
+    /// A JavaScript template literal: `` `text ${expr}` ``. Captured whole and
+    /// passed through, because its contents are JS already.
+    Template,
     Kw(&'static str),
     Op,
     Arrow,
@@ -53,6 +56,9 @@ pub const KEYWORDS: &[&str] = &[
     "and",
     "or",
     "not",
+    // `is` was missing entirely: `a is not b` lexed as the identifier `is`,
+    // which is how that expression turned into three broken statements.
+    "is",
     "True",
     "False",
     "None",
@@ -70,6 +76,12 @@ pub const KEYWORDS: &[&str] = &[
     "except",
     "finally",
     "raise",
+    // `assert cond, "msg"` — must throw, not vanish. Emitting it as a bare
+    // expression produced `assert; [(x > 0), "msg"]`, which is valid JS that
+    // does nothing at all: the check silently disappeared.
+    "assert",
+    // Generators. Python's `yield` has a JS equivalent, so it passes through.
+    "yield",
     "async",
     "await",
     "export",
@@ -199,6 +211,40 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
             }
             let start = pos;
 
+            // JavaScript template literal: taken raw, because `${...}` inside
+            // is JavaScript that must not be re-lexed as HydraScript.
+            if c == b'`' {
+                let mut end = pos + 1;
+                while end < bytes.len() {
+                    if bytes[end] == b'\\' {
+                        end += 2;
+                        continue;
+                    }
+                    if bytes[end] == b'`' {
+                        end += 1;
+                        break;
+                    }
+                    end += 1;
+                }
+                if end > bytes.len() || bytes.get(end - 1) != Some(&b'`') {
+                    return Err(CompileError::new(
+                        "unterminated template literal",
+                        line_no,
+                        start,
+                        lines.iter().map(|s| s.to_string()).collect(),
+                    )
+                    .with_hint("close the backtick"));
+                }
+                out.push(Token {
+                    ty: TokType::Template,
+                    value: raw[start..end].to_string(),
+                    line: line_no,
+                    col: start,
+                });
+                pos = end;
+                continue;
+            }
+
             // f-string or plain string
             if c == b'"'
                 || c == b'\''
@@ -285,12 +331,15 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
             } else if matches!(
                 two.as_str(),
                 "==" | "!="
+                    | "=>"
                     | "<="
                     | ">="
                     | "+="
                     | "-="
                     | "*="
                     | "/="
+                    | "%="
+                    | ":="
                     | "**"
                     | "//"
                     | "&&"
@@ -299,7 +348,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
                     | "?."
                     | "??"
             ) {
-                if two == "->" {
+                if two == "->" || two == "=>" {
                     (TokType::Arrow, 2)
                 } else {
                     (TokType::Op, 2)

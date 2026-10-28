@@ -200,7 +200,7 @@ fn test_expr_python_builtins() {
     assert_contains(
         &out,
         &[
-            "const a = xs.length;",
+            "const a = len_of(xs);",
             "const b = String(x);",
             "const c = parseInt(x);",
             "const d = parseFloat(x);",
@@ -379,7 +379,7 @@ fn test_component_no_props() {
 fn test_stmt_assign_and_tuple_unpack() {
     let src = "component A():\n    x = 1\n    a, b = pair()\n    div: \"z\"\n";
     let out = comp(src);
-    assert_contains(&out, &["const x = 1;", "const [a, b] = pair();"]);
+    assert_contains(&out, &["const x = 1;", "let [a, b] = pair();"]);
 }
 
 #[test]
@@ -671,9 +671,9 @@ component TodoApp():
         &out,
         &[
             "export function TodoApp()",
-            "const [todos, set_todos] = state([\"Belajar Python\", \"Bikin Framework\"]);",
-            "const [text, set_text] = state(\"\");",
-            "const count = todos.length;",
+            "let [todos, set_todos] = state([\"Belajar Python\", \"Bikin Framework\"]);",
+            "let [text, set_text] = state(\"\");",
+            "const count = len_of(todos);",
             "const add_todo = () => {",
             "set_todos([...todos, ...[text]]);",
             "<div className=\"max-w-md mx-auto\">",
@@ -725,7 +725,7 @@ fn test_hx_try_except_finally() {
     assert_contains(
         &out,
         &[
-            "import { ValueError, int } from 'serpent-js';",
+            "import { ValueError, int } from 'serpent';",
             "try {",
             "catch (__err) {",
             "if (__err instanceof ValueError) {",
@@ -791,7 +791,7 @@ fn test_hx_modern_js_features() {
             "const item = items?.[0];",
             "const val = (a ?? b);",
             "const { title, content } = props;",
-            "(\"admin\" in roles)",
+            "contains(roles, \"admin\")",
         ],
     );
     assert_not_contains(&out, &["const ({ title, content })"]);
@@ -969,7 +969,7 @@ fn test_feature_destructuring_assignment() {
 fn test_feature_in_operator() {
     let src = "component A():\n    if \"admin\" in roles:\n        span: \"Admin\"\n";
     let out = comp(src);
-    assert_contains(&out, &["(\"admin\" in roles)"]);
+    assert_contains(&out, &["contains(roles, \"admin\")"]);
 }
 
 #[test]

@@ -20,6 +20,13 @@ pub struct JsEmitter {
     pub depth: usize,
     pub imports: std::collections::HashSet<String>,
     pub used_helpers: std::cell::RefCell<std::collections::HashSet<String>>,
+    /// Every `def` in the file, by name. Keyword arguments do not exist in
+    /// JavaScript, so a call like `f(a=1, b=2)` needs the signature to be
+    /// reordered into positional arguments — otherwise it emits `f(a: 1)`,
+    /// which no JS engine parses.
+    pub fn_params: std::cell::RefCell<std::collections::HashMap<String, Vec<String>>>,
+    /// Names bound by a walrus (`:=`).
+    pub walrus_names: std::cell::RefCell<std::collections::HashSet<String>>,
     pub head_lines: Vec<String>,
     pub scopes: Vec<Scope>,
 }
@@ -33,6 +40,8 @@ impl JsEmitter {
             depth: 0,
             imports: std::collections::HashSet::new(),
             used_helpers: std::cell::RefCell::new(std::collections::HashSet::new()),
+            fn_params: std::cell::RefCell::new(std::collections::HashMap::new()),
+            walrus_names: std::cell::RefCell::new(std::collections::HashSet::new()),
             head_lines: Vec::new(),
             scopes: Vec::new(),
         }
@@ -112,6 +121,17 @@ impl JsEmitter {
                 {
                     return Ok(format!("[...{}, ...{}]", l, r));
                 }
+                // `//` is floor division, and JS `/` truncates toward zero.
+                if op == "floordiv" {
+                    return Ok(format!("Math.floor({} / {})", l, r));
+                }
+                // `is` / `is not` -> strict identity (JS has no `is` operator).
+                if op == "is" {
+                    return Ok(format!("({} === {})", l, r));
+                }
+                if op == "is not" {
+                    return Ok(format!("({} !== {})", l, r));
+                }
                 Ok(format!("({} {} {})", l, op, r))
             }
             Kind::Unary { op, operand } => Ok(format!("({}{})", op, self.js(operand)?)),
@@ -154,9 +174,133 @@ impl JsEmitter {
                 Ok(format!("[{}]", bits?.join(", ")))
             }
             Kind::Spread(v) => Ok(format!("...{}", self.js(v)?)),
+            // `0 < x < 10` -> `(0 < x) && (x < 10)`: comparing a boolean with a
+            // number is valid JS with the wrong answer.
+            Kind::ChainedCompare { ops, operands } => {
+                let mut parts: Vec<String> = Vec::new();
+                for i in 0..ops.len() {
+                    let l = self.js(&operands[i])?;
+                    let rr = self.js(&operands[i + 1])?;
+                    let op = match ops[i].as_str() {
+                        "is" => "===",
+                        "is not" => "!==",
+                        other => other,
+                    };
+                    parts.push(format!("({} {} {})", l, op, rr));
+                }
+                Ok(format!("({})", parts.join(" && ")))
+            }
+            // Python membership; JS `in` asks about keys, not values.
+            Kind::Contains {
+                item,
+                container,
+                negated,
+            } => {
+                let needle = self.js(item)?;
+                let hay = self.js(container)?;
+                self.used_helpers.borrow_mut().insert("contains".into());
+                let call = format!("contains({}, {})", hay, needle);
+                Ok(if *negated {
+                    format!("(!{})", call)
+                } else {
+                    call
+                })
+            }
+            Kind::Assert { test, message } => {
+                let cond = self.js(test)?;
+                self.used_helpers.borrow_mut().insert("assert_".into());
+                let msg = match message {
+                    Some(m) => self.js(m)?,
+                    None => "\"Assertion failed\"".to_string(),
+                };
+                Ok(format!("assert_({}, {})", cond, msg))
+            }
+            Kind::Raise(v) => {
+                let msg = match v {
+                    Some(m) => self.js(m)?,
+                    None => "new Error(\"raised\")".to_string(),
+                };
+                self.used_helpers.borrow_mut().insert("raise_".into());
+                Ok(format!("raise_({})", msg))
+            }
+            Kind::DynamicImport(spec) => Ok(format!("import({})", self.js(spec)?)),
+            // `{k: v for x in xs}` -> Object.fromEntries(xs.map(...))
+            Kind::DictComprehension {
+                key,
+                value,
+                target,
+                iter,
+                cond,
+            } => {
+                let it = self.js(iter)?;
+                let k = self.js(key)?;
+                let v = self.js(value)?;
+                let mut src = it;
+                if let Some(c) = cond {
+                    src = format!("{}.filter(({}) => {})", src, target, self.js(c)?);
+                }
+                Ok(format!(
+                    "Object.fromEntries({}.map(({}) => [{} , {}]))",
+                    src, target, k, v
+                ))
+            }
+            // `{x for x in xs}` -> a real Set (dedupe is part of the meaning).
+            Kind::SetComprehension {
+                expr,
+                target,
+                iter,
+                cond,
+            } => {
+                let it = self.js(iter)?;
+                let e = self.js(expr)?;
+                let mut src = it;
+                if let Some(c) = cond {
+                    src = format!("{}.filter(({}) => {})", src, target, self.js(c)?);
+                }
+                Ok(format!("new Set({}.map(({}) => {}))", src, target, e))
+            }
+            // `(n := len(xs))` — bind and use in one expression. `js()` takes
+            // `&self`, so the binding is recorded through the same interior
+            // mutability the helper set uses.
+            Kind::Walrus { name, value } => {
+                let v = self.js(value)?;
+                self.walrus_names.borrow_mut().insert(name.clone());
+                Ok(format!("({} = {})", name, v))
+            }
+            Kind::Yield(v) => match v {
+                Some(e) => Ok(format!("yield {}", self.js(e)?)),
+                None => Ok("yield".to_string()),
+            },
+            // A template literal is passed through untouched: its contents are
+            // already JavaScript, and re-escaping would change the output.
+            Kind::TemplateLiteral(raw) => Ok(raw.clone()),
             Kind::Await(v) => Ok(format!("await {}", self.js(v)?)),
-            Kind::Slice { obj, start, stop } => {
+            Kind::Slice {
+                obj,
+                start,
+                stop,
+                step,
+            } => {
                 let o = self.js(obj)?;
+                // `xs[::-1]` needs a negative step, which slice() cannot express.
+                if let Some(st) = step {
+                    self.used_helpers.borrow_mut().insert("slice_step".into());
+                    let a = match start {
+                        Some(s) => self.js(s)?,
+                        None => "null".into(),
+                    };
+                    let b = match stop {
+                        Some(s) => self.js(s)?,
+                        None => "null".into(),
+                    };
+                    return Ok(format!(
+                        "slice_step({}, {}, {}, {})",
+                        o,
+                        a,
+                        b,
+                        self.js(st)?
+                    ));
+                }
                 let a = match start {
                     Some(s) => self.js(s)?,
                     None => "0".into(),
@@ -212,10 +356,21 @@ impl JsEmitter {
                     if args.len() == 1 && kwargs.is_empty() {
                         let arg = self.js(&args[0])?;
                         match id.as_str() {
-                            "len" => return Ok(format!("{}.length", arg)),
+                            // `len` on a dict needs Object.keys().length — a
+                            // plain object has no `.length`, so this used to
+                            // evaluate to undefined and poison the arithmetic
+                            // that followed.
+                            "len" => {
+                                self.used_helpers.borrow_mut().insert("len_of".into());
+                                return Ok(format!("len_of({})", arg));
+                            }
+                            "pow" => return Ok(format!("Math.pow({})", arg)),
                             "str" => return Ok(format!("String({})", arg)),
                             "abs" => return Ok(format!("Math.abs({})", arg)),
                             "round" => return Ok(format!("Math.round({})", arg)),
+                            // `type(x)` -> the constructor; `type(x).__name__`
+                            // resolves through the `__name__` -> `name` map.
+                            "type" => return Ok(format!("({}).constructor", arg)),
                             "sum" => return Ok(format!("{}.reduce((a, b) => a + b, 0)", arg)),
                             "sorted" => return Ok(format!("{}.slice().sort()", arg)),
                             "reversed" => return Ok(format!("{}.slice().reverse()", arg)),
@@ -247,15 +402,192 @@ impl JsEmitter {
                         let bits: Result<Vec<_>, _> = args.iter().map(|a| self.js(a)).collect();
                         return Ok(format!("console.log({})", bits?.join(", ")));
                     }
+                    // `sum(xs, start)` — Python's two-argument form.
+                    if id == "sum" && args.len() == 2 {
+                        let a = self.js(&args[0])?;
+                        let b = self.js(&args[1])?;
+                        return Ok(format!("{}.reduce((acc, x) => acc + x, {})", a, b));
+                    }
+                    // `pow(a, b)`
+                    if id == "pow" && args.len() == 2 {
+                        return Ok(format!(
+                            "Math.pow({}, {})",
+                            self.js(&args[0])?,
+                            self.js(&args[1])?
+                        ));
+                    }
+                    if id == "enumerate" && !args.is_empty() {
+                        let bits: Result<Vec<_>, _> = args.iter().map(|a| self.js(a)).collect();
+                        self.used_helpers.borrow_mut().insert("enumerate".into());
+                        return Ok(format!("enumerate({})", bits?.join(", ")));
+                    }
+                    if id == "zip" && !args.is_empty() {
+                        let bits: Result<Vec<_>, _> = args.iter().map(|a| self.js(a)).collect();
+                        self.used_helpers.borrow_mut().insert("zip".into());
+                        return Ok(format!("zip({})", bits?.join(", ")));
+                    }
+                    // `min(xs, default=0)` / `max(xs, key=...)`: handle the
+                    // keyword before falling through to the positional path.
+                    if (id == "max" || id == "min") && !kwargs.is_empty() {
+                        if args.is_empty() {
+                            return Err(CompileError::new(
+                                format!("{}() needs at least one argument", id),
+                                n.line,
+                                n.col,
+                                Vec::new(),
+                            ));
+                        }
+                        let src_arg = self.js(&args[0])?;
+                        let helper = if id == "max" { "max_by" } else { "min_by" };
+                        self.used_helpers.borrow_mut().insert(helper.into());
+                        let mut extra = String::new();
+                        for (k, v) in kwargs {
+                            match k.as_str() {
+                                "default" => {
+                                    self.used_helpers.borrow_mut().insert("first_or".into());
+                                    let dv = self.js(v)?;
+                                    extra.push_str(&format!(
+                                        ", {}",
+                                        if id == "max" {
+                                            format!("first_or({}, {})", src_arg, dv)
+                                        } else {
+                                            format!("first_or({}, {})", src_arg, dv)
+                                        }
+                                    ));
+                                }
+                                "key" => {
+                                    let kv = self.js(v)?;
+                                    extra.push_str(&format!(", {}", kv));
+                                }
+                                other => {
+                                    return Err(CompileError::new(
+                                        format!("{}() got an unexpected keyword argument `{}`", id, other),
+                                        n.line,
+                                        n.col,
+                                        Vec::new(),
+                                    )
+                                    .with_hint("supported: key, default"));
+                                }
+                            }
+                        }
+                        if extra.is_empty() {
+                            let bits: Result<Vec<_>, _> =
+                                args.iter().map(|a| self.js(a)).collect();
+                            let all = bits?;
+                            return Ok(if id == "max" {
+                                format!("Math.max({})", all.join(", "))
+                            } else {
+                                format!("Math.min({})", all.join(", "))
+                            });
+                        }
+                        return Ok(format!("{}({}{})", helper, src_arg, extra));
+                    }
+                    if (id == "max" || id == "min") && !args.is_empty() && kwargs.is_empty() {
+                        let bits: Result<Vec<_>, _> = args.iter().map(|a| self.js(a)).collect();
+                        let all = bits?;
+                        return Ok(if id == "max" {
+                            format!("Math.max({})", all.join(", "))
+                        } else {
+                            format!("Math.min({})", all.join(", "))
+                        });
+                    }
+                    if id == "isinstance" && args.len() == 2 {
+                        self.used_helpers.borrow_mut().insert("isinstance".into());
+                        let a = self.js(&args[0])?;
+                        let ty = &args[1];
+                        let mapped = match &ty.kind {
+                            Kind::Name(n) => match n.as_str() {
+                                "str" => "String",
+                                "int" | "float" => "Number",
+                                "bool" => "Boolean",
+                                "list" => "Array",
+                                "dict" => "Object",
+                                "None" | "NoneType" => "null",
+                                other => other,
+                            },
+                            _ => "",
+                        };
+                        if !mapped.is_empty() {
+                            return Ok(format!("isinstance({}, {})", a, mapped));
+                        }
+                    }
+                    // `sorted(xs, key=..., reverse=...)`
+                    if id == "sorted" && !args.is_empty() && !kwargs.is_empty() {
+                        let src_arg = self.js(&args[0])?;
+                        let key_fn = kwargs
+                            .iter()
+                            .find(|(k, _)| k == "key")
+                            .map(|(_, v)| self.js(v))
+                            .transpose()?;
+                        let reverse: Option<String> = kwargs
+                            .iter()
+                            .find(|(k, _)| k == "reverse")
+                            .map(|(_, v)| self.js(v))
+                            .transpose()?;
+                        let mut out = format!("{}.slice()", src_arg);
+                        if let Some(k) = key_fn {
+                            out = format!(
+                                "{}.sort((a, b) => ({})(a) < ({})(b) ? -1 : ({})(a) > ({})(b) ? 1 : 0)",
+                                out, k, k, k, k
+                            );
+                        } else {
+                            out = format!("{}.sort()", out);
+                        }
+                        if let Some(rv) = reverse {
+                            out = format!("({}) ? {}.reverse() : {}", rv, out, out);
+                        }
+                        return Ok(out);
+                    }
+                }
+                // Keyword arguments: reorder against a known signature, or fail.
+                if !kwargs.is_empty() {
+                    if let Kind::Name(id) = &func.kind {
+                        let sig = self.fn_params.borrow().get(id).cloned();
+                        if let Some(names) = sig {
+                            let mut slots: Vec<Option<String>> = vec![None; names.len()];
+                            let mut positional = args.len();
+                            for a in args {
+                                let js = self.js(a)?;
+                                if positional < slots.len() {
+                                    slots[positional] = Some(js);
+                                }
+                                positional += 1;
+                            }
+                            for (k, v) in kwargs {
+                                match names.iter().position(|n| n == k) {
+                                    Some(i) => slots[i] = Some(self.js(v)?),
+                                    None => {
+                                        return Err(CompileError::new(
+                                            format!("{}() has no parameter named `{}`", id, k),
+                                            n.line,
+                                            n.col,
+                                            Vec::new(),
+                                        )
+                                        .with_hint(format!(
+                                            "{}() takes: {}",
+                                            id,
+                                            names.join(", ")
+                                        )))
+                                    }
+                                }
+                            }
+                            let filled: Vec<String> =
+                                slots.into_iter().filter_map(|x| x).collect();
+                            return Ok(format!("{}({})", id, filled.join(", ")));
+                        }
+                    }
+                    return Err(CompileError::new(
+                        "keyword arguments are only supported for functions defined in this file".to_string(),
+                        n.line,
+                        n.col,
+                        Vec::new(),
+                    )
+                    .with_hint("pass the argument positionally, or use a dict"));
                 }
                 let fn_str = self.js(func)?;
                 let mut all = Vec::new();
                 for a in args {
                     all.push(self.js(a)?);
-                }
-                // `.hx` does NOT rename props — no on_click -> onClick here.
-                for (k, v) in kwargs {
-                    all.push(format!("{}: {}", k, self.js(v)?));
                 }
                 Ok(format!("{}({})", fn_str, all.join(", ")))
             }
@@ -322,10 +654,93 @@ impl JsEmitter {
                 }
                 self.w(&format!("const {} = {};", lhs, rhs));
             }
+            // `x, y = y, x` — parallel assignment. `let [x, y] = ...` evaluates
+            // the right side before binding, which is Python's semantics.
+            Kind::TupleAssign { targets, value } => {
+                let rhs = self.js(value)?;
+                let names: Vec<String> =
+                    targets.iter().map(|x| self.js(x)).collect::<Result<_, _>>()?;
+                // A destructuring declaration for names that ALREADY exist
+                // (parameters, or a hoisted binding) is a SyntaxError —
+                // `let [a, b] = [b, a]` inside a function taking `a, b` refuses
+                // to parse. Re-binding is a plain assignment.
+                let already = self
+                    .scopes
+                    .last()
+                    .map(|scope| {
+                        targets.iter().all(|t| match &t.kind {
+                            Kind::Name(id) => {
+                                scope.declared.contains(id) || scope.params.contains(id)
+                            }
+                            _ => false,
+                        })
+                    })
+                    .unwrap_or(false);
+                if already {
+                    self.w(&format!("[{}] = {};", names.join(", "), rhs));
+                } else {
+                    if let Some(scope) = self.scopes.last_mut() {
+                        for t in targets {
+                            if let Kind::Name(id) = &t.kind {
+                                scope.declared.insert(id.clone());
+                            }
+                        }
+                    }
+                    self.w(&format!("let [{}] = {};", names.join(", "), rhs));
+                }
+            }
+            // `a = b = c = 0`
+            Kind::ChainedAssign { targets, value } => {
+                let rhs = self.js(value)?;
+                let mut exprs: Vec<String> = Vec::new();
+                for t in targets {
+                    exprs.push(self.js(t)?);
+                }
+                if let Some(scope) = self.scopes.last() {
+                    let undeclared: Vec<String> = targets
+                        .iter()
+                        .filter_map(|t| match &t.kind {
+                            Kind::Name(id) if !scope.declared.contains(id) => Some(id.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    if !undeclared.is_empty() {
+                        self.w(&format!("let {};", undeclared.join(", ")));
+                    }
+                }
+                if let Some(scope) = self.scopes.last_mut() {
+                    for t in targets {
+                        if let Kind::Name(id) = &t.kind {
+                            scope.declared.insert(id.clone());
+                        }
+                    }
+                }
+                self.w(&format!("{} = {};", exprs.join(" = "), rhs));
+            }
+            // `assert` and `raise` are statements, so they must not be routed
+            // through ExprStmt where a bare expression would silently do
+            // nothing.
+            // `yield x` is a statement in Python's grammar even though it
+            // produces a value, so it must not be routed through ExprStmt.
+            Kind::Yield(_) => {
+                let val = self.js(s)?;
+                self.w(&format!("{};", val));
+            }
+            Kind::Assert { .. } | Kind::Raise(_) => {
+                let val = self.js(s)?;
+                self.w(&format!("{};", val));
+            }
             Kind::AugAssign { target, op, value } => {
                 let lhs = self.js(target)?;
                 let rhs = self.js(value)?;
-                self.w(&format!("{} {}= {};", lhs, op, rhs));
+                let stmt = match op.as_str() {
+                    "**=" => format!("{} = Math.pow({}, {});", lhs, lhs, rhs),
+                    "//=" => format!("{} = Math.floor({} / {});", lhs, lhs, rhs),
+                    // `op` already carries the `=` (`+=`), so it must not be
+                    // appended again — that produced `x +== 1`.
+                    other => format!("{} {} {};", lhs, other, rhs),
+                };
+                self.w(&stmt);
             }
             Kind::Return(v) => {
                 if let Some(val_node) = v {
@@ -342,9 +757,19 @@ impl JsEmitter {
             Kind::Def { name, params, body } => {
                 let ps: Result<Vec<String>, CompileError> =
                     params.iter().map(|p| self.param(p)).collect();
-                self.w(&format!("function {}({}) {{", name, ps?.join(", ")));
+                self.w(&format!(
+                    "function {}{}({}) {{",
+                    if body_has_yield(body) { "*" } else { "" },
+                    name,
+                    ps?.join(", ")
+                ));
                 self.depth += 1;
-                let scope = Scope::scan(body);
+                let mut scope = Scope::scan(body);
+                for p in params {
+                    let bare = p.name.trim_start_matches("...").to_string();
+                    scope.params.insert(bare.clone());
+                    scope.declared.insert(bare);
+                }
                 self.scopes.push(scope);
                 for stmt in body {
                     self.stmt(stmt)?;
@@ -400,7 +825,12 @@ impl JsEmitter {
                     params.iter().map(|p| self.param(p)).collect();
                 self.w(&format!("async function {}({}) {{", name, ps?.join(", ")));
                 self.depth += 1;
-                let scope = Scope::scan(body);
+                let mut scope = Scope::scan(body);
+                for p in params {
+                    let bare = p.name.trim_start_matches("...").to_string();
+                    scope.params.insert(bare.clone());
+                    scope.declared.insert(bare);
+                }
                 self.scopes.push(scope);
                 for stmt in body {
                     self.stmt(stmt)?;
@@ -409,15 +839,80 @@ impl JsEmitter {
                 self.depth -= 1;
                 self.w("}");
             }
+            // `export default def f()` -> `export default function f()`
+            Kind::ExportDefault(inner) => {
+                match &inner.kind {
+                    Kind::Def { name, params, body } => {
+                        let ps: Result<Vec<String>, CompileError> =
+                            params.iter().map(|p| self.param(p)).collect();
+                        self.w(&format!(
+                            "export default function {}({}) {{",
+                            name,
+                            ps?.join(", ")
+                        ));
+                        self.depth += 1;
+                        let mut scope = Scope::scan(body);
+                        for p in params {
+                            let bare = p.name.trim_start_matches("...").to_string();
+                            scope.params.insert(bare.clone());
+                            scope.declared.insert(bare);
+                        }
+                        self.scopes.push(scope);
+                        for stmt in body {
+                            self.stmt(stmt)?;
+                        }
+                        self.scopes.pop();
+                        self.depth -= 1;
+                        self.w("}");
+                    }
+                    Kind::AsyncDef { name, params, body } => {
+                        let ps: Result<Vec<String>, CompileError> =
+                            params.iter().map(|p| self.param(p)).collect();
+                        self.w(&format!(
+                            "export default async function {}({}) {{",
+                            name,
+                            ps?.join(", ")
+                        ));
+                        self.depth += 1;
+                        let mut scope = Scope::scan(body);
+                        for p in params {
+                            let bare = p.name.trim_start_matches("...").to_string();
+                            scope.params.insert(bare.clone());
+                            scope.declared.insert(bare);
+                        }
+                        self.scopes.push(scope);
+                        for stmt in body {
+                            self.stmt(stmt)?;
+                        }
+                        self.scopes.pop();
+                        self.depth -= 1;
+                        self.w("}");
+                    }
+                    other => {
+                        let val = self.js(&Node::new(other.clone(), inner.line, inner.col))?;
+                        self.w(&format!("export default {};", val));
+                    }
+                }
+            }
             Kind::Export(inner) => {
                 // `export def` -> `export function`
                 match &inner.kind {
                     Kind::Def { name, params, body } => {
                         let ps: Result<Vec<String>, CompileError> =
                             params.iter().map(|p| self.param(p)).collect();
-                        self.w(&format!("export function {}({}) {{", name, ps?.join(", ")));
+                        self.w(&format!(
+                    "export function {}{}({}) {{",
+                    if body_has_yield(body) { "*" } else { "" },
+                    name,
+                    ps?.join(", ")
+                ));
                         self.depth += 1;
-                        let scope = Scope::scan(body);
+                        let mut scope = Scope::scan(body);
+                        for p in params {
+                            let bare = p.name.trim_start_matches("...").to_string();
+                            scope.params.insert(bare.clone());
+                            scope.declared.insert(bare);
+                        }
                         self.scopes.push(scope);
                         for stmt in body {
                             self.stmt(stmt)?;
@@ -435,7 +930,12 @@ impl JsEmitter {
                             ps?.join(", ")
                         ));
                         self.depth += 1;
-                        let scope = Scope::scan(body);
+                        let mut scope = Scope::scan(body);
+                        for p in params {
+                            let bare = p.name.trim_start_matches("...").to_string();
+                            scope.params.insert(bare.clone());
+                            scope.declared.insert(bare);
+                        }
                         self.scopes.push(scope);
                         for stmt in body {
                             self.stmt(stmt)?;
@@ -579,7 +1079,7 @@ impl JsEmitter {
             Kind::Import { from, names } => {
                 if let Some(f) = from {
                     let mod_name = if f == "serpent_js" {
-                        "serpent-js"
+                        "serpent"
                     } else {
                         f.as_str()
                     };
@@ -597,7 +1097,7 @@ impl JsEmitter {
                     }
                 } else {
                     self.imports
-                        .insert(format!("import {} from 'serpent-js';", names.join(", ")));
+                        .insert(format!("import {} from 'serpent';", names.join(", ")));
                 }
             }
             // These two only make sense with a component tree.
@@ -619,7 +1119,18 @@ impl JsEmitter {
                 )
                 .with_hint("element nesting compiles to JSX — use a .hsx file instead"));
             }
-            _ => {}
+            // Anything that reaches here is a statement the emitter was never
+            // taught. Silently dropping it is the worst possible outcome: code
+            // that looks guarded compiles to nothing. Fail loudly instead.
+            other => {
+                return Err(CompileError::new(
+                    format!("cannot emit statement {:?} in a .hx file", other),
+                    s.line,
+                    s.col,
+                    Vec::new(),
+                )
+                .with_hint("this is a compiler gap, not a mistake in your source"));
+            }
         }
         Ok(())
     }
@@ -641,6 +1152,35 @@ impl JsEmitter {
         };
 
         // ponytail: top-level scope for mutability tracking
+        // Collect every function signature first; a call may appear before the
+        // `def` it names, and kwargs are resolved against it.
+        {
+            let mut table = self.fn_params.borrow_mut();
+            for st in body {
+                let record = |name: &str, params: &[Param], table: &mut std::collections::HashMap<String, Vec<String>>| {
+                    table.insert(
+                        name.to_string(),
+                        params
+                            .iter()
+                            .map(|p| p.name.trim_start_matches("...").to_string())
+                            .collect(),
+                    );
+                };
+                match &st.kind {
+                    Kind::Def { name, params, .. } | Kind::AsyncDef { name, params, .. } => {
+                        record(name, params, &mut table)
+                    }
+                    Kind::Export(inner) => match &inner.kind {
+                        Kind::Def { name, params, .. } | Kind::AsyncDef { name, params, .. } => {
+                            record(name, params, &mut table)
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+        }
+
         let top_scope = Scope::scan(body);
         self.scopes.push(top_scope);
 
@@ -650,7 +1190,7 @@ impl JsEmitter {
                 Kind::Import { from, names } => {
                     if let Some(f) = from {
                         let mod_name = if f == "serpent_js" {
-                            "serpent-js"
+                            "serpent"
                         } else {
                             f.as_str()
                         };
@@ -668,7 +1208,7 @@ impl JsEmitter {
                         }
                     } else {
                         self.imports
-                            .insert(format!("import {} from 'serpent-js';", names.join(", ")));
+                            .insert(format!("import {} from 'serpent';", names.join(", ")));
                     }
                 }
                 _ => self.stmt(s)?,
@@ -683,7 +1223,7 @@ impl JsEmitter {
             let mut h = helpers;
             h.sort();
             self.imports
-                .insert(format!("import {{ {} }} from 'serpent-js';", h.join(", ")));
+                .insert(format!("import {{ {} }} from 'serpent';", h.join(", ")));
         }
 
         let mut head = vec![
@@ -746,4 +1286,31 @@ fn json_escape(s: &str) -> String {
     }
     o.push('"');
     o
+}
+
+/// True when a function body contains `yield` at its own level (nested
+/// functions excluded): such a function is a generator, and JS requires the
+/// `*` on the declaration or the emitted `yield` is a syntax error.
+fn body_has_yield(body: &[Node]) -> bool {
+    fn walk(n: &Node) -> bool {
+        match &n.kind {
+            Kind::Yield(_) => true,
+            Kind::If { body, orelse, .. } => {
+                body.iter().any(walk) || orelse.as_ref().is_some_and(|b| b.iter().any(walk))
+            }
+            Kind::While { body, .. } | Kind::For { body, .. } => body.iter().any(walk),
+            Kind::Try {
+                body,
+                handlers,
+                finally,
+                ..
+            } => {
+                body.iter().any(walk)
+                    || handlers.iter().any(|c| c.body.iter().any(walk))
+                    || finally.as_ref().is_some_and(|f| f.iter().any(walk))
+            }
+            _ => false,
+        }
+    }
+    body.iter().any(walk)
 }

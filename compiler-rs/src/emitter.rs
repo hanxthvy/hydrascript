@@ -199,14 +199,28 @@ pub fn str_method(m: &str) -> &str {
         "keys" => "keys",
         "values" => "values",
         "items" => "entries",
+        // Dunder introspection. `type(x).__name__` is the common one; without
+        // this it emitted `.__name__`, which is `undefined` on every JS value.
+        "__name__" => "name",
+        "__class__" => "constructor",
+        "__doc__" => "toString",
+        "__module__" => "name",
         other => other,
     }
 }
 
-/// Python string methods with no JS equivalent. A call to one becomes a free
-/// function call into the `serpent` runtime: `s.capitalize()` -> `capitalize(s)`.
+/// Python methods with no JS equivalent that are rewritten to a free function
+/// call into the `serpent` runtime: `s.capitalize()` -> `capitalize(s)`.
+///
+/// The dict, list, str and dict-lookup entries here are the ones that used to
+/// produce JavaScript that either threw or silently did the wrong thing:
+/// `", ".join(xs)` emitted a method call on a string (TypeError), `d.get("k", 0)`
+/// emitted a method call on an object (TypeError), `len(d)` emitted `.length` on
+/// an object (undefined), and `xs.extend(ys)` emitted `.extend` (TypeError).
+/// Each one is now mapped to the helper that implements the Python behaviour.
 pub fn free_func(m: &str) -> Option<&'static str> {
     match m {
+        // strings
         "capitalize" => Some("capitalize"),
         "title" => Some("title"),
         "count" => Some("count"),
@@ -214,13 +228,46 @@ pub fn free_func(m: &str) -> Option<&'static str> {
         "zfill" => Some("zfill"),
         "isdigit" => Some("isDigit"),
         "isalpha" => Some("isAlpha"),
+        "isalnum" => Some("isAlnum"),
+        "isspace" => Some("isSpace"),
+        "isupper" => Some("isUpper"),
+        "islower" => Some("isLower"),
+        "center" => Some("center"),
+        "ljust" => Some("ljust"),
+        "rjust" => Some("rjust"),
+        "partition" => Some("str_partition"),
+        "rpartition" => Some("str_rpartition"),
+        "swapcase" => Some("swapcase"),
+        // join is a string method in Python and an array method in JS; the
+        // operands are the other way round, so it needs a helper.
+        "join" => Some("join"),
+        // dict
+        "get" => Some("dict_get"),
+        "setdefault" => Some("dict_setdefault"),
+        "update" => Some("dict_update"),
+        "pop" => Some("dict_pop"),
+        "popitem" => Some("dict_popitem"),
+        "fromkeys" => Some("dict_fromkeys"),
+        // list
+        "extend" => Some("list_extend"),
+        "insert" => Some("list_insert"),
+        "remove" => Some("list_remove"),
+        "index" => Some("list_index"),
+        // set-like helpers
+        "add" => Some("set_add"),
+        "discard" => Some("set_discard"),
         _ => None,
     }
 }
 
+
 // [xihanzu-NR]
 #[derive(Default, Debug, Clone)]
 pub struct Scope {
+    /// Names introduced by the function signature itself. They are already
+    /// declared by the time the body runs, so re-declaring one (`let [a, b] = ...`
+    /// inside a function that takes `a, b`) is a SyntaxError.
+    pub params: HashSet<String>,
     pub assign_counts: HashMap<String, usize>,
     pub aug_assigned: HashSet<String>,
     pub declared: HashSet<String>,
@@ -252,6 +299,27 @@ impl Scope {
         self.scan_at(nodes, 0);
     }
 
+    /// Record one assignment target (a plain name, or every name inside a
+    /// destructuring tuple). Member/index targets bind nothing.
+    fn record_target(&mut self, target: &Node, depth: usize) {
+        match &target.kind {
+            Kind::Name(id) => {
+                let escaped = self.assign_counts.entry(id.clone()).or_insert(0);
+                if *escaped == 0 {
+                    self.first_assign_depth.entry(id.clone()).or_insert(depth);
+                }
+                *escaped += 1;
+                self.assigned_anywhere.insert(id.clone());
+            }
+            Kind::Tuple(items) | Kind::List(items) => {
+                for item in items {
+                    self.record_target(item, depth);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// `depth` is the nesting level relative to the function body: 0 for a
     /// statement that sits directly in the body, 1 for one inside `if:`.
     /// Nested `def`s are separate scopes and are deliberately NOT descended
@@ -274,6 +342,18 @@ impl Scope {
                         self.aug_assigned.insert(id.clone());
                         self.assigned_anywhere.insert(id.clone());
                         self.first_assign_depth.entry(id.clone()).or_insert(depth);
+                    }
+                }
+                // `a, b = ...` and `a = b = 0` declare every name on the left,
+                // exactly like separate assignments would.
+                Kind::TupleAssign { targets, .. } => {
+                    for target in targets {
+                        self.record_target(target, depth);
+                    }
+                }
+                Kind::ChainedAssign { targets, .. } => {
+                    for target in targets {
+                        self.record_target(target, depth);
                     }
                 }
                 // A nested function is its own scope; do not inherit its names.
@@ -350,6 +430,17 @@ pub struct Emitter {
     /// Runtime helpers the source actually used (capitalize, title, ...).
     /// Collected during emission so the import is injected only when needed.
     pub used_helpers: std::cell::RefCell<HashSet<String>>,
+    /// Every `def` in the file, by name: the ordered parameter list.
+    ///
+    /// Keyword arguments are a Python feature JavaScript does not have. A call
+    /// written as `f(a=1, b=2)` used to emit `f(a: 1, b: 2)` — object-literal
+    /// syntax inside a call, which is a syntax error in a build that reported
+    /// success. With the signature known, matching kwargs are reordered into
+    /// positional arguments (correct for any function in this file), and a name
+    /// that matches nothing becomes a real error instead of broken output.
+    pub fn_params: std::cell::RefCell<std::collections::HashMap<String, Vec<String>>>,
+    /// Names bound by a walrus (`:=`), which must be declared before use.
+    pub walrus_names: std::cell::RefCell<HashSet<String>>,
     pub head_lines: Vec<String>,
     pub scopes: Vec<Scope>,
 }
@@ -363,6 +454,8 @@ impl Emitter {
             depth: 0,
             imports: HashSet::new(),
             used_helpers: std::cell::RefCell::new(HashSet::new()),
+            fn_params: std::cell::RefCell::new(std::collections::HashMap::new()),
+            walrus_names: std::cell::RefCell::new(HashSet::new()),
             head_lines: Vec::new(),
             scopes: Vec::new(),
         }
@@ -477,6 +570,21 @@ impl Emitter {
                         || matches!(right.kind, Kind::List(_) | Kind::Tuple(_)))
                 {
                     return Ok(format!("[...{}, ...{}]", l, r));
+                }
+                // `//` — floor division. JS `/` truncates toward zero, which
+                // disagrees with Python for negatives (-7 // 2 is -4 in Python,
+                // -3 in JS), so the floor is explicit.
+                if op == "floordiv" {
+                    return Ok(format!("Math.floor({} / {})", l, r));
+                }
+                // Python's `is` / `is not` are identity tests. JavaScript has no
+                // `is` operator at all — leaving it in produced `(a is b)`, which
+                // is a syntax error. `===` is the closest faithful translation.
+                if op == "is" {
+                    return Ok(format!("({} === {})", l, r));
+                }
+                if op == "is not" {
+                    return Ok(format!("({} !== {})", l, r));
                 }
                 Ok(format!("({} {} {})", l, op, r))
             }
@@ -601,14 +709,160 @@ impl Emitter {
                             match id.as_str() {
                                 "max" => return Ok(format!("Math.max(...{})", arg)),
                                 "min" => return Ok(format!("Math.min(...{})", arg)),
+                                // `type(x)` -> the constructor; `type(x).__name__`
+                                // then resolves through the `__name__` -> `name` map.
+                                "type" => return Ok(format!("({}).constructor", arg)),
+                                // `len(x, y)` and `str(x, y)` are not Python, but
+                                // `sorted(xs, key=...)` and friends arrive here
+                                // with kwargs and are handled below.
                                 _ => {}
+                            }
+                        }
+                        // `sum(xs, start)` — Python's two-argument form. The
+                        // one-argument form keeps the inline reduce.
+                        if id == "sum" && args.len() == 2 {
+                            let a = self.js(&args[0])?;
+                            let b = self.js(&args[1])?;
+                            return Ok(format!("{}.reduce((acc, x) => acc + x, {})", a, b));
+                        }
+                        // `pow(a, b)` with two args (Python's builtin).
+                        if id == "pow" && args.len() == 2 {
+                            return Ok(format!("Math.pow({}, {})", self.js(&args[0])?, self.js(&args[1])?));
+                        }
+                        // `round(x, n)` — JS has no digit argument.
+                        if id == "round" && args.len() == 2 {
+                            self.used_helpers.borrow_mut().insert("round_to".into());
+                            return Ok(format!(
+                                "round_to({}, {})",
+                                self.js(&args[0])?,
+                                self.js(&args[1])?
+                            ));
+                        }
+                        // `enumerate(xs, start)` / `zip(a, b, c)` / `print(a, b)`:
+                        // variadic forms the one-arg path cannot cover.
+                        if id == "enumerate" {
+                            let mut all = Vec::new();
+                            for a in args {
+                                all.push(self.js(a)?);
+                            }
+                            self.used_helpers.borrow_mut().insert("enumerate".into());
+                            return Ok(format!("enumerate({})", all.join(", ")));
+                        }
+                        if id == "zip" {
+                            let mut all = Vec::new();
+                            for a in args {
+                                all.push(self.js(a)?);
+                            }
+                            self.used_helpers.borrow_mut().insert("zip".into());
+                            return Ok(format!("zip({})", all.join(", ")));
+                        }
+                        if id == "print" {
+                            let mut all = Vec::new();
+                            for a in args {
+                                all.push(self.js(a)?);
+                            }
+                            return Ok(format!("console.log({})", all.join(", ")));
+                        }
+                        if id == "max" || id == "min" {
+                            let mut all = Vec::new();
+                            for a in args {
+                                all.push(self.js(a)?);
+                            }
+                            return Ok(if id == "max" {
+                                format!("Math.max({})", all.join(", "))
+                            } else {
+                                format!("Math.min({})", all.join(", "))
+                            });
+                        }
+                        // `sorted(xs, key=..., reverse=...)` / `min(xs, default=...)`
+                        // — keyword arguments that change the meaning entirely.
+                        if !kwargs.is_empty() {
+                            let key_fn = kwargs
+                                .iter()
+                                .find(|(k, _)| k == "key")
+                                .map(|(_, v)| self.js(v))
+                                .transpose()?;
+                            let reverse: Option<String> = kwargs
+                                .iter()
+                                .find(|(k, _)| k == "reverse")
+                                .map(|(_, v)| self.js(v))
+                                .transpose()?;
+                            if id == "sorted" {
+                                let src_arg = if args.is_empty() {
+                                    return Err(CompileError::new(
+                                        "sorted() needs at least one argument".to_string(),
+                                        n.line,
+                                        n.col,
+                                        Vec::new(),
+                                    ));
+                                } else {
+                                    self.js(&args[0])?
+                                };
+                                let mut out = format!("{}.slice()", src_arg);
+                                if let Some(k) = key_fn {
+                                    out = format!("{}.sort((a, b) => ({})(a) < ({})(b) ? -1 : ({})(a) > ({})(b) ? 1 : 0)", out, k, k, k, k);
+                                } else {
+                                    out = format!("{}.sort()", out);
+                                }
+                                if let Some(rv) = reverse {
+                                    out = format!("({}) ? {}.reverse() : {}", rv, out, out);
+                                }
+                                return Ok(out);
+                            }
+                            if id == "max" || id == "min" {
+                                let src_arg = if args.is_empty() {
+                                    return Err(CompileError::new(
+                                        format!("{}() needs at least one argument", id),
+                                        n.line,
+                                        n.col,
+                                        Vec::new(),
+                                    ));
+                                } else {
+                                    self.js(&args[0])?
+                                };
+                                let fn_name = if id == "max" { "max_by" } else { "min_by" };
+                                self.used_helpers.borrow_mut().insert(fn_name.into());
+                                if let Some(k) = key_fn {
+                                    return Ok(format!("{}({}, {})", fn_name, src_arg, k));
+                                }
+                                if let Some(dv) = kwargs
+                                    .iter()
+                                    .find(|(k, _)| k == "default")
+                                    .map(|(_, v)| self.js(v))
+                                    .transpose()?
+                                {
+                                    self.used_helpers.borrow_mut().insert("first_or".into());
+                                    let base = if id == "max" {
+                                        format!("Math.max(...{})", src_arg)
+                                    } else {
+                                        format!("Math.min(...{})", src_arg)
+                                    };
+                                    return Ok(format!(
+                                        "{}.length ? {} : {}",
+                                        src_arg, base, dv
+                                    ));
+                                }
                             }
                         }
                     }
                     if args.len() == 1 && kwargs.is_empty() {
                         let arg = self.js(&args[0])?;
                         match id.as_str() {
-                            "len" => return Ok(format!("{}.length", arg)),
+                            // `len(xs)` on a dict is Object.keys().length: a
+                            // plain object has no `.length`, which is how
+                            // `len(d)` used to yield `undefined` and poison
+                            // every arithmetic expression downstream.
+                            "len" => {
+                                self.used_helpers.borrow_mut().insert("len_of".into());
+                                return Ok(format!("len_of({})", arg));
+                            }
+                            // Python's `pow(a, b)`; JS has Math.pow.
+                            "pow" => return Ok(format!("Math.pow({})", arg)),
+                            // `divmod(a, b)` -> [a // b, a % b]
+                            "divmod" => {
+                                self.used_helpers.borrow_mut().insert("divmod".into());
+                                return Ok(format!("divmod({})", arg));
+                            }
                             "str" => return Ok(format!("String({})", arg)),
                             "int" => return Ok(format!("parseInt({})", arg)),
                             "float" => return Ok(format!("parseFloat({})", arg)),
@@ -644,18 +898,89 @@ impl Emitter {
                 if Self::is_element(func) {
                     return self.jsx_inline(func, args, kwargs);
                 }
+                // Keyword arguments against a function defined in this file are
+                // reordered into positional ones. `f(b=2, a=1)` on
+                // `def f(a, b)` must call `f(1, 2)` — anything else is a syntax
+                // error in the emitted JS (`f(b: 2, a: 1)`).
+                if !kwargs.is_empty() {
+                    if let Kind::Name(id) = &func.kind {
+                        let sig = self.fn_params.borrow().get(id).cloned();
+                        if let Some(names) = sig {
+                            let mut slots: Vec<Option<String>> = vec![None; names.len()];
+                            let mut positional = args.len();
+                            for a in args {
+                                let js = self.js(a)?;
+                                if positional < slots.len() {
+                                    slots[positional] = Some(js);
+                                }
+                                positional += 1;
+                            }
+                            let mut unknown: Option<String> = None;
+                            for (k, v) in kwargs {
+                                match names.iter().position(|n| n == k) {
+                                    Some(i) => slots[i] = Some(self.js(v)?),
+                                    None => unknown = Some(k.clone()),
+                                }
+                            }
+                            if let Some(bad) = unknown {
+                                return Err(CompileError::new(
+                                    format!("{}() has no parameter named `{}`", id, bad),
+                                    n.line,
+                                    n.col,
+                                    Vec::new(),
+                                )
+                                .with_hint(format!("{}() takes: {}", id, names.join(", "))));
+                            }
+                            let filled: Vec<String> =
+                                slots.into_iter().filter_map(|x| x).collect();
+                            return Ok(format!("{}({})", id, filled.join(", ")));
+                        }
+                    }
+                }
                 let fn_str = self.js(func)?;
                 let mut all = Vec::new();
                 for a in args {
                     all.push(self.js(a)?);
                 }
-                for (k, v) in kwargs {
-                    all.push(format!("{}: {}", prop_map(k), self.js(v)?));
+                // No signature available (an imported library function): emit
+                // the call that JS can actually parse, and say so, rather than
+                // producing `f(a: 1)` and reporting success.
+                if !kwargs.is_empty() {
+                    return Err(CompileError::new(
+                        format!(
+                            "keyword arguments are only supported for functions defined in this file (called `{}`)",
+                            fn_str
+                        ),
+                        n.line,
+                        n.col,
+                        Vec::new(),
+                    )
+                    .with_hint("pass the argument positionally, or wrap the options in a dict"));
                 }
                 Ok(format!("{}({})", fn_str, all.join(", ")))
             }
-            Kind::Slice { obj, start, stop } => {
+            Kind::Slice {
+                obj,
+                start,
+                stop,
+                step,
+            } => {
                 let o = self.js(obj)?;
+                // `xs[::-1]` is Python's reverse idiom. `slice()` cannot express
+                // a negative step, so it goes through a runtime helper that
+                // handles every sign combination.
+                if let Some(st) = step {
+                    self.used_helpers.borrow_mut().insert("slice_step".into());
+                    let a = match start {
+                        Some(s) => self.js(s)?,
+                        None => "null".into(),
+                    };
+                    let b = match stop {
+                        Some(s) => self.js(s)?,
+                        None => "null".into(),
+                    };
+                    return Ok(format!("slice_step({}, {}, {}, {})", o, a, b, self.js(st)?));
+                }
                 let a = match start {
                     Some(s) => self.js(s)?,
                     None => "0".into(),
@@ -666,6 +991,117 @@ impl Emitter {
                 };
                 Ok(format!("{}.slice({}{})", o, a, b))
             }
+            // `0 < x < 10` -> `(0 < x) && (x < 10)`. Comparing a boolean with a
+            // number is valid JS that answers a different question, so the
+            // chain has to be rebuilt with `&&`.
+            Kind::ChainedCompare { ops, operands } => {
+                let mut parts: Vec<String> = Vec::new();
+                for i in 0..ops.len() {
+                    let l = self.js(&operands[i])?;
+                    let r = self.js(&operands[i + 1])?;
+                    let op = match ops[i].as_str() {
+                        "is" => "===",
+                        "is not" => "!==",
+                        other => other,
+                    };
+                    parts.push(format!("({} {} {})", l, op, r));
+                }
+                Ok(format!("({})", parts.join(" && ")))
+            }
+            // Python membership. JS `in` answers a different question on
+            // strings and arrays (it checks keys), and throws on primitives, so
+            // each container kind gets the check that actually means
+            // "does this contain that".
+            Kind::Contains {
+                item,
+                container,
+                negated,
+            } => {
+                let needle = self.js(item)?;
+                let hay = self.js(container)?;
+                self.used_helpers.borrow_mut().insert("contains".into());
+                let call = format!("contains({}, {})", hay, needle);
+                Ok(if *negated {
+                    format!("(!{})", call)
+                } else {
+                    call
+                })
+            }
+            Kind::Assert { test, message } => {
+                let cond = self.js(test)?;
+                self.used_helpers.borrow_mut().insert("assert_".into());
+                let msg = match message {
+                    Some(m) => self.js(m)?,
+                    None => "\"Assertion failed\"".to_string(),
+                };
+                // `assert x > 0, "positive"` must throw. Emitting it as an
+                // expression made the check disappear silently.
+                Ok(format!("assert_({}, {})", cond, msg))
+            }
+            Kind::Raise(v) => {
+                let msg = match v {
+                    Some(m) => self.js(m)?,
+                    None => "new Error(\"raised\")".to_string(),
+                };
+                self.used_helpers.borrow_mut().insert("raise_".into());
+                Ok(format!("raise_({})", msg))
+            }
+            Kind::DynamicImport(spec) => {
+                let s = self.js(spec)?;
+                // `import("./Page.hyx")` -> `import("./Page.hyx")` — the
+                // specifier must stay a literal for the bundler to split on it.
+                Ok(format!("import({})", s))
+            }
+            // `{k: v for x in xs}` -> Object.fromEntries(xs.map(...))
+            Kind::DictComprehension {
+                key,
+                value,
+                target,
+                iter,
+                cond,
+            } => {
+                let it = self.js(iter)?;
+                let k = self.js(key)?;
+                let v = self.js(value)?;
+                let mut src = it;
+                if let Some(c) = cond {
+                    src = format!("{}.filter(({}) => {})", src, target, self.js(c)?);
+                }
+                Ok(format!(
+                    "Object.fromEntries({}.map(({}) => [{} , {}]))",
+                    src, target, k, v
+                ))
+            }
+            // `{x for x in xs}` -> a real Set (dedupe is part of the meaning).
+            Kind::SetComprehension {
+                expr,
+                target,
+                iter,
+                cond,
+            } => {
+                let it = self.js(iter)?;
+                let e = self.js(expr)?;
+                let mut src = it;
+                if let Some(c) = cond {
+                    src = format!("{}.filter(({}) => {})", src, target, self.js(c)?);
+                }
+                Ok(format!("new Set({}.map(({}) => {}))", src, target, e))
+            }
+            // `(n := len(xs))` — bind and use in one expression. `js()` takes
+            // `&self`, so the binding is recorded through the same interior
+            // mutability the helper set uses.
+            Kind::Walrus { name, value } => {
+                let v = self.js(value)?;
+                self.walrus_names.borrow_mut().insert(name.clone());
+                Ok(format!("({} = {})", name, v))
+            }
+            Kind::Yield(v) => match v {
+                Some(e) => Ok(format!("yield {}", self.js(e)?)),
+                None => Ok("yield".to_string()),
+            },
+            // A template literal is passed through untouched: its contents are
+            // already JavaScript, and re-escaping would change the output.
+            Kind::TemplateLiteral(raw) => Ok(raw.clone()),
             Kind::Await(v) => Ok(format!("await {}", self.js(v)?)),
             Kind::New(inner) => Ok(format!("new {}", self.js(inner)?)),
             Kind::OptCall { func, args, kwargs } => {
@@ -995,10 +1431,104 @@ impl Emitter {
                     self.w(&format!("{} = {};", lhs, rhs));
                 }
             }
+            // `x, y = y, x` — Python's parallel assignment. `let [x, y] = ...`
+            // already evaluates the right side fully before binding, which is
+            // exactly Python's semantics, so the array form is correct. (Doing
+            // it as two statements would break swap.)
+            Kind::TupleAssign { targets, value } => {
+                let rhs = self.js(value)?;
+                let names: Vec<String> =
+                    targets.iter().map(|x| self.js(x)).collect::<Result<_, _>>()?;
+                // A destructuring declaration for names that ALREADY exist
+                // (parameters, or a hoisted binding) is a SyntaxError —
+                // `let [a, b] = [b, a]` inside a function taking `a, b` refuses
+                // to parse. Re-binding is a plain assignment.
+                let already = self
+                    .scopes
+                    .last()
+                    .map(|scope| {
+                        targets.iter().all(|t| match &t.kind {
+                            Kind::Name(id) => {
+                                scope.declared.contains(id) || scope.params.contains(id)
+                            }
+                            _ => false,
+                        })
+                    })
+                    .unwrap_or(false);
+                if already {
+                    self.w(&format!("[{}] = {};", names.join(", "), rhs));
+                } else {
+                    if let Some(scope) = self.scopes.last_mut() {
+                        for t in targets {
+                            if let Kind::Name(id) = &t.kind {
+                                scope.declared.insert(id.clone());
+                            }
+                        }
+                    }
+                    self.w(&format!("let [{}] = {};", names.join(", "), rhs));
+                }
+            }
+            // `a = b = c = 0` — each name needs its own binding unless it is
+            // already declared, so the names are split out and only the last
+            // step carries the value.
+            Kind::ChainedAssign { targets, value } => {
+                let rhs = self.js(value)?;
+                let mut exprs: Vec<String> = Vec::new();
+                for t in targets {
+                    exprs.push(self.js(t)?);
+                }
+                // A single assignment chain in JS (`a = b = c = 0`) needs the
+                // names declared first; without this the first build is a
+                // ReferenceError in strict mode, which every ES module is.
+                if let Some(scope) = self.scopes.last() {
+                    let undeclared: Vec<&String> = targets
+                        .iter()
+                        .filter_map(|t| match &t.kind {
+                            Kind::Name(id) if !scope.declared.contains(id) => Some(id),
+                            _ => None,
+                        })
+                        .collect();
+                    if !undeclared.is_empty() {
+                        // Always `let`: a chained assignment that never
+                        // reassigns is rare, and guessing wrong would turn a
+                        // later write into a TypeError.
+                        let names: Vec<String> =
+                            undeclared.iter().map(|s| (*s).clone()).collect();
+                        self.w(&format!("let {};", names.join(", ")));
+                    }
+                }
+                if let Some(scope) = self.scopes.last_mut() {
+                    for t in targets {
+                        if let Kind::Name(id) = &t.kind {
+                            scope.declared.insert(id.clone());
+                        }
+                    }
+                }
+                self.w(&format!("{} = {};", exprs.join(" = "), rhs));
+            }
+            // `yield x` is a statement in Python's grammar even though it
+            // produces a value, so it must not be routed through ExprStmt.
+            Kind::Yield(_) => {
+                let val = self.js(s)?;
+                self.w(&format!("{};", val));
+            }
+            Kind::Assert { .. } | Kind::Raise(_) => {
+                let val = self.js(s)?;
+                self.w(&format!("{};", val));
+            }
             Kind::AugAssign { target, op, value } => {
                 let lhs = self.js(target)?;
                 let rhs = self.js(value)?;
-                self.w(&format!("{} {}= {};", lhs, op, rhs));
+                // `x **= 2` / `x //= 2` — JS has no such operators, so they are
+                // spelled out. `//=` also needs Math.floor, not truncation.
+                let stmt = match op.as_str() {
+                    "**=" => format!("{} = pow({}, {});", lhs, lhs, rhs),
+                    "//=" => format!("{} = Math.floor({} / {});", lhs, lhs, rhs),
+                    // `op` already carries the `=` (`+=`), so it must not be
+                    // appended again — that produced `x +== 1`.
+                    other => format!("{} {} {};", lhs, other, rhs),
+                };
+                self.w(&stmt);
             }
             Kind::Return(v) => {
                 if let Some(val_node) = v {
@@ -1021,7 +1551,12 @@ impl Emitter {
                 let ps = self.format_params(params)?;
                 self.w(&format!("const {} = ({}) => {{", name, ps));
                 self.depth += 1;
-                let scope = Scope::scan(body);
+                let mut scope = Scope::scan(body);
+                for p in params {
+                    let bare = p.name.trim_start_matches("...").to_string();
+                    scope.params.insert(bare);
+                    scope.declared.insert(p.name.trim_start_matches("...").to_string());
+                }
                 self.scopes.push(scope);
                 self.hoist_nested_assignments();
                 for stmt in body {
@@ -1188,7 +1723,12 @@ impl Emitter {
         self.w(&format!("export function {}({}) {{", name, arg));
         self.depth += 1;
 
-        let scope = Scope::scan(body);
+        let mut scope = Scope::scan(body);
+        for p in params {
+            let bare = p.name.trim_start_matches("...").to_string();
+            scope.params.insert(bare.clone());
+            scope.declared.insert(bare);
+        }
         self.scopes.push(scope);
         self.hoist_nested_assignments();
 
@@ -1271,6 +1811,33 @@ impl Emitter {
                 } else {
                     self.imports
                         .insert(format!("import {} from 'serpent';", names.join(", ")));
+                }
+            }
+        }
+
+        // Collect every function signature first: a call may appear before the
+        // `def` it refers to, and kwargs must be resolved against it.
+        {
+            let mut table = self.fn_params.borrow_mut();
+            for st in body {
+                let mut visit = |name: &str, params: &[Param]| {
+                    let names = params
+                        .iter()
+                        .map(|p| p.name.trim_start_matches("...").to_string())
+                        .collect::<Vec<_>>();
+                    table.insert(name.to_string(), names);
+                };
+                match &st.kind {
+                    Kind::Def { name, params, .. } | Kind::AsyncDef { name, params, .. } => {
+                        visit(name, params)
+                    }
+                    Kind::Export(inner) => match &inner.kind {
+                        Kind::Def { name, params, .. } | Kind::AsyncDef { name, params, .. } => {
+                            visit(name, params)
+                        }
+                        _ => {}
+                    },
+                    _ => {}
                 }
             }
         }
@@ -1520,7 +2087,7 @@ mod tests {
     #[test]
     fn len_maps_to_length() {
         let out = emit_tsx("component A():\n    n = len(items)\n");
-        has_all(&out, &["items.length"]);
+        has_all(&out, &["len_of(items)"]);
     }
 
     #[test]
@@ -1773,7 +2340,7 @@ mod tests {
     #[test]
     fn tuple_unpack_emits_array_destructure() {
         let out = emit_tsx("component A():\n    a, b = pair()\n");
-        has_all(&out, &["const [a, b] = pair();"]);
+        has_all(&out, &["let [a, b] = pair();"]);
     }
 
     #[test]
@@ -1932,4 +2499,31 @@ mod tests {
         has_all(&out, &["<li key={it}>"]);
         lacks(&out, "key={key}");
     }
+}
+
+/// True when a function body contains `yield` at its own level (nested
+/// functions excluded): such a function is a generator, and JS requires the
+/// `*` on the declaration or the emitted `yield` is a syntax error.
+fn body_has_yield(body: &[Node]) -> bool {
+    fn walk(n: &Node) -> bool {
+        match &n.kind {
+            Kind::Yield(_) => true,
+            Kind::If { body, orelse, .. } => {
+                body.iter().any(walk) || orelse.as_ref().is_some_and(|b| b.iter().any(walk))
+            }
+            Kind::While { body, .. } | Kind::For { body, .. } => body.iter().any(walk),
+            Kind::Try {
+                body,
+                handlers,
+                finally,
+                ..
+            } => {
+                body.iter().any(walk)
+                    || handlers.iter().any(|c| c.body.iter().any(walk))
+                    || finally.as_ref().is_some_and(|f| f.iter().any(walk))
+            }
+            _ => false,
+        }
+    }
+    body.iter().any(walk)
 }

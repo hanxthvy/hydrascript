@@ -71,6 +71,8 @@ pub enum Kind {
     },
     /// `export def` / `export NAME = ...` — emits a JS `export`.
     Export(Box<Node>),
+    /// `export default X` — a distinct JS form, not `export default` glued on.
+    ExportDefault(Box<Node>),
     /// A `tag:` or `tag(props):` block — the thing that becomes JSX.
     Tree {
         head: Box<Node>,
@@ -158,11 +160,74 @@ pub enum Kind {
         iter: Box<Node>,
         cond: Option<Box<Node>>,
     },
+    /// `{k: v for x in iter if cond}` — no JS equivalent, compiles to a reducer.
+    DictComprehension {
+        key: Box<Node>,
+        value: Box<Node>,
+        target: String,
+        iter: Box<Node>,
+        cond: Option<Box<Node>>,
+    },
+    /// `{x for x in iter if cond}` — a Set in JS, which is what Python means.
+    SetComprehension {
+        expr: Box<Node>,
+        target: String,
+        iter: Box<Node>,
+        cond: Option<Box<Node>>,
+    },
+    /// `(x := value)` — assignment as an expression.
+    Walrus {
+        name: String,
+        value: Box<Node>,
+    },
+    /// `yield expr` — a generator function body.
+    Yield(Option<Box<Node>>),
+    /// `` `text ${expr}` `` — a JavaScript template literal, passed through.
+    TemplateLiteral(String),
     /// `xs[start:stop]` — Python slicing, no JS equivalent.
     Slice {
         obj: Box<Node>,
         start: Option<Box<Node>>,
         stop: Option<Box<Node>>,
+        /// `xs[::step]` — Python allows a step; JS `slice` does not.
+        step: Option<Box<Node>>,
+    },
+    /// `a < b < c` — Python chains, JavaScript does not. Emitting it as
+    /// `(a < b) < c` compares a boolean with a number, which is valid JS with
+    /// the wrong answer, so this gets its own node and an `&&` chain.
+    ChainedCompare {
+        ops: Vec<String>,
+        operands: Vec<Node>,
+    },
+    /// `a is not b` / `a is b` — identity, spelled out so `is not` cannot be
+    /// parsed as `is` applied to a unary `not`.
+    /// (Kept as Bin with op "is"/"is not" so the emitter stays simple.)
+    /// `x, y = y, x` — multiple targets, multiple values, evaluated left to
+    /// right with parallel assignment semantics.
+    TupleAssign {
+        targets: Vec<Node>,
+        value: Box<Node>,
+    },
+    /// `a = b = c = 0` — chained assignment.
+    ChainedAssign {
+        targets: Vec<Node>,
+        value: Box<Node>,
+    },
+    /// `assert cond, "message"` — throws in JS rather than silently vanishing.
+    Assert {
+        test: Box<Node>,
+        message: Option<Box<Node>>,
+    },
+    /// `raise ValueError("bad")` — `throw`.
+    Raise(Option<Box<Node>>),
+    /// `import("./Page.hyx")` — dynamic import expression.
+    DynamicImport(Box<Node>),
+    /// `"a" in xs` / `x in d` — Python membership. JS `in` checks keys of an
+    /// object, so strings and arrays need different code.
+    Contains {
+        item: Box<Node>,
+        container: Box<Node>,
+        negated: bool,
     },
     /// `await expr`
     Await(Box<Node>),
