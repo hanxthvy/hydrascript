@@ -1295,6 +1295,13 @@ impl Emitter {
 
     fn child(&self, s: &Node, ind: usize) -> Result<String, CompileError> {
         match &s.kind {
+            // `slot` is where the parent's children are rendered — React's
+            // `props.children`. Bare in the JSX it has to become an expression
+            // container, or the identifier is undefined at render time.
+            Kind::Name(id) if id == "slot" => Ok("{children}".to_string()),
+            Kind::ExprStmt(e) if matches!(&e.kind, Kind::Name(n) if n == "slot") => {
+                Ok("{children}".to_string())
+            }
             Kind::Tree { .. } => self.tree(s, ind),
             Kind::ExprStmt(e) => match &e.kind {
                 Kind::Str { value, is_f: false } => Ok(value[1..value.len() - 1].to_string()),
@@ -1828,8 +1835,25 @@ impl Emitter {
         body: &[Node],
     ) -> Result<(), CompileError> {
         let ps = self.format_params(params)?;
+        // `slot` inside the body renders `props.children`, so a component that
+        // uses it must accept the prop. Without this the emitted code
+        // referenced a bare `slot` identifier that did not exist — the build
+        // succeeded and the page died at render time with "slot is not defined".
+        let uses_slot = body.iter().any(node_uses_slot);
         let arg = if params.is_empty() {
-            String::new()
+            if uses_slot {
+                "{ children }: { children?: React.ReactNode }".to_string()
+            } else {
+                String::new()
+            }
+        } else if uses_slot {
+            // `children` must appear in the DESTRUCTURING PATTERN, not only in
+            // the type annotation: a type alone does not bind a variable, and
+            // the body reads `children` directly.
+            format!(
+                "{{ {}, children }}: {}Props & {{ children?: React.ReactNode }}",
+                ps, name
+            )
         } else {
             format!("{{ {} }}: {}Props", ps, name)
         };
@@ -2614,3 +2638,49 @@ mod tests {
     }
 }
 
+/// True when a component body renders `slot` anywhere — including inside the
+/// JSX tree it returns, which is where the marker actually appears in source.
+fn node_uses_slot(n: &Node) -> bool {
+    match &n.kind {
+        Kind::Name(id) => id == "slot",
+        Kind::Tree { head, body } => node_uses_slot(head) || body.iter().any(node_uses_slot),
+        Kind::If { body, orelse, .. } => {
+            body.iter().any(node_uses_slot)
+                || orelse.as_ref().is_some_and(|b| b.iter().any(node_uses_slot))
+        }
+        Kind::For { body, iter, .. } => node_uses_slot(iter) || body.iter().any(node_uses_slot),
+        Kind::While { body, .. } => body.iter().any(node_uses_slot),
+        Kind::Call { func, args, kwargs } => {
+            node_uses_slot(func)
+                || args.iter().any(node_uses_slot)
+                || kwargs.iter().any(|(_, v)| node_uses_slot(v))
+        }
+        Kind::Assign { value, .. } | Kind::AugAssign { value, .. } => node_uses_slot(value),
+        Kind::Bin { left, right, .. } => node_uses_slot(left) || node_uses_slot(right),
+        Kind::Ternary { test, body, orelse } => {
+            node_uses_slot(test) || node_uses_slot(body) || node_uses_slot(orelse)
+        }
+        Kind::Return(Some(v)) | Kind::Unary { operand: v, .. } => node_uses_slot(v),
+        // The marker arrives wrapped in the expression statement that puts it
+        // in the JSX: `div(): slot` parses as Tree{ div, [ExprStmt(Name slot)] }.
+        Kind::ExprStmt(inner) => node_uses_slot(inner),
+        Kind::Await(v) | Kind::Spread(v) | Kind::OptAttr { obj: v, .. } => node_uses_slot(v),
+        Kind::Index { obj, index } | Kind::OptIndex { obj, index } => {
+            node_uses_slot(obj) || node_uses_slot(index)
+        }
+        Kind::Slice { obj, start, stop, .. } => {
+            node_uses_slot(obj)
+                || start.as_ref().is_some_and(|v| node_uses_slot(v))
+                || stop.as_ref().is_some_and(|v| node_uses_slot(v))
+        }
+        Kind::List(items) | Kind::Tuple(items) => items.iter().any(node_uses_slot),
+        Kind::Dict(pairs) => pairs.iter().any(|(k, v)| {
+            k.as_ref().is_some_and(node_uses_slot) || node_uses_slot(v)
+        }),
+        Kind::ChainedCompare { operands, .. } => operands.iter().any(node_uses_slot),
+        Kind::Contains { item, container, .. } => {
+            node_uses_slot(item) || node_uses_slot(container)
+        }
+        _ => false,
+    }
+}

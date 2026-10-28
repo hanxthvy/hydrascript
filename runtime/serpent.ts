@@ -372,13 +372,36 @@ export const list_extend = <T,>(xs: T[], ys: Iterable<T>): T[] => {
 }
 
 /** `xs.insert(i, v)` — truthy return so it can be chained. */
-export const list_insert = <T,>(xs: T[], i: number, v: T): boolean => {
+export const list_insert = <T,>(xs: any, i: number, v: T): boolean => {
+  // Non-array receivers with their own `insert` are left to themselves.
+  if (!Array.isArray(xs)) {
+    if (xs && typeof xs.insert === 'function') {
+      xs.insert(i, v)
+      return true
+    }
+    throw new Error('list.insert(i, x): x is not a list')
+  }
   xs.splice(i, 0, v)
   return true
 }
 
-/** `xs.remove(v)` — by VALUE, and throws when absent (Python raises too). */
-export const list_remove = <T,>(xs: T[], v: T): boolean => {
+/**
+ * Python's `list.remove(v)` removes by VALUE and raises when absent.
+ *
+ * Anything that is not an Array but does have its own `remove` — a
+ * `DOMTokenList` from `classList`, a `Set`, another host object — keeps its own
+ * semantics instead. Rewriting `element.classList.remove("dark")` into this
+ * helper with no guard made it call `.indexOf` on a DOMTokenList, which threw
+ * "n.indexOf is not a function" during a hydration effect and blanked the page.
+ */
+export const list_remove = <T,>(xs: any, v: T): boolean => {
+  if (!Array.isArray(xs)) {
+    if (xs && typeof xs.remove === 'function') {
+      xs.remove(v)
+      return true
+    }
+    throw new Error('list.remove(x): x is not a list')
+  }
   const i = xs.indexOf(v)
   if (i < 0) throw new Error('list.remove(x): x not in list')
   xs.splice(i, 1)
@@ -386,7 +409,10 @@ export const list_remove = <T,>(xs: T[], v: T): boolean => {
 }
 
 /** `xs.index(v)` — throws when absent, like Python. */
-export const list_index = <T,>(xs: T[], v: T): number => {
+export const list_index = <T,>(xs: any, v: T): number => {
+  if (!Array.isArray(xs) && typeof xs?.indexOf !== 'function') {
+    throw new Error('list.index(x): x is not a list')
+  }
   const i = xs.indexOf(v)
   if (i < 0) throw new Error('list.index(x): x not in list')
   return i
@@ -395,11 +421,49 @@ export const list_index = <T,>(xs: T[], v: T): number => {
 /** `", ".join(xs)` -> `join(", ", xs)`: Python puts the separator on the string. */
 export const join = (sep: string, xs: Iterable<any>): string => Array.from(xs).join(sep)
 
-/** Set helpers, named so `.add()` on an array cannot silently do nothing. */
-export const set_add = (s: Set<any>, v: any): Set<any> => s.add(v)
-export const set_discard = (s: Set<any>, v: any): Set<any> => {
-  s.delete(v)
-  return s
+/**
+ * Set helpers, named so `.add()` on an array cannot silently do nothing.
+ *
+ * A non-Set receiver that owns an `add`/`remove` — a `DOMTokenList` from
+ * `classList`, a library's collection type — is delegated to instead of being
+ * coerced. `classList.add(...)` reaching this helper used to work by luck;
+ * `classList.remove(...)` did not, and took the whole page down with it.
+ */
+export const set_add = (s: any, v: any): any => {
+  if (s instanceof Set || s instanceof WeakSet) {
+    s.add(v)
+    return s
+  }
+  if (s && typeof s.add === 'function') {
+    s.add(v)
+    return s
+  }
+  if (Array.isArray(s)) {
+    if (!s.includes(v)) s.push(v)
+    return s
+  }
+  throw new Error('set.add(x): x is not a set or list')
+}
+
+export const set_discard = (s: any, v: any): any => {
+  if (s instanceof Set || s instanceof WeakSet) {
+    s.delete(v)
+    return s
+  }
+  if (s && typeof s.remove === 'function') {
+    s.remove(v)
+    return s
+  }
+  if (s && typeof s.delete === 'function') {
+    s.delete(v)
+    return s
+  }
+  if (Array.isArray(s)) {
+    const i = s.indexOf(v)
+    if (i >= 0) s.splice(i, 1)
+    return s
+  }
+  throw new Error('set.discard(x): x is not a set or list')
 }
 
 /** `max(xs, key=f)` / `min(xs, key=f)` */

@@ -1,0 +1,7 @@
+# [xihanzu-NR]
+from "react-dom/client" import createRoot
+from "./App.hyx" import App
+import "./index.css"
+
+root_element = document.getElementById("root")
+createRoot(root_element).render(App())

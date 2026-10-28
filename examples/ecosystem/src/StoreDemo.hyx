@@ -1,0 +1,87 @@
+# [xihanzu-NR]
+# zustand — create() store + selector subscriptions
+
+from "zustand" import create
+
+from "serpent" import cx
+
+from "./Section.hyx" import Section
+
+use_counter = create(lambda set_: {
+    "count": 0,
+    "step": 2,
+    "inc": lambda: set_(lambda s: {"count": s["count"] + s["step"]}),
+    "dec": lambda: set_(lambda s: {"count": s["count"] - s["step"]}),
+    "reset": lambda: set_({"count": 0}),
+    "set_step": lambda v: set_({"step": v}),
+})
+
+use_names = create(lambda set_: {
+    "names": ["ada", "grace"],
+    "add": lambda n: set_(lambda s: {"names": s["names"] + [n]}),
+})
+
+
+component Readout():
+    # Selector form: the component re-renders only when `count` changes.
+    count = use_counter(lambda s: s["count"])
+    step = use_counter(lambda s: s["step"])
+
+    div(cls="rounded-lg bg-slate-950/60 px-3 py-2"):
+        span(cls="text-xs text-slate-500"): "selector count → "
+        span(cls="font-mono text-2xl font-semibold text-white"): str(count)
+        span(cls="ml-3 text-xs text-slate-500"): f"step {step}"
+
+
+component StoreDemo():
+    count = use_counter(lambda s: s["count"])
+    step = use_counter(lambda s: s["step"])
+    inc = use_counter(lambda s: s["inc"])
+    dec = use_counter(lambda s: s["dec"])
+    reset = use_counter(lambda s: s["reset"])
+    set_step = use_counter(lambda s: s["set_step"])
+
+    names = use_names(lambda s: s["names"])
+    add_name = use_names(lambda s: s["add"])
+
+    Section(title="Global store", lib="zustand", subtitle="create() store read through selectors"):
+        div(cls="flex flex-wrap items-center gap-2"):
+            button(
+                cls="rounded-lg bg-slate-800 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-700",
+                on_click=dec,
+            ):
+                "-"
+            Readout()
+            button(
+                cls="rounded-lg bg-violet-600 px-3 py-1.5 text-sm text-white hover:bg-violet-500",
+                on_click=inc,
+            ):
+                "+"
+            button(
+                cls="rounded-lg px-3 py-1.5 text-xs text-slate-400 hover:bg-slate-800",
+                on_click=reset,
+            ):
+                "Reset"
+            button(
+                cls="rounded-lg px-3 py-1.5 text-xs text-slate-400 hover:bg-slate-800",
+                on_click=lambda: set_step(5),
+            ):
+                "step = 5"
+
+        div(cls="mt-4 flex items-center gap-2"):
+            for n in names:
+                span(
+                    key=n,
+                    cls=cx(
+                        "rounded-full px-2.5 py-0.5 text-xs font-medium",
+                        {"bg-violet-500/20 text-violet-200": n == "ada"},
+                        {"bg-slate-800 text-slate-300": n != "ada"},
+                    ),
+                ):
+                    n
+            p(cls="ml-auto text-xs text-slate-500"): f"count = {count}"
+            button(
+                cls="rounded-lg bg-slate-800 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-700",
+                on_click=lambda: add_name(f"user{len(names) + 1}"),
+            ):
+                "Add name"

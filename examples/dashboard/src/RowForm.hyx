@@ -1,0 +1,250 @@
+# [xihanzu-NR]
+# Modal dialog + client-side validation.
+#
+# The "New customer" modal: local field state, per-field error messages that
+# only appear once a field is touched (or after Create is pressed), and a
+# submit handler that refuses to call back while any error stands.
+
+from "serpent" import state, computed, cx
+
+# NOTE: the runtime's own `dict_get` cannot be imported. runtime/serpent.ts
+# declares it twice (lines ~216 and ~333), so esbuild fails the whole bundle
+# with "Multiple exports with the same name 'dict_get'". This local helper is
+# the workaround; see the ecosystem report.
+def safe_get(o: dict, key: str, fallback):
+    if o == None:
+        return fallback
+    if key in o:
+        return o[key]
+    return fallback
+
+# Validator regex source. Written as a plain string literal with .test()
+# because the compiler does not support the `r"..."` raw-string prefix
+# (it emits `const EMAIL_RE = r;` — see the ecosystem report).
+EMAIL_RE = "^[^@\\s]+@[^@\\s]+\\.[a-zA-Z]{2,}$"
+NAME_MIN = 3
+NAME_MAX = 40
+PLAN_OPTIONS = ["Starter", "Pro", "Enterprise"]
+
+
+def is_digits(s: str):
+    # True when every character is 0-9. Used instead of str.isdigit().
+    # Written with range comparisons rather than `ch in "0123456789"`:
+    # the compiler lowers `x in "literal"` to JS `in`, which is an index
+    # check on a string and answers something else entirely.
+    if s == "":
+        return False
+    for ch in s:
+        if ch < "0" or ch > "9":
+            return False
+    return True
+
+
+def validate(payload: dict):
+    # Return a dict of field -> message. An empty dict means valid.
+    errors = {}
+    name = payload["name"].strip()
+    email = payload["email"].strip()
+    mrr_raw = payload["mrr"].strip()
+    seats_raw = payload["seats"].strip()
+
+    if name == "":
+        errors["name"] = "Company name is required."
+    elif len(name) < NAME_MIN:
+        errors["name"] = f"Use at least {NAME_MIN} characters."
+    elif len(name) > NAME_MAX:
+        errors["name"] = f"Keep it under {NAME_MAX} characters."
+
+    if email == "":
+        errors["email"] = "Billing email is required."
+    elif not EMAIL_RE.test(email):
+        errors["email"] = "That does not look like an email address."
+
+    if mrr_raw == "":
+        errors["mrr"] = "MRR is required."
+    elif not is_digits(mrr_raw):
+        errors["mrr"] = "MRR must be a whole number of dollars."
+    elif int(mrr_raw) <= 0:
+        errors["mrr"] = "MRR must be greater than zero."
+
+    if seats_raw == "":
+        errors["seats"] = "Seats is required."
+    elif not is_digits(seats_raw):
+        errors["seats"] = "Seats must be a whole number."
+    elif int(seats_raw) > 10000:
+        errors["seats"] = "That is more seats than we sell."
+
+    return errors
+
+
+def error_count_of(errors: dict):
+    return len(Object.keys(errors))
+
+
+# ------------------------------------------------------------------ fields
+
+component Field(label="", value="", error="", placeholder="", kind="text", hint="", on_change=None):
+    div(cls="space-y-1.5"):
+        label(cls="block text-xs font-medium uppercase tracking-wide text-slate-400"): label
+        input(
+            type_=kind,
+            value=value,
+            placeholder=placeholder,
+            on_change=on_change,
+            cls=cx(
+                "w-full rounded-lg border bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-600",
+                {
+                    "border-rose-500/60": error != "",
+                    "border-slate-700": error == "",
+                },
+            ),
+        )
+        if error != "":
+            p(cls="text-xs text-rose-400"): error
+        elif hint != "":
+            p(cls="text-xs text-slate-500"): hint
+
+
+# ------------------------------------------------------------------- modal
+
+component RowForm(on_submit=None, on_close=None):
+    name, set_name = state("")
+    email, set_email = state("")
+    mrr, set_mrr = state("")
+    seats, set_seats = state("")
+    plan, set_plan = state("Pro")
+    touched, set_touched = state({})
+    submitted, set_submitted = state(False)
+
+    payload = computed(
+        lambda: {"name": name, "email": email, "mrr": mrr, "seats": seats, "plan": plan},
+        [name, email, mrr, seats, plan],
+    )
+    errors = computed(lambda: validate(payload), [payload])
+    error_count = computed(lambda: error_count_of(errors), [errors])
+    can_submit = computed(lambda: error_count == 0, [error_count])
+    issue_word = computed(lambda: "issue" if error_count == 1 else "issues", [error_count])
+
+    def touch(key):
+        set_touched(lambda old: {**old, key: True})
+
+    def show(key):
+        # A field's message appears once touched, or after a submit attempt.
+        if submitted:
+            return safe_get(errors, key, "")
+        if safe_get(touched, key, False):
+            return safe_get(errors, key, "")
+        return ""
+
+    # One handler per field: mark the value AND mark the field touched.
+    def on_name(e):
+        set_name(e.target.value)
+        touch("name")
+
+    def on_email(e):
+        set_email(e.target.value)
+        touch("email")
+
+    def on_mrr(e):
+        set_mrr(e.target.value)
+        touch("mrr")
+
+    def on_seats(e):
+        set_seats(e.target.value)
+        touch("seats")
+
+    def submit():
+        set_submitted(True)
+        if error_count > 0:
+            return
+        on_submit({
+            "name": name.strip(),
+            "email": email.strip(),
+            "plan": plan,
+            "mrr": int(mrr),
+            "seats": int(seats),
+        })
+
+    div(cls="fixed inset-0 z-50 flex items-center justify-center p-4"):
+        # Backdrop: click outside the panel to dismiss.
+        div(cls="absolute inset-0 bg-slate-950/80 backdrop-blur-sm", on_click=on_close)
+
+        div(cls="relative z-10 w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-900 shadow-2xl"):
+            header(cls="flex items-center justify-between border-b border-slate-800 px-6 py-4"):
+                div():
+                    h2(cls="text-lg font-semibold text-white"): "New customer"
+                    p(cls="text-xs text-slate-500"):
+                        f"{error_count} validation {issue_word}"
+                button(
+                    cls="rounded-lg px-2 py-1 text-slate-500 hover:bg-slate-800 hover:text-slate-200",
+                    on_click=on_close,
+                ):
+                    "✕"
+
+            div(cls="space-y-4 px-6 py-5"):
+                Field(
+                    label="Company name",
+                    value=name,
+                    placeholder="Acme Corp",
+                    error=show("name"),
+                    hint=f"{NAME_MIN}-{NAME_MAX} characters",
+                    on_change=on_name,
+                )
+                Field(
+                    label="Billing email",
+                    value=email,
+                    placeholder="billing@acme.com",
+                    kind="email",
+                    error=show("email"),
+                    on_change=on_email,
+                )
+                div(cls="grid grid-cols-2 gap-4"):
+                    Field(
+                        label="MRR (USD)",
+                        value=mrr,
+                        placeholder="1500",
+                        error=show("mrr"),
+                        on_change=on_mrr,
+                    )
+                    Field(
+                        label="Seats",
+                        value=seats,
+                        placeholder="25",
+                        error=show("seats"),
+                        on_change=on_seats,
+                    )
+                div(cls="space-y-1.5"):
+                    label(cls="block text-xs font-medium uppercase tracking-wide text-slate-400"):
+                        "Plan"
+                    div(cls="flex gap-2"):
+                        for p in PLAN_OPTIONS:
+                            button(
+                                key=p,
+                                cls=cx(
+                                    "flex-1 rounded-lg border px-3 py-2 text-xs font-medium",
+                                    {
+                                        "border-violet-500 bg-violet-500/15 text-violet-200": plan == p,
+                                        "border-slate-700 bg-slate-900 text-slate-400": plan != p,
+                                    },
+                                ),
+                                on_click=lambda p=p: set_plan(p),
+                            ):
+                                p
+
+            footer(cls="flex items-center justify-end gap-3 border-t border-slate-800 px-6 py-4"):
+                button(
+                    cls="rounded-lg px-4 py-2 text-sm text-slate-400 hover:bg-slate-800 hover:text-slate-200",
+                    on_click=on_close,
+                ):
+                    "Cancel"
+                button(
+                    cls=cx(
+                        "rounded-lg px-4 py-2 text-sm font-medium",
+                        {
+                            "bg-violet-600 text-white hover:bg-violet-500": can_submit,
+                            "bg-slate-800 text-slate-500": not can_submit,
+                        },
+                    ),
+                    on_click=submit,
+                ):
+                    "Create customer"

@@ -34,8 +34,13 @@ fn usage() -> String {
          \x20 hydra stats [dir]           code statistics for a project\n\
          \x20 hydra doctor                check the local toolchain\n\
          \x20 hydra init [dir]            scaffold a new project\n\
+         \x20 hydra add <pkg> [--dev]     install dependencies\n\
+         \x20 hydra remove <pkg>          uninstall dependencies\n\
+         \x20 hydra list                  show declared vs installed dependencies\n\
+         \x20 hydra clean [--all]         remove build output (and node_modules)\n\
+         \x20 hydra analyze [dir]         bundle size report from the last build\n\
          \x20 hydra --version\n\
-         \x20 hydra dev|build|preview|run|watch|repl|check|init|fmt|stats|doctor  project commands\n"
+         \x20 hydra dev|build|preview|run|watch|repl|check|init|fmt|stats|doctor|add|remove|list|clean|analyze  project commands\n"
     )
 }
 
@@ -66,6 +71,11 @@ fn main() -> ExitCode {
             | "fmt"
             | "stats"
             | "doctor"
+            | "add"
+            | "remove"
+            | "list"
+            | "clean"
+            | "analyze"
     ) {
         return hydra::cli::run(&args);
     }

@@ -1,0 +1,245 @@
+# [xihanzu-NR]
+# Dashboard — form + validation + table + local state.
+#
+# Runtime helpers used (all from the "serpent" runtime):
+#   state, computed, effect, debounce, toggle, sum, len, cx
+#
+# NOTE: the brief asked for `form_state` and `validators` from "serpent".
+# Neither exists in runtime/serpent.ts, so the form below builds its own
+# field state and per-field validation with plain `state` + module-level defs.
+
+from "serpent" import state, computed, effect, debounce, toggle, sum, len
+from "serpent" import cx
+
+from "./RowForm.hyx" import RowForm
+
+# ---------------------------------------------------------------- seed data
+
+ROWS = [
+    {"id": 1, "name": "Acme Corp", "plan": "Enterprise", "mrr": 4200, "seats": 120, "active": True},
+    {"id": 2, "name": "Globex", "plan": "Pro", "mrr": 1450, "seats": 42, "active": True},
+    {"id": 3, "name": "Initech", "plan": "Pro", "mrr": 980, "seats": 25, "active": False},
+    {"id": 4, "name": "Umbrella Labs", "plan": "Enterprise", "mrr": 7600, "seats": 310, "active": True},
+    {"id": 5, "name": "Soylent", "plan": "Starter", "mrr": 190, "seats": 6, "active": True},
+    {"id": 6, "name": "Hooli", "plan": "Enterprise", "mrr": 12000, "seats": 540, "active": False},
+    {"id": 7, "name": "Pied Piper", "plan": "Starter", "mrr": 240, "seats": 9, "active": True},
+    {"id": 8, "name": "Vandelay", "plan": "Pro", "mrr": 1320, "seats": 38, "active": False},
+]
+
+PLANS = ["All", "Enterprise", "Pro", "Starter"]
+
+
+def money(n):
+    # Format an integer as $1,234 - no Intl, no deps.
+    s = str(n)
+    out = ""
+    while len(s) > 3:
+        out = "," + s[len(s) - 3:] + out
+        s = s[:len(s) - 3]
+    return "$" + s + out
+
+
+def matches(row: dict, needle: str, plan: str):
+    # Pure predicate: substring search + plan filter.
+    # Uses `.indexOf() != -1` rather than `needle in name`: the compiler lowers
+    # `x in "literal"` to JS `in`, which checks an index, not a substring.
+    if plan != "All" and row["plan"] != plan:
+        return False
+    if needle == "":
+        return True
+    return row["name"].lower().indexOf(needle) != -1
+
+
+def toggle_row_in(rows: list, rid: int):
+    # Immutable single-row toggle.
+    return [
+        {**r, "active": not r["active"]} if r["id"] == rid else r
+        for r in rows
+    ]
+
+
+def remove_row_in(rows: list, rid: int):
+    return [r for r in rows if r["id"] != rid]
+
+
+def next_id(rows: list):
+    return max([r["id"] for r in rows] + [0]) + 1
+
+
+# ------------------------------------------------------------------- table
+
+component PlanBadge(plan="Starter"):
+    badge = cx(
+        "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
+        {
+            "bg-violet-500/15 text-violet-300 ring-1 ring-violet-500/30": plan == "Enterprise",
+            "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30": plan == "Pro",
+            "bg-slate-500/15 text-slate-300 ring-1 ring-slate-500/30": plan == "Starter",
+        },
+    )
+    span(cls=badge): plan
+
+
+component StatusDot(active=False):
+    span(cls="inline-flex items-center gap-2"):
+        span(
+            cls=cx("size-2 rounded-full", {
+                "bg-emerald-400": active,
+                "bg-amber-400": not active,
+            })
+        )
+        span(cls="text-slate-300"): "Active" if active else "Paused"
+
+
+component Row(row=None, on_toggle=None, on_remove=None):
+    r = row or {}
+    tr(cls="border-b border-slate-800 hover:bg-slate-800/40"):
+        td(cls="px-4 py-3 font-medium text-slate-100"): r["name"]
+        td(cls="px-4 py-3"): PlanBadge(plan=r["plan"])
+        td(cls="px-4 py-3 text-right tabular-nums text-slate-200"): money(r["mrr"])
+        td(cls="px-4 py-3 text-right tabular-nums text-slate-400"): str(r["seats"])
+        td(cls="px-4 py-3"): StatusDot(active=r["active"])
+        td(cls="px-4 py-3 text-right"):
+            div(cls="flex justify-end gap-2"):
+                button(
+                    cls="rounded-md bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700",
+                    on_click=lambda: on_toggle(r["id"]),
+                ):
+                    "Pause" if r["active"] else "Resume"
+                button(
+                    cls="rounded-md bg-rose-500/10 px-2 py-1 text-xs text-rose-300 hover:bg-rose-500/20",
+                    on_click=lambda: on_remove(r["id"]),
+                ):
+                    "Delete"
+
+
+# --------------------------------------------------------------------- app
+
+component App():
+    rows, set_rows = state(ROWS)
+    query, set_query = state("")
+    plan, set_plan = state("All")
+    show_add, flip_add, _set_add = toggle(False)
+    last_action, set_last_action = state("Ready")
+
+    # Debounced search — applies 250ms after typing stops.
+    q = debounce(query, 250)
+
+    # Derived values. `computed` takes explicit deps; no implicit tracking.
+    needle = computed(lambda: q.strip().lower(), [q])
+
+    filtered = computed(
+        lambda: [r for r in rows if matches(r, needle, plan)],
+        [rows, needle, plan],
+    )
+
+    total_mrr = computed(lambda: sum([r["mrr"] for r in filtered]), [filtered])
+    active_count = computed(lambda: len([r for r in filtered if r["active"]]), [filtered])
+    avg_seats = computed(
+        lambda: 0 if len(filtered) == 0 else int(sum([r["seats"] for r in filtered]) / len(filtered)),
+        [filtered],
+    )
+    empty = computed(lambda: len(filtered) == 0, [filtered])
+
+    effect(lambda: console.log(f"[dashboard] {len(filtered)} rows shown"), [filtered])
+
+    def add_row(payload):
+        rec = {
+            "id": next_id(rows),
+            "name": payload["name"],
+            "plan": payload["plan"],
+            "mrr": payload["mrr"],
+            "seats": payload["seats"],
+            "active": True,
+        }
+        set_rows(lambda old: old + [rec])
+        set_last_action(f"Added {rec['name']}")
+        flip_add()
+
+    def toggle_row(rid):
+        set_rows(lambda old: toggle_row_in(old, rid))
+        set_last_action(f"Toggled row #{rid}")
+
+    def remove_row(rid):
+        set_rows(lambda old: remove_row_in(old, rid))
+        set_last_action(f"Removed row #{rid}")
+
+    div(cls="min-h-screen bg-slate-950 p-6 text-slate-200"):
+        div(cls="mx-auto max-w-6xl space-y-6"):
+
+            # ---------------------------------------------------- header
+            header(cls="flex flex-wrap items-center justify-between gap-4"):
+                div():
+                    h1(cls="text-2xl font-semibold text-white"): "Customer dashboard"
+                    p(cls="text-sm text-slate-400"): f"Last action: {last_action}"
+                div(cls="flex items-center gap-3"):
+                    input(
+                        cls="w-56 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none placeholder:text-slate-500 focus:border-violet-500",
+                        placeholder="Search customers...",
+                        value=query,
+                        on_change=lambda e: set_query(e.target.value),
+                    )
+                    button(
+                        cls="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-500",
+                        on_click=flip_add,
+                    ):
+                        "New customer"
+
+            # ------------------------------------------------------- kpis
+            div(cls="grid grid-cols-1 gap-4 sm:grid-cols-3"):
+                div(cls="rounded-xl border border-slate-800 bg-slate-900/60 p-4"):
+                    p(cls="text-xs uppercase tracking-wide text-slate-500"): "Filtered MRR"
+                    p(cls="mt-1 text-2xl font-semibold text-white tabular-nums"): money(total_mrr)
+                div(cls="rounded-xl border border-slate-800 bg-slate-900/60 p-4"):
+                    p(cls="text-xs uppercase tracking-wide text-slate-500"): "Active accounts"
+                    p(cls="mt-1 text-2xl font-semibold text-white tabular-nums"): str(active_count)
+                div(cls="rounded-xl border border-slate-800 bg-slate-900/60 p-4"):
+                    p(cls="text-xs uppercase tracking-wide text-slate-500"): "Avg seats"
+                    p(cls="mt-1 text-2xl font-semibold text-white tabular-nums"): str(avg_seats)
+
+            # ---------------------------------------------------- filters
+            div(cls="flex flex-wrap items-center gap-2"):
+                for p in PLANS:
+                    button(
+                        key=p,
+                        cls=cx(
+                            "rounded-full px-3 py-1.5 text-xs font-medium transition",
+                            {
+                                "bg-violet-600 text-white": plan == p,
+                                "bg-slate-800 text-slate-400 hover:bg-slate-700": plan != p,
+                            },
+                        ),
+                        on_click=lambda p=p: set_plan(p),
+                    ):
+                        p
+                span(cls="ml-auto text-xs text-slate-500"):
+                    f"{len(filtered)} of {len(rows)} rows"
+
+            # ------------------------------------------------------ table
+            div(cls="overflow-hidden rounded-xl border border-slate-800"):
+                table(cls="w-full text-left text-sm"):
+                    thead(cls="bg-slate-900 text-xs uppercase tracking-wide text-slate-500"):
+                        tr():
+                            th(cls="px-4 py-3 font-medium"): "Customer"
+                            th(cls="px-4 py-3 font-medium"): "Plan"
+                            th(cls="px-4 py-3 text-right font-medium"): "MRR"
+                            th(cls="px-4 py-3 text-right font-medium"): "Seats"
+                            th(cls="px-4 py-3 font-medium"): "Status"
+                            th(cls="px-4 py-3 text-right font-medium"): "Actions"
+                    tbody(cls="divide-y divide-slate-800 bg-slate-950"):
+                        if empty:
+                            tr():
+                                td(cls="px-4 py-10 text-center text-slate-500", col_span=6):
+                                    f"No customers match “{q}”"
+                        else:
+                            # The `for` is wrapped in a plain div rather than sitting
+                            # directly in the `else`: the emitter renders a for-loop
+                            # used as a conditional branch as `({expr.map(...)})`,
+                            # which esbuild rejects with `Expected "}" but found "."`.
+                            div():
+                                for r in filtered:
+                                    Row(key=r["id"], row=r, on_toggle=toggle_row, on_remove=remove_row)
+
+    # ---------------------------------------------------------- modal
+    if show_add:
+        RowForm(on_submit=add_row, on_close=flip_add)

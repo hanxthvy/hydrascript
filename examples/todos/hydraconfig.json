@@ -1,0 +1,24 @@
+{
+  "$schema": "https://hydrascript.dev/schema.json",
+  "name": "todos",
+  "version": "0.1.0",
+  "root": "./src",
+  "outputDir": "./dist",
+  "entries": {
+    "app": "./src/main.hyx"
+  },
+  "server": {
+    "port": 5175,
+    "host": "0.0.0.0"
+  },
+  "compiler": {
+    "target": "react-18",
+    "strict": true
+  },
+  "rendering": {
+    "ssg": false
+  },
+  "styling": {
+    "tailwind": true
+  }
+}

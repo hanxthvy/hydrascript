@@ -1,0 +1,14 @@
+# [xihanzu-NR]
+# Shared layout helper. Also exercises cross-file `component` imports
+# (which work; `export def` does not — see the ecosystem report).
+
+component Section(title="", lib="", subtitle=""):
+    section(cls="rounded-2xl border border-slate-800 bg-slate-900/50 p-5"):
+        header(cls="mb-4"):
+            div(cls="flex flex-wrap items-center gap-2"):
+                h2(cls="text-sm font-semibold text-white"): title
+                if lib != "":
+                    code(cls="rounded bg-slate-800 px-2 py-0.5 text-[11px] font-mono text-violet-300"):
+                        lib
+            if subtitle != "":
+                p(cls="mt-1 text-xs text-slate-500"): subtitle

@@ -1,0 +1,61 @@
+# [xihanzu-NR]
+# clsx + tailwind-merge + lucide-react
+#
+# All three imports are used for real: `clsx` composes the conditional
+# classes, `twMerge` resolves the conflicts `clsx` leaves behind, and the
+# lucide icons are rendered as components inside the buttons.
+
+from "clsx" import clsx
+from "tailwind-merge" import twMerge
+from "lucide-react" import Plus, Check, Trash2, Search, ShieldCheck, Sparkles
+
+from "serpent" import state, cx
+
+from "./Section.hyx" import Section
+
+
+def button_class(variant: str, disabled: bool):
+    # clsx() builds the list, twMerge() de-duplicates it. Both are visible
+    # here on purpose: this is the pair every shadcn/ui component is built on.
+    composed = clsx(
+        "inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium px-4",
+        {"bg-violet-600 text-white hover:bg-violet-500": variant == "primary"},
+        {"bg-slate-800 text-slate-200 hover:bg-slate-700": variant == "secondary"},
+        {"bg-rose-500/15 text-rose-300 hover:bg-rose-500/25": variant == "danger"},
+        {"opacity-50": disabled},
+    )
+    return twMerge(composed)
+
+
+component Button(label="", variant="primary", disabled=False, icon="sparkles", on_click=None):
+    span(cls=button_class(variant, disabled), on_click=on_click):
+        if icon == "plus":
+            Plus(size=16)
+        elif icon == "check":
+            Check(size=16)
+        elif icon == "trash":
+            Trash2(size=16)
+        elif icon == "search":
+            Search(size=16)
+        elif icon == "shield":
+            ShieldCheck(size=16)
+        else:
+            Sparkles(size=16)
+        span(): label
+
+
+component ButtonDemo():
+    count, set_count = state(0)
+
+    def bump():
+        set_count(count + 1)
+
+    Section(title="Buttons", lib="clsx + tailwind-merge + lucide-react", subtitle="twMerge(clsx(...)) plus rendered icon components"):
+        div(cls="flex flex-wrap items-center gap-3"):
+            Button(label="Create", variant="primary", icon="plus", on_click=bump)
+            Button(label="Saved", variant="secondary", icon="check")
+            Button(label="Search", variant="secondary", icon="search")
+            Button(label="Verified", variant="secondary", icon="shield")
+            Button(label="Delete", variant="danger", icon="trash")
+            Button(label="Disabled", variant="primary", disabled=True)
+        p(cls="mt-3 text-xs text-slate-500"): f"Click count: {count}"

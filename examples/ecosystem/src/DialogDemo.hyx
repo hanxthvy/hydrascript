@@ -1,0 +1,79 @@
+# [xihanzu-NR]
+# @radix-ui/react-dialog — the unstyled primitive that shadcn/ui wraps.
+#
+# Radix's canonical API is DOT-NOTATION JSX:
+#     <Dialog.Root><Dialog.Trigger/><Dialog.Portal>...
+# HydraScript has no syntax for `<Select.Root>`, and importing the parts under
+# aliases loses the relationship, so this file imports each part by NAME and
+# renders it directly. That works for a simple dialog but is NOT equivalent to
+# the documented Radix API: consumers that expect `<Dialog.Root>` composition
+# (shadcn/ui's generated source, most copy-paste snippets) cannot be pasted in.
+
+from "@radix-ui/react-dialog" import Root, Trigger, Portal, Overlay, Content, Title, Description, Close
+
+from "sonner" import Toaster, toast
+
+from "serpent" import state, cx
+
+from "./Section.hyx" import Section
+
+
+component DialogDemo():
+    open_, set_open = state(False)
+    plain = state(0)
+    pending = state(0)
+
+    def confirm():
+        set_open(False)
+        toast.success("Workspace created", {"description": "Radix Close + sonner toast in one handler"})
+
+    def fire_plain():
+        toast("Heads up", {"description": "A plain sonner toast from HydraScript"})
+
+    def fire_error():
+        toast.error("Upload failed", {"description": "Retry from the queue"})
+
+    def fire_loading():
+        toast.loading("Syncing...", {"description": "This one never resolves"})
+
+    Section(title="Dialog + toasts", lib="@radix-ui/react-dialog + sonner", subtitle="Unstyled primitive parts plus a mounted Toaster"):
+        div(cls="flex flex-wrap items-center gap-2"):
+            Root(open=open_, onOpenChange=set_open):
+                Trigger(cls="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-500"):
+                    "Open dialog"
+                Portal():
+                    Overlay(cls="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm")
+                    Content(cls="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl"):
+                        Title(cls="text-base font-semibold text-white"): "Create workspace"
+                        Description(cls="mt-1 text-sm text-slate-400"):
+                            "Rendered through Radix Portal + Overlay + Content."
+                        div(cls="mt-5 flex justify-end gap-2"):
+                            Close(cls="rounded-lg px-4 py-2 text-sm text-slate-400 hover:bg-slate-800"):
+                                "Cancel"
+                            button(
+                                cls="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-500",
+                                on_click=confirm,
+                            ):
+                                "Create"
+
+            button(
+                cls="rounded-lg bg-slate-800 px-4 py-2 text-sm text-slate-200 hover:bg-slate-700",
+                on_click=fire_plain,
+            ):
+                "toast()"
+            button(
+                cls="rounded-lg bg-rose-500/15 px-4 py-2 text-sm text-rose-300 hover:bg-rose-500/25",
+                on_click=fire_error,
+            ):
+                "toast.error()"
+            button(
+                cls="rounded-lg bg-amber-500/15 px-4 py-2 text-sm text-amber-300 hover:bg-amber-500/25",
+                on_click=fire_loading,
+            ):
+                "toast.loading()"
+
+        p(cls="mt-3 text-xs text-slate-500"):
+            "Sonner's <Toaster /> is mounted once in App.hyx. Toasts stack bottom-right."
+
+    # A second Toaster, scoped to this panel, proves the component renders.
+    Toaster(position="top-center", richColors=True)

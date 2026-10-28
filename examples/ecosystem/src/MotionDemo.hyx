@@ -1,0 +1,87 @@
+# [xihanzu-NR]
+# motion (the successor of framer-motion) — motion.* elements + AnimatePresence
+
+# `motion` v12+ moved its React API to the `motion/react` subpath; the
+# bare `motion` entry point is the vanilla-JS API and does not export these.
+from "motion/react" import motion, AnimatePresence
+
+from "serpent" import state, toggle, cx
+
+from "./Section.hyx" import Section
+
+SPRING = {"type": "spring", "stiffness": 320, "damping": 24}
+
+
+component MotionDemo():
+    show, flip, _set_show = toggle(True)
+    items, set_items = state(["alpha", "beta", "gamma"])
+
+    def add():
+        set_items(lambda old: old + [f"item-{len(old) + 1}"])
+
+    def drop(tag):
+        set_items(lambda old: [i for i in old if i != tag])
+
+    Section(title="Motion", lib="motion", subtitle="motion.div / motion.li, whileHover, whileTap, layout, AnimatePresence"):
+        div(cls="flex flex-wrap items-center gap-2"):
+            button(
+                cls="rounded-lg bg-violet-600 px-3 py-1.5 text-sm text-white hover:bg-violet-500",
+                on_click=flip,
+            ):
+                "Toggle panel"
+            button(
+                cls="rounded-lg bg-slate-800 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-700",
+                on_click=add,
+            ):
+                "Add item"
+            span(cls="text-xs text-slate-500"): f"{len(items)} items"
+
+        # motion.div with a plain object for animate/transition.
+        motion.div(
+            cls="mt-4 rounded-xl border border-slate-800 bg-slate-950/60 p-4",
+            initial={"opacity": 0, "y": -8},
+            animate={"opacity": 1, "y": 0},
+            transition=SPRING,
+        ):
+            p(cls="text-xs text-slate-400"):
+                "This panel fades and slides in via motion.div."
+
+        # whileHover / whileTap are camelCase, so they pass through untouched.
+        motion.button(
+            cls="mt-3 rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white",
+            whileHover={"scale": 1.05},
+            whileTap={"scale": 0.95},
+            on_click=add,
+        ):
+            "Motion button (hover / tap)"
+
+        # motion.li inside AnimatePresence, with layout + exit.
+        ul(cls="mt-4 space-y-1"):
+            AnimatePresence():
+                for tag in items:
+                    motion.li(
+                        key=tag,
+                        cls="flex items-center justify-between rounded-lg bg-slate-950/60 px-3 py-2 text-xs text-slate-300",
+                        layout=True,
+                        initial={"opacity": 0, "x": -12},
+                        animate={"opacity": 1, "x": 0},
+                        exit={"opacity": 0, "x": 12},
+                        transition={"duration": 0.18},
+                    ):
+                        span(): tag
+                        span(
+                            cls="cursor-pointer text-slate-600 hover:text-rose-300",
+                            on_click=lambda tag=tag: drop(tag),
+                        ):
+                            "remove"
+
+        # AnimatePresence around a conditionally rendered node.
+        AnimatePresence():
+            if show:
+                motion.div(
+                    cls="mt-4 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200",
+                    initial={"height": 0, "opacity": 0},
+                    animate={"height": "auto", "opacity": 1},
+                    exit={"height": 0, "opacity": 0},
+                ):
+                    "Presence panel is mounted."

@@ -29,12 +29,17 @@ OPTIONS:
   -h, --help show this message
 
 CREATES:
-  hydraconfig.json   project config (name, port 5173, entries)
-  package.json       scripts: dev / build / preview
-  index.html         SPA mount point (#root)
-  src/main.hyx       entry; mounts the app
-  src/App.hyx        heading + counter button
-  README.md          how to run
+  hydraconfig.json        project config (name, outputDir, port 5173, ssg)
+  package.json            react + react-dom, toolchain as devDependencies
+  tailwind.config.js      mirrors the tailwind key in hydraconfig.json
+  index.html              SPA mount point (#root)
+  README.md               layout and commands
+  src/main.hyx            entry; mounts the app
+  src/App.hyx             state, page switch, component wiring
+  src/index.css           the three Tailwind directives
+  src/components/         Header.hyx, Card.hyx, Button.hyx
+  src/lib/stats.hys       pure helpers, imported by App.hyx
+  src/pages/              Home.hyx, About.hyx
 ";
 
 const DOCTOR_USAGE: &str = "\
@@ -280,6 +285,7 @@ const HYDRACONFIG_TEMPLATE: &str = r#"{
   "version": "0.1.0",
   "root": "./src",
   "outputDir": "./dist",
+  "base": "/",
   "entries": {
     "app": "./src/main.hyx"
   },
@@ -288,8 +294,11 @@ const HYDRACONFIG_TEMPLATE: &str = r#"{
     "host": "0.0.0.0"
   },
   "compiler": {
-    "target": "react-18",
+    "target": "react-19",
     "strict": true
+  },
+  "rendering": {
+    "ssg": true
   },
   "styling": {
     "tailwind": true
@@ -297,7 +306,14 @@ const HYDRACONFIG_TEMPLATE: &str = r#"{
 }
 "#;
 
-const PACKAGE_JSON_TEMPLATE: &str = r#"{
+/// Runtime dependencies are React and nothing else: the compiler and its
+/// bundler are a devDependency, so a production install carries no toolchain.
+/// The bundler deps are pinned to the versions the runner's APIs expect —
+/// tailwind 3, because `postcss([tailwindcss(cfg)])` is the v3 plugin shape.
+///
+/// `pub(crate)` so the tools tests can assert this stays parseable and that a
+/// round-trip through their JSON writer leaves it byte-identical.
+pub(crate) const PACKAGE_JSON_TEMPLATE: &str = r#"{
   "name": "__NAME__",
   "private": true,
   "version": "0.1.0",
@@ -305,25 +321,49 @@ const PACKAGE_JSON_TEMPLATE: &str = r#"{
   "scripts": {
     "dev": "hydra dev",
     "build": "hydra build",
-    "preview": "hydra preview"
+    "preview": "hydra preview",
+    "check": "hydra check",
+    "clean": "hydra clean"
   },
   "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "hydrascript": "^0.3.0"
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
   },
   "devDependencies": {
-    "@types/react": "^18.3.1",
-    "@types/react-dom": "^18.3.1"
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "autoprefixer": "^10.4.20",
+    "esbuild": "^0.25.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.16"
   }
 }
 "#;
 
-const INDEX_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
+/// The framework owns the Tailwind config for every project it builds: the
+/// runner merges `content` from the project layout and reads theme and plugins
+/// from `hydraconfig.json`'s `tailwind` key, so this file is for editors and
+/// for anyone running the Tailwind CLI by hand.
+const TAILWIND_CONFIG_TEMPLATE: &str = r#"// [xihanzu-NR]
+/**
+ * Tailwind is configured from hydraconfig.json's "tailwind" key at build time.
+ * This file mirrors that config so editor tooling and a bare `npx tailwindcss`
+ * produce the same classes; keep the two in step when you change the theme.
+ */
+export default {
+  content: ['./index.html', './src/**/*.{hyx,hys,hsx,hs,html}'],
+  theme: { extend: {} },
+  plugins: [],
+};
+"#;
+
+const INDEX_HTML_TEMPLATE: &str = r#"<!-- [xihanzu-NR] -->
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="__NAME__ — a HydraScript app" />
     <title>__NAME__</title>
   </head>
   <body>
@@ -334,43 +374,173 @@ const INDEX_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
 "#;
 
 const MAIN_HYX_TEMPLATE: &str = r#"# [xihanzu-NR]
-from "react-dom/client" import createRoot
+from hydra import mount
 from "./App.hyx" import App
+import "./index.css"
 
 root_element = document.getElementById("root")
-createRoot(root_element).render(App())
+mount(App, root_element)
 "#;
 
 const APP_HYX_TEMPLATE: &str = r#"# [xihanzu-NR]
-from hydra import state
+from hydra import state, use_path, navigate
+from "./components/Header.hyx" import Header
+from "./components/Card.hyx" import Card
+from "./components/Button.hyx" import Button
+from "./pages/Home.hyx" import Home
+from "./pages/About.hyx" import About
+from "./lib/stats.hys" import greeting
 
 component App():
-    count, set_count = state(0)
+    path = use_path()
+    clicks, set_clicks = state(0)
+    samples, set_samples = state([2, 4, 6])
 
-    main(className="min-h-screen flex items-center justify-center bg-slate-50"):
-        section(className="w-full max-w-sm space-y-4 rounded-2xl bg-white p-8 text-center shadow-xl"):
-            h1(className="text-3xl font-extrabold text-slate-900"): "HydraScript"
-            p(className="text-sm text-slate-500"): "Edit src/App.hyx and save to reload."
-            div(className="flex items-center justify-center gap-4"):
-                button(
-                    on_click=lambda: set_count(count - 1),
-                    className="h-10 w-10 rounded-lg bg-slate-100 text-xl font-bold text-slate-700 hover:bg-slate-200",
-                ): "-"
-                span(className="w-12 text-3xl font-black tabular-nums text-indigo-600"): count
-                button(
-                    on_click=lambda: set_count(count + 1),
-                    className="h-10 w-10 rounded-lg bg-indigo-600 text-xl font-bold text-white hover:bg-indigo-700",
-                ): "+"
+    div(className="min-h-screen bg-slate-50 text-slate-900"):
+        Header(
+            title="HydraScript",
+            links=[{"path": "/", "label": "Home"}, {"path": "/about", "label": "About"}],
+            current=path,
+            on_nav=navigate,
+        )
+        main(className="mx-auto max-w-3xl space-y-6 p-6"):
+            if path == "/about":
+                About(version="0.1.0")
+            else:
+                Home(greeting=greeting("HydraScript"), samples=samples)
+            Card(title="State + interop", subtitle="App owns the state; stats.hys does the maths"):
+                div(className="flex items-center gap-3"):
+                    Button(label="Add a sample", on_press=lambda: set_samples(samples + [clicks + 2]))
+                    Button(label="Reset", variant="ghost", on_press=lambda: set_samples([2, 4, 6]))
+                    span(className="text-sm text-slate-500"): f"clicks: {clicks}"
+        footer(className="p-6 text-center text-xs text-slate-400"): greeting("HydraScript")
+"#;
+
+/// CSS needs the `/* */` watermark form. The `#` form used for the Pythonic
+/// sources is not a CSS comment, and PostCSS rejects the file outright with
+/// "Unknown word #" — which is how this was caught.
+const INDEX_CSS_TEMPLATE: &str = r#"/* [xihanzu-NR] */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+"#;
+
+/// The nav row is its own component on purpose: an `if / else` that is the
+/// *only* statement inside a `for` body emits an object literal where JS needs
+/// an expression, so the branch moves into a component that returns early.
+const HEADER_HYX_TEMPLATE: &str = r#"# [xihanzu-NR]
+component NavLink(link = {}, current: str = "/", on_nav = None):
+    if link["path"] == current:
+        span(className="rounded-lg bg-indigo-50 px-3 py-1.5 text-sm font-semibold text-indigo-700"): link["label"]
+    else:
+        button(
+            on_click=lambda: on_nav(link["path"]),
+            className="rounded-lg px-3 py-1.5 text-sm font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-900",
+        ): link["label"]
+
+component Header(title: str = "HydraScript", links = [], current: str = "/", on_nav = None):
+    header(className="border-b border-slate-200 bg-white"):
+        div(className="mx-auto flex max-w-3xl items-center justify-between gap-4 p-4"):
+            span(className="text-lg font-black tracking-tight text-indigo-600"): title
+            nav(className="flex items-center gap-1"):
+                for link in links:
+                    NavLink(link=link, current=current, on_nav=on_nav)
+"#;
+
+const CARD_HYX_TEMPLATE: &str = r#"# [xihanzu-NR]
+component Card(title: str = "Card", subtitle: str = ""):
+    section(className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100"):
+        h2(className="text-xl font-bold text-slate-900"): title
+        if subtitle:
+            p(className="mt-1 text-sm text-slate-500"): subtitle
+        div(className="mt-4"):
+            slot
+"#;
+
+/// The variant lookup is an if/elif chain on purpose: a Python-style
+/// `styles.get(variant, fallback)` compiles to a literal `.get(...)` call, and
+/// a JS object literal has no such method.
+const BUTTON_HYX_TEMPLATE: &str = r#"# [xihanzu-NR]
+component Button(label: str = "Button", variant: str = "primary", on_press = None):
+    styles = "bg-indigo-600 text-white hover:bg-indigo-700"
+    if variant == "ghost":
+        styles = "bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
+    elif variant == "danger":
+        styles = "bg-rose-600 text-white hover:bg-rose-700"
+
+    button(
+        on_click=on_press,
+        className=f"rounded-lg px-4 py-2 text-sm font-semibold transition {styles}",
+    ): label
+"#;
+
+const HOME_HYX_TEMPLATE: &str = r#"# [xihanzu-NR]
+from "../components/Card.hyx" import Card
+from "../lib/stats.hys" import summarise
+
+component Home(greeting: str = "Hello", samples = []):
+    stats = summarise(samples)
+
+    div(className="space-y-6"):
+        Card(title=greeting, subtitle="Rendered from src/pages/Home.hyx"):
+            div(className="grid grid-cols-3 gap-3 text-center"):
+                div(className="rounded-xl bg-slate-50 p-3"):
+                    p(className="text-xs uppercase tracking-wide text-slate-400"): "count"
+                    p(className="text-xl font-bold text-slate-900"): stats["count"]
+                div(className="rounded-xl bg-slate-50 p-3"):
+                    p(className="text-xs uppercase tracking-wide text-slate-400"): "total"
+                    p(className="text-xl font-bold text-slate-900"): stats["total"]
+                div(className="rounded-xl bg-slate-50 p-3"):
+                    p(className="text-xs uppercase tracking-wide text-slate-400"): "mean"
+                    p(className="text-xl font-bold text-slate-900"): stats["mean"]
+        Card(title="Samples", subtitle="One <li> per entry, from a for loop"):
+            ul(className="space-y-1 text-sm text-slate-600"):
+                for value in samples:
+                    li: f"sample {value} squared is {value * value}"
+"#;
+
+const ABOUT_HYX_TEMPLATE: &str = r#"# [xihanzu-NR]
+from "../components/Card.hyx" import Card
+
+component About(version: str = "0.1.0"):
+    features = ["Pythonic syntax", "Two targets: .hyx and .hys", "SSG on by default"]
+
+    div(className="space-y-6"):
+        Card(title="About", subtitle=f"version {version}"):
+            ul(className="list-disc space-y-1 pl-5 text-sm text-slate-600"):
+                for feature in features:
+                    li: feature
+"#;
+
+/// Plain ESM with no React: App.hyx imports summarise() and greeting() from
+/// here, which is what proves the two targets interoperate.
+///
+/// Every name another module needs carries `export`. A bare `def` emits a
+/// plain `function`, and esbuild then reports the import as "always undefined".
+const STATS_HYS_TEMPLATE: &str = r#"# [xihanzu-NR]
+export def total(values):
+    acc = 0
+    for value in values:
+        acc = acc + value
+    return acc
+
+export def mean(values):
+    n = len(values)
+    if n == 0:
+        return 0
+    return total(values) / n
+
+export def summarise(values):
+    return {"count": len(values), "total": total(values), "mean": mean(values)}
+
+export def greeting(name):
+    return f"Hello, {name}!"
 "#;
 
 const README_TEMPLATE: &str = r#"# __NAME__
 
-A HydraScript application — Pythonic syntax that compiles to React.
-
-## Requirements
-
-- Node.js 18+ (Bun also works and is used automatically when present)
-- Nothing else: the `hydrascript` compiler is installed by `npm install`
+A HydraScript app — Pythonic syntax that compiles to React. Built with
+`hydra`; the generated output is plain React TSX and plain ESM.
 
 ## Getting started
 
@@ -379,42 +549,98 @@ npm install
 npx hydra dev
 ```
 
-The dev server prints a local URL (default port `5173`).
+The dev server prints a local URL (default <http://localhost:5173>).
 
-## Scripts
+## Commands
 
 | Command | What it does |
 |---|---|
-| `npm run dev` | Start the dev server with hot reload |
-| `npm run build` | Build for production into `dist/` |
-| `npm run preview` | Serve the production build locally |
+| `npm run dev` | Dev server: builds once, serves `dist/`, rebuilds on change |
+| `npm run build` | Production build into `dist/`, pre-rendered to HTML |
+| `npm run preview` | Serve the production build |
+| `npm run check` | Type-check-free parse check of every `.hyx` / `.hys` |
+| `npm run clean` | Delete `dist/` (`-- --all` also clears `node_modules`) |
+| `npx hydra add <pkg> --dev` | Install a dependency and record it in `package.json` |
+| `npx hydra list` | Show declared vs installed dependencies |
+| `npx hydra analyze` | Bundle size report from the last build |
+| `npx hydra fmt` | Format sources |
+| `npx hydra doctor` | Check the local toolchain |
 
 ## Layout
 
 ```
-hydraconfig.json   project config (name, port, entries)
-index.html         SPA mount point (#root)
-src/main.hyx       entry — mounts App into #root
-src/App.hyx        the app component
+hydraconfig.json        project config: name, root, outputDir, server, rendering
+index.html              SPA mount point (#root); the build inlines the pre-render
+tailwind.config.js      mirrors the "tailwind" key in hydraconfig.json
+src/main.hyx            entry — mounts App into #root
+src/App.hyx             owns the state, picks the page, wires the components
+src/components/         Header.hyx, Card.hyx, Button.hyx
+src/lib/stats.hys       pure helpers, imported by App.hyx and the pages
+src/pages/Home.hyx      default screen
+src/pages/About.hyx     second screen, reached through the router
+src/index.css           the three Tailwind directives
+dist/                   build output (git-ignored), pre-rendered to HTML
 ```
+
+Two file types, one language:
+
+- **`.hyx`** — React components. `component Name(props):` returns a tree.
+- **`.hys`** — plain ESM modules. `def name(args):` returns a value.
+
+`src/App.hyx` importing from `src/lib/stats.hys` is the point: a component and
+a plain module calling each other with no glue in between.
 
 ## Writing code
 
-`.hyx` files are React components, `.hys` files are plain Node/ESM modules:
-
 ```python
-# src/App.hyx
-from hydra import state
-
-component App():
-    count, set_count = state(0)
-    button(on_click=lambda: set_count(count + 1)): f"Clicked {count} times"
+# src/components/Button.hyx
+component Button(label: str = "Button", on_press = None):
+    button(on_click=on_press, className="rounded-lg px-4 py-2"): label
 ```
 
-Check anything the compiler sees without emitting output:
+```python
+# src/lib/stats.hys
+def summarise(values):
+    return {"count": len(values), "total": sum(values)}
+```
+
+Control flow reads like Python — `if / elif / else`, `for x in xs`, `lambda`,
+f-strings — and conditional children become lazy JSX, so `if subtitle:` only
+renders when there is a subtitle.
+
+Notes worth knowing before you hit them:
+
+- Variant lookups use `if / elif`, not `styles.get(...)`. A Python dict literal
+  compiles to a JS object literal, which has no `.get` method.
+- A component call cannot be the only statement in a component body — it would
+  be emitted as a discarded expression. Wrap it in an element (`div:`), or give
+  it siblings.
+- An `if / else` cannot be the only statement inside a `for` body. Move the
+  branch into a small component that returns early; `Header.hyx` does this with
+  `NavLink`.
+- A bare string as the first line of a component body is emitted as an
+  expression statement, so keep prose in comments (`# ...`), not in docstrings.
+- Anything in a `.hys` file that another module imports needs `export def`, not
+  a bare `def`.
+
+## Configuring
+
+`hydraconfig.json` is read by the runner:
+
+| Key | Meaning |
+|---|---|
+| `outputDir` | Where the build lands (default `dist`) |
+| `server.port` / `server.host` | What `dev` and `preview` bind to |
+| `base` | Public base path |
+| `rendering.ssg` | Pre-render `App.hyx` into `dist/index.html` (default `true`) |
+| `tailwind` | Merged into the Tailwind config: `theme`, `plugins`, extra `content` |
+
+## Checking your work
 
 ```bash
-npx hydra --check src/App.hyx
+npx hydra check          # parse every source, no output written
+npx hydra check src/App.hyx
+npx hydra build && npx hydra analyze
 ```
 "#;
 
@@ -454,11 +680,15 @@ pub fn init(args: &[String]) -> ExitCode {
 
     let name = project_name(&root);
 
-    if let Err(e) = fs::create_dir_all(root.join("src")) {
-        eprintln!("hydra: cannot create {}: {}", root.join("src").display(), e);
-        return ExitCode::from(1);
+    for dir in ["src", "src/components", "src/lib", "src/pages"] {
+        if let Err(e) = fs::create_dir_all(root.join(dir)) {
+            eprintln!("hydra: cannot create {}: {}", root.join(dir).display(), e);
+            return ExitCode::from(1);
+        }
     }
 
+    // Every entry starts with the watermark for its own language: `#` for the
+    // Pythonic sources, `<!-- -->` for HTML, `//` for JS.
     let files: Vec<(PathBuf, String)> = vec![
         (
             root.join("hydraconfig.json"),
@@ -468,7 +698,9 @@ pub fn init(args: &[String]) -> ExitCode {
             root.join("package.json"),
             render(PACKAGE_JSON_TEMPLATE, &name),
         ),
+        (root.join("tailwind.config.js"), TAILWIND_CONFIG_TEMPLATE.to_string()),
         (root.join("index.html"), render(INDEX_HTML_TEMPLATE, &name)),
+        (root.join("README.md"), render(README_TEMPLATE, &name)),
         (
             root.join("src").join("main.hyx"),
             MAIN_HYX_TEMPLATE.to_string(),
@@ -477,7 +709,34 @@ pub fn init(args: &[String]) -> ExitCode {
             root.join("src").join("App.hyx"),
             APP_HYX_TEMPLATE.to_string(),
         ),
-        (root.join("README.md"), render(README_TEMPLATE, &name)),
+        (
+            root.join("src").join("index.css"),
+            INDEX_CSS_TEMPLATE.to_string(),
+        ),
+        (
+            root.join("src").join("components").join("Header.hyx"),
+            HEADER_HYX_TEMPLATE.to_string(),
+        ),
+        (
+            root.join("src").join("components").join("Card.hyx"),
+            CARD_HYX_TEMPLATE.to_string(),
+        ),
+        (
+            root.join("src").join("components").join("Button.hyx"),
+            BUTTON_HYX_TEMPLATE.to_string(),
+        ),
+        (
+            root.join("src").join("lib").join("stats.hys"),
+            STATS_HYS_TEMPLATE.to_string(),
+        ),
+        (
+            root.join("src").join("pages").join("Home.hyx"),
+            HOME_HYX_TEMPLATE.to_string(),
+        ),
+        (
+            root.join("src").join("pages").join("About.hyx"),
+            ABOUT_HYX_TEMPLATE.to_string(),
+        ),
     ];
 
     let mut written: Vec<PathBuf> = Vec::with_capacity(files.len());
@@ -827,10 +1086,18 @@ export component Badge(label: str):
         for rel in [
             "hydraconfig.json",
             "package.json",
+            "tailwind.config.js",
             "index.html",
+            "README.md",
             "src/main.hyx",
             "src/App.hyx",
-            "README.md",
+            "src/index.css",
+            "src/components/Header.hyx",
+            "src/components/Card.hyx",
+            "src/components/Button.hyx",
+            "src/lib/stats.hys",
+            "src/pages/Home.hyx",
+            "src/pages/About.hyx",
         ] {
             assert!(target.join(rel).is_file(), "expected {} to exist", rel);
         }
@@ -838,13 +1105,111 @@ export component Badge(label: str):
         let config = fs::read_to_string(target.join("hydraconfig.json")).unwrap();
         assert!(config.contains("\"name\": \"demo-app\""));
         assert!(config.contains("\"port\": 5173"));
+        assert!(config.contains("\"host\": \"0.0.0.0\""));
+        assert!(config.contains("\"outputDir\": \"./dist\""));
+        assert!(config.contains("\"base\": \"/\""));
+        assert!(config.contains("\"ssg\": true"));
         assert!(config.contains("\"app\": \"./src/main.hyx\""));
 
         let pkg = fs::read_to_string(target.join("package.json")).unwrap();
-        assert!(pkg.contains("\"hydrascript\""));
+        // `hydrascript` is NOT an npm dependency: the CLI is the toolchain that
+        // generated this project. Declaring it made `npm install` fail with a
+        // 404 for every fresh project.
+        assert!(!pkg.contains("\"hydrascript\""));
+        assert!(pkg.contains("hydra dev"));
         for script in ["\"dev\"", "\"build\"", "\"preview\""] {
             assert!(pkg.contains(script), "package.json missing {}", script);
         }
+
+        // React is the only runtime dependency; the toolchain is a devDependency.
+        let parsed = crate::tools::Json::parse(&pkg).expect("scaffolded package.json must parse");
+        let deps = parsed
+            .get("dependencies")
+            .and_then(|d| d.as_obj())
+            .expect("dependencies");
+        assert_eq!(
+            deps.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+            vec!["react", "react-dom"],
+            "the toolchain must not be a runtime dependency"
+        );
+        assert!(deps
+            .iter()
+            .all(|(_, v)| v.as_str().is_some_and(|s| s.starts_with("^19"))));
+
+        let dev = parsed
+            .get("devDependencies")
+            .and_then(|d| d.as_obj())
+            .expect("devDependencies");
+        for expected in [
+            "esbuild",
+            "postcss",
+            "tailwindcss",
+            "autoprefixer",
+            "@types/react",
+            "@types/react-dom",
+        ] {
+            assert!(
+                dev.iter().any(|(k, _)| k == expected),
+                "devDependencies missing {}",
+                expected
+            );
+        }
+    }
+
+    /// Every generated source must carry the watermark for its own language.
+    #[test]
+    fn init_writes_a_watermark_into_every_file() {
+        let tree = TempTree::new("init-watermark");
+        let target = tree.root.join("marked");
+        let target_str = target.to_string_lossy().to_string();
+        assert_eq!(init(&[target_str]), ExitCode::SUCCESS);
+
+        for (rel, marker) in [
+            ("src/main.hyx", "# [xihanzu-NR]"),
+            ("src/App.hyx", "# [xihanzu-NR]"),
+            ("src/index.css", "/* [xihanzu-NR] */"),
+            ("src/lib/stats.hys", "# [xihanzu-NR]"),
+            ("src/components/Button.hyx", "# [xihanzu-NR]"),
+            ("src/pages/Home.hyx", "# [xihanzu-NR]"),
+            ("tailwind.config.js", "// [xihanzu-NR]"),
+            ("index.html", "<!-- [xihanzu-NR] -->"),
+        ] {
+            let text = fs::read_to_string(target.join(rel)).unwrap();
+            assert!(
+                text.starts_with(marker),
+                "{} must start with {}",
+                rel,
+                marker
+            );
+        }
+    }
+
+    /// The scaffold ships as the reference for what the compiler accepts today,
+    /// so every generated source has to compile.
+    #[test]
+    fn every_scaffolded_source_compiles() {
+        let tree = TempTree::new("init-compiles");
+        let target = tree.root.join("compiles");
+        let target_str = target.to_string_lossy().to_string();
+        assert_eq!(init(&[target_str]), ExitCode::SUCCESS);
+
+        let mut checked = 0usize;
+        for path in collect_files(&target) {
+            let is_source = matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("hyx") | Some("hys")
+            );
+            if !is_source {
+                continue;
+            }
+            let src = fs::read_to_string(&path).unwrap();
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if let Err(e) = crate::compile(&src, &name) {
+                panic!("{} does not compile:\n{}", path.display(), e.pretty());
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 8, "expected 6 .hyx + 2 .hys sources");
     }
 
     #[test]

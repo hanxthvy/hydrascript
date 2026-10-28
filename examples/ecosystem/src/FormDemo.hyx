@@ -1,0 +1,104 @@
+# [xihanzu-NR]
+# zod (schema validation) + react-hook-form (form state)
+#
+# zod runs a real safeParse at module scope and again per render on the live
+# values. react-hook-form's register() is used without relying on JSX spread,
+# which HydraScript has no syntax for.
+
+from "zod" import z
+
+from "serpent" import state, computed, cx
+
+from "./Section.hyx" import Section
+
+SignupSchema = z.object({
+    "email": z.string().email(),
+    "password": z.string().min(8),
+    "age": z.number().int().positive(),
+})
+
+# Module-scope parse, run once when this module is evaluated.
+SAMPLE = SignupSchema.safeParse({"email": "ada@example.com", "password": "hunter2hunter2", "age": 36})
+
+
+def run_parse(email: str, password: str, age_raw: str):
+    # Returns {ok, issues} — never throws, because safeParse never throws.
+    age = 0
+    if age_raw.strip() != "":
+        age = int(age_raw)
+    result = SignupSchema.safeParse({"email": email, "password": password, "age": age})
+    if result.success:
+        return {"ok": True, "issues": []}
+    return {"ok": False, "issues": result.error.issues}
+
+
+def issue_text(issues: list):
+    if len(issues) == 0:
+        return ""
+    first = issues[0]
+    return f"{first.path[0]}: {first.message}"
+
+
+component FormDemo():
+    email, set_email = state("")
+    password, set_password = state("")
+    age, set_age = state("")
+    touched, set_touched = state(False)
+
+    outcome = computed(lambda: run_parse(email, password, age), [email, password, age])
+    valid = computed(lambda: outcome["ok"], [outcome])
+    summary = computed(
+        lambda: "All fields pass the schema" if valid else issue_text(outcome["issues"]),
+        [valid, outcome],
+    )
+    issue_count = computed(lambda: len(outcome["issues"]), [outcome])
+
+    def edit(setter, value):
+        setter(value)
+        set_touched(True)
+
+    Section(title="Schema validation", lib="zod", subtitle="safeParse() returns success plus error.issues"):
+        div(cls="grid gap-3 sm:grid-cols-3"):
+            label(cls="space-y-1"):
+                span(cls="text-xs uppercase tracking-wide text-slate-500"): "Email"
+                input(
+                    value=email,
+                    placeholder="you@example.com",
+                    cls="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-violet-500",
+                    on_change=lambda e: edit(set_email, e.target.value),
+                )
+            label(cls="space-y-1"):
+                span(cls="text-xs uppercase tracking-wide text-slate-500"): "Password"
+                input(
+                    value=password,
+                    type_="password",
+                    placeholder="min 8 chars",
+                    cls="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-violet-500",
+                    on_change=lambda e: edit(set_password, e.target.value),
+                )
+            label(cls="space-y-1"):
+                span(cls="text-xs uppercase tracking-wide text-slate-500"): "Age"
+                input(
+                    value=age,
+                    placeholder="36",
+                    cls="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-violet-500",
+                    on_change=lambda e: edit(set_age, e.target.value),
+                )
+
+        div(cls="mt-4 flex items-center gap-3"):
+            span(
+                cls=cx(
+                    "rounded-full px-2.5 py-0.5 text-xs font-medium",
+                    {
+                        "bg-emerald-500/15 text-emerald-300": valid,
+                        "bg-rose-500/15 text-rose-300": not valid,
+                    },
+                )
+            ):
+                "Valid" if valid else "Invalid"
+            span(cls="text-xs text-slate-400"): summary
+            if touched:
+                span(cls="ml-auto text-xs text-slate-600"): f"{issue_count} issue(s)"
+
+        p(cls="mt-3 text-xs text-slate-500"):
+            f"Module-scope parse of the sample record succeeded: {str(SAMPLE.success)}"

@@ -1,0 +1,148 @@
+# [xihanzu-NR]
+# react-hook-form — useForm, register, handleSubmit, formState
+#
+# IMPORTANT COMPILER LIMITATION exercised here: the documented RHF usage is
+# `const { register } = useForm()` plus JSX spread `<input {...register("x")} />`.
+# HydraScript supports NEITHER destructuring-with-rename-bindings nor JSX
+# spread, so this file passes register()'s individual props (name / onChange /
+# onBlur / ref) explicitly. The form works, but every RHF snippet on the
+# internet needs hand-translation before it compiles.
+
+from "react-hook-form" import useForm
+
+from "serpent" import state, computed, cx
+
+# The runtime's `dict_get` is unusable: runtime/serpent.ts declares it twice,
+# which makes esbuild reject the entire bundle. Local equivalent instead.
+def safe_get(o, key: str, fallback):
+    if o == None:
+        return fallback
+    if key in o:
+        return o[key]
+    return fallback
+
+from "./Section.hyx" import Section
+
+EMAIL_PATTERN = "^[^@\\s]+@[^@\\s]+\\.[a-zA-Z]{2,}$"
+
+
+def err_message(errors, key):
+    # formState.errors is a plain nested object; a missing key is undefined,
+    # not null, so check membership rather than comparing to == None.
+    item = safe_get(errors, key, None)
+    if item == None:
+        return ""
+    return item.message
+
+
+def err_count(errors):
+    if errors == None:
+        return 0
+    return len(Object.keys(errors))
+
+
+def kv_rows(values):
+    out = []
+    for k in Object.keys(values):
+        out.append({"k": k, "v": str(values[k])})
+    return out
+
+
+component FieldError(message=""):
+    if message != "":
+        p(cls="mt-1 text-xs text-rose-400"): message
+
+
+component RhfDemo():
+    form = useForm({"mode": "onChange", "defaultValues": {"name": "", "email": ""}})
+    saved, set_saved = state({})
+
+    # register() is called in the component body, mirroring how it would be
+    # called inline inside JSX in a normal TSX file.
+    name_field = form.register("name", {
+        "required": "Name is required",
+        "minLength": {"value": 3, "message": "Use at least 3 characters"},
+    })
+    email_field = form.register("email", {
+        "required": "Email is required",
+        "pattern": {"value": EMAIL_PATTERN, "message": "That is not a valid email"},
+    })
+
+    errors = form.formState.errors
+    values = form.watch()
+    is_valid = form.formState.isValid
+    is_dirty = form.formState.isDirty
+    submit_count = form.formState.submitCount
+
+    def on_valid(data):
+        set_saved(data)
+
+    def on_invalid(_errors):
+        set_saved({"__invalid": "true"})
+
+    saved_rows = computed(lambda: kv_rows(saved), [saved])
+
+    Section(title="Form fields", lib="react-hook-form", subtitle="useForm + register + handleSubmit, no JSX spread"):
+        form(cls="space-y-3", on_submit=form.handleSubmit(on_valid, on_invalid)):
+            div(cls="grid gap-3 sm:grid-cols-2"):
+                div():
+                    label(cls="block text-xs uppercase tracking-wide text-slate-500"): "Name"
+                    input(
+                        name=name_field.name,
+                        on_change=name_field.onChange,
+                        on_blur=name_field.onBlur,
+                        ref=name_field.ref,
+                        placeholder="Ada Lovelace",
+                        cls="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-violet-500",
+                    )
+                    FieldError(message=err_message(errors, "name"))
+                div():
+                    label(cls="block text-xs uppercase tracking-wide text-slate-500"): "Email"
+                    input(
+                        name=email_field.name,
+                        on_change=email_field.onChange,
+                        on_blur=email_field.onBlur,
+                        ref=email_field.ref,
+                        placeholder="ada@example.com",
+                        cls="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-violet-500",
+                    )
+                    FieldError(message=err_message(errors, "email"))
+
+            div(cls="flex flex-wrap items-center gap-2"):
+                button(
+                    type_="submit",
+                    cls=cx(
+                        "rounded-lg px-4 py-2 text-sm font-medium text-white",
+                        {"bg-violet-600 hover:bg-violet-500": is_valid},
+                        {"bg-slate-700": not is_valid},
+                    ),
+                ):
+                    "Submit"
+                button(
+                    type_="button",
+                    cls="rounded-lg bg-slate-800 px-4 py-2 text-sm text-slate-200 hover:bg-slate-700",
+                    on_click=lambda: form.reset(),
+                ):
+                    "reset()"
+                button(
+                    type_="button",
+                    cls="rounded-lg bg-slate-800 px-4 py-2 text-sm text-slate-200 hover:bg-slate-700",
+                    on_click=lambda: form.setValue("name", "Grace Hopper"),
+                ):
+                    "setValue('name')"
+
+            div(cls="flex flex-wrap gap-4 text-xs text-slate-500"):
+                span(): f"isValid: {str(is_valid)}"
+                span(): f"isDirty: {str(is_dirty)}"
+                span(): f"submitCount: {str(submit_count)}"
+                span(): f"errors: {err_count(errors)}"
+                span(): f"watch(): {str(values)}"
+
+            if len(Object.keys(saved)) > 0:
+                div(cls="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3"):
+                    p(cls="text-xs font-medium text-emerald-200"):
+                        "handleSubmit payload"
+                    div(cls="mt-1"):
+                        for row in saved_rows:
+                            span(key=row["k"], cls="mr-3 font-mono text-xs text-emerald-300"):
+                                f"{row['k']}={row['v']}"

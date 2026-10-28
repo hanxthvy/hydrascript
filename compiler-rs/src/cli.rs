@@ -120,6 +120,11 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("fmt") => crate::fmt::run(&args[1..]),
         Some("stats") => crate::scaffold::stats(&args[1..]),
         Some("doctor") => crate::scaffold::doctor(&args[1..]),
+        Some("add") => crate::tools::add(&args[1..]),
+        Some("remove") => crate::tools::remove(&args[1..]),
+        Some("list") => crate::tools::list(&args[1..]),
+        Some("clean") => crate::tools::clean(&args[1..]),
+        Some("analyze") => crate::tools::analyze(&args[1..]),
         Some("repl") => repl(),
         Some(other) => {
             eprintln!("hydra: unknown command {:?}", other);

@@ -1,0 +1,115 @@
+# [xihanzu-NR]
+# Post detail — one more fetch keyed on the id parsed out of the URL path,
+# plus the not-found fallback.
+
+from "serpent" import computed, fetch_json, len, cx
+from "serpent" import Link, navigate
+
+API = "https://jsonplaceholder.typicode.com"
+
+
+def id_from_path(path: str):
+    # "/post/12" -> 12 ; returns 0 when the segment is not numeric.
+    parts = path.split("/")
+    tail = parts[len(parts) - 1]
+    if not tail.isdigit():
+        return 0
+    return int(tail)
+
+
+def author_for(uid: int):
+    # Deterministic stand-in for a users endpoint; keeps the detail view
+    # to a single network round trip.
+    names = ["Ada Lovelace", "Grace Hopper", "Alan Turing", "Barbara Liskov", "Ken Thompson"]
+    return names[uid % len(names)]
+
+
+component Comment(data=None):
+    # The prop is named `data` and copied to `c`, rather than being called `c`
+    # and read as `c = c or {}`. Assigning to a name that is also a prop emits
+    # `const c = ...` inside a function that already destructured `{ c }` from
+    # props, so esbuild reports `The symbol "c" has already been declared`.
+    c = data or {}
+    li(cls="border-t border-slate-800 py-4 first:border-t-0"):
+        div(cls="flex items-center gap-2"):
+            span(cls="grid size-7 place-items-center rounded-full bg-violet-500/20 text-[11px] font-semibold text-violet-200"):
+                str(c["id"])
+            span(cls="text-xs font-medium text-slate-300"): c["email"]
+        p(cls="mt-2 text-sm leading-relaxed text-slate-400"): c["body"]
+
+
+component NotFound():
+    div(cls="rounded-xl border border-slate-800 bg-slate-900/60 p-12 text-center"):
+        p(cls="text-5xl"): "404"
+        h2(cls="mt-3 text-lg font-semibold text-white"): "No such post"
+        p(cls="mt-1 text-sm text-slate-400"): "That post id is not numeric or does not exist."
+        button(
+            cls="mt-5 rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-500",
+            on_click=lambda: navigate("/"),
+        ):
+            "Back to the list"
+
+
+component PostDetail(path="/"):
+    # The id is parsed here rather than passed in, because `export def` is
+    # dropped by the compiler, so there is no way to share `id_from_path`
+    # between App.hyx and this file.
+    post_id = computed(lambda: id_from_path(path), [path])
+
+    post = fetch_json(f"{API}/posts/{post_id}", [post_id])
+    comments = fetch_json(f"{API}/posts/{post_id}/comments", [post_id])
+
+    author = computed(
+        lambda: author_for(post.data["userId"]) if post.data else "",
+        [post.data],
+    )
+    heading = computed(
+        lambda: post.data["title"] if post.data else "Loading...",
+        [post.data],
+    )
+    body = computed(
+        lambda: post.data["body"] if post.data else "",
+        [post.data],
+    )
+    comment_list = computed(lambda: comments.data or [], [comments.data])
+
+    div(cls="mx-auto max-w-3xl space-y-6"):
+        Link(
+            to="/",
+            cls="inline-flex items-center gap-1 text-xs font-medium text-slate-400 hover:text-violet-300",
+        ):
+            "← All posts"
+
+        if post.loading:
+            div(cls="animate-pulse space-y-4 rounded-xl border border-slate-800 bg-slate-900/60 p-8"):
+                div(cls="h-4 w-24 rounded bg-slate-800")
+                div(cls="h-6 w-3/4 rounded bg-slate-800")
+                div(cls="h-3 w-full rounded bg-slate-800")
+                div(cls="h-3 w-5/6 rounded bg-slate-800")
+
+        elif post.error:
+            div(cls="rounded-xl border border-rose-500/40 bg-rose-500/10 p-8"):
+                h3(cls="text-sm font-semibold text-rose-200"): "Could not load this post"
+                p(cls="mt-1 text-sm text-rose-300/80"): str(post.error)
+
+        else:
+            article(cls="rounded-xl border border-slate-800 bg-slate-900/60 p-8"):
+                div(cls="flex items-center gap-2"):
+                    span(cls="rounded-full bg-violet-500/15 px-2.5 py-0.5 text-[11px] font-medium text-violet-300"):
+                        f"Post #{post_id}"
+                    span(cls="text-xs text-slate-500"): author
+                h1(cls="mt-3 text-2xl font-semibold capitalize text-white"): heading
+                p(cls="mt-4 whitespace-pre-line leading-relaxed text-slate-300"): body
+
+            section(cls="rounded-xl border border-slate-800 bg-slate-900/60 p-6"):
+                div(cls="flex items-center justify-between"):
+                    h2(cls="text-sm font-semibold text-white"): "Comments"
+                    span(cls="text-xs text-slate-500"): f"{len(comment_list)} total"
+                if comments.loading:
+                    p(cls="mt-4 text-sm text-slate-500"): "Loading comments..."
+                elif comments.error:
+                    p(cls="mt-4 text-sm text-rose-300"): str(comments.error)
+                else:
+                    ul(cls="mt-2"):
+                        for c in comment_list:
+                            Comment(key=c["id"], c=c)

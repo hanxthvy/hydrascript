@@ -1,0 +1,47 @@
+# [xihanzu-NR]
+# Ecosystem fixture entry — mounts every library demo.
+
+from "react-dom/client" import createRoot
+
+from "sonner" import Toaster
+
+from "./ButtonDemo.hyx" import ButtonDemo
+from "./DateDemo.hyx" import DateDemo
+from "./FormDemo.hyx" import FormDemo
+from "./RhfDemo.hyx" import RhfDemo
+from "./QueryDemo.hyx" import QueryDemo
+from "./RouterDemo.hyx" import RouterDemo
+from "./StoreDemo.hyx" import StoreDemo
+from "./ChartDemo.hyx" import ChartDemo
+from "./MotionDemo.hyx" import MotionDemo
+from "./DialogDemo.hyx" import DialogDemo
+
+import "./index.css"
+
+
+component App():
+    div(cls="min-h-screen bg-slate-950 p-6 text-slate-200"):
+        div(cls="mx-auto max-w-4xl space-y-5"):
+            header(cls="mb-2"):
+                h1(cls="text-2xl font-semibold text-white"): "React ecosystem fixture"
+                p(cls="text-sm text-slate-400"):
+                    "Every section below imports a real npm package and renders a representative API."
+                p(cls="mt-1 text-xs text-slate-600"):
+                    "react · react-dom · react-router-dom · @tanstack/react-query · zustand · motion · lucide-react · clsx · tailwind-merge · date-fns · zod · react-hook-form · recharts · @radix-ui/react-dialog · sonner"
+
+            ButtonDemo()
+            DateDemo()
+            FormDemo()
+            RhfDemo()
+            QueryDemo()
+            StoreDemo()
+            RouterDemo()
+            ChartDemo()
+            MotionDemo()
+            DialogDemo()
+
+        Toaster(position="bottom-right", richColors=True, closeButton=True)
+
+
+root_element = document.getElementById("root")
+createRoot(root_element).render(App())

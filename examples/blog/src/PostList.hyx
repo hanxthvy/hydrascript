@@ -1,0 +1,104 @@
+# [xihanzu-NR]
+# Post list — data fetching, loading + error states, client search.
+#
+# Data source: JSONPlaceholder (public, CORS-enabled, no key).
+
+from "serpent" import state, computed, debounce, fetch_json, len, cx
+from "serpent" import Link
+
+API = "https://jsonplaceholder.typicode.com/posts?_limit=24"
+
+
+def excerpt(body: str, n: int):
+    # No str slicing helpers needed: JS slice is fine.
+    if len(body) <= n:
+        return body
+    return body.slice(0, n) + "..."
+
+
+component SkeletonCard():
+    div(cls="animate-pulse rounded-xl border border-slate-800 bg-slate-900/60 p-5"):
+        div(cls="h-4 w-2/3 rounded bg-slate-800")
+        div(cls="mt-3 h-3 w-full rounded bg-slate-800")
+        div(cls="mt-2 h-3 w-5/6 rounded bg-slate-800")
+        div(cls="mt-4 h-3 w-24 rounded bg-slate-800")
+
+
+component ErrorPanel(message="", on_retry=None):
+    div(cls="rounded-xl border border-rose-500/40 bg-rose-500/10 p-6"):
+        h3(cls="text-sm font-semibold text-rose-200"): "Could not load posts"
+        p(cls="mt-1 text-sm text-rose-300/80"): message
+        button(
+            cls="mt-4 rounded-lg bg-rose-500/20 px-3 py-1.5 text-xs font-medium text-rose-100 hover:bg-rose-500/30",
+            on_click=on_retry,
+        ):
+            "Try again"
+
+
+component PostList():
+    query, set_query = state("")
+    attempt, set_attempt = state(0)
+
+    # deps = [attempt] so pressing "Try again" refetches.
+    res = fetch_json(API, [attempt])
+    q = debounce(query, 200)
+
+    posts = computed(lambda: res.data or [], [res.data])
+
+    visible = computed(
+        lambda: [
+            p for p in posts
+            if q.strip() == "" or p["title"].toLowerCase().indexOf(q.strip().toLowerCase()) != -1
+        ],
+        [posts, q],
+    )
+
+    count_label = computed(
+        lambda: f"{len(visible)} of {len(posts)} posts",
+        [visible, posts],
+    )
+
+    def retry():
+        set_attempt(attempt + 1)
+
+    div(cls="space-y-4"):
+        div(cls="flex flex-wrap items-center gap-3"):
+            input(
+                cls="w-full max-w-sm rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-violet-500",
+                placeholder="Filter by title...",
+                value=query,
+                on_change=lambda e: set_query(e.target.value),
+            )
+            span(cls="text-xs text-slate-500"): count_label
+
+        if res.loading:
+            div(cls="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"):
+                for i in [1, 2, 3, 4, 5, 6]:
+                    SkeletonCard(key=i)
+
+        elif res.error:
+            ErrorPanel(message=str(res.error), on_retry=retry)
+
+        elif len(visible) == 0:
+            div(cls="rounded-xl border border-slate-800 bg-slate-900/60 p-10 text-center"):
+                p(cls="text-slate-400"): "No posts match that filter."
+                button(
+                    cls="mt-3 text-xs text-violet-300 hover:text-violet-200",
+                    on_click=lambda: set_query(""),
+                ):
+                    "Clear filter"
+
+        else:
+            div(cls="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"):
+                for p in visible:
+                    Link(
+                        key=p["id"],
+                        to=f"/post/{p['id']}",
+                        cls="block rounded-xl border border-slate-800 bg-slate-900/60 p-5 transition hover:border-violet-500/60 hover:bg-slate-900",
+                    ):
+                        span(cls="text-[11px] font-medium uppercase tracking-wide text-violet-400"):
+                            f"Post #{p['id']}"
+                        h3(cls="mt-1 line-clamp-2 text-sm font-semibold text-slate-100"):
+                            p["title"]
+                        p(cls="mt-2 text-xs leading-relaxed text-slate-400"):
+                            excerpt(p["body"], 90)

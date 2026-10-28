@@ -1,0 +1,39 @@
+# [xihanzu-NR]
+# date-fns — format(), addDays(), formatDistanceToNow()
+
+from "date-fns" import format, addDays, formatDistanceToNow, isAfter
+
+from "serpent" import computed
+
+from "./Section.hyx" import Section
+
+
+component DateDemo():
+    now = new Date()
+    trial_end = addDays(now, 14)
+    expired = isAfter(now, trial_end)
+
+    iso = computed(lambda: format(now, "yyyy-MM-dd"), [])
+    pretty = computed(lambda: format(now, "EEEE, d MMMM yyyy"), [])
+    clock = computed(lambda: format(now, "HH:mm:ss"), [])
+    trial = computed(lambda: format(trial_end, "d MMM yyyy"), [])
+    relative = computed(lambda: formatDistanceToNow(trial_end, {"addSuffix": True}), [])
+
+    Section(title="Dates", lib="date-fns", subtitle="format() patterns and a relative distance"):
+        # Deliberately NOT using <dl>/<dt>/<dd>: those three are absent from the
+        # compiler's HTML_TAGS whitelist and fail to compile. See the report.
+        div(cls="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2"):
+            div(cls="flex justify-between gap-4 rounded-lg bg-slate-950/60 px-3 py-2"):
+                span(cls="text-slate-500"): "ISO"
+                span(cls="font-mono text-slate-200"): iso
+            div(cls="flex justify-between gap-4 rounded-lg bg-slate-950/60 px-3 py-2"):
+                span(cls="text-slate-500"): "Long"
+                span(cls="text-slate-200"): pretty
+            div(cls="flex justify-between gap-4 rounded-lg bg-slate-950/60 px-3 py-2"):
+                span(cls="text-slate-500"): "Time"
+                span(cls="font-mono text-slate-200"): clock
+            div(cls="flex justify-between gap-4 rounded-lg bg-slate-950/60 px-3 py-2"):
+                span(cls="text-slate-500"): "Trial ends"
+                span(cls="text-slate-200"): f"{trial} ({relative})"
+        p(cls="mt-3 text-xs text-slate-500"):
+            f"Trial expired: {str(expired)}"

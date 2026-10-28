@@ -1,0 +1,76 @@
+# [xihanzu-NR]
+# @tanstack/react-query — QueryClientProvider + useQuery
+#
+# The query runs against jsonplaceholder, reports isPending / isError /
+# isSuccess, and the whole tree is wrapped in QueryClientProvider.
+
+from "@tanstack/react-query" import QueryClient, QueryClientProvider, useQuery
+
+from "serpent" import state
+
+from "./Section.hyx" import Section
+
+client = QueryClient({
+    "defaultOptions": {
+        "queries": {
+            "staleTime": 60000,
+            "retry": 1,
+            "refetchOnWindowFocus": False,
+        }
+    }
+})
+
+
+def fetch_todos():
+    return fetch("https://jsonplaceholder.typicode.com/todos?_limit=5").then(lambda r: r.json())
+
+
+component TodoPreview():
+    query = useQuery({"queryKey": ["ecosystem-todos"], "queryFn": fetch_todos})
+
+    if query.isPending:
+        p(cls="text-xs text-slate-400"): "isPending — query in flight..."
+    elif query.isError:
+        p(cls="text-xs text-rose-300"):
+            f"isError — {str(query.error)}"
+    else:
+        div(cls="space-y-1"):
+            p(cls="text-xs text-slate-500"):
+                f"isSuccess · fetchStatus={query.fetchStatus} · {len(query.data)} rows"
+            ul(cls="space-y-1"):
+                for t in query.data:
+                    li(
+                        key=t["id"],
+                        cls="flex items-center gap-2 rounded-lg bg-slate-950/60 px-3 py-2 text-xs",
+                    ):
+                        span(cls="font-mono text-slate-600"): f"#{t['id']}"
+                        span(cls="flex-1 text-slate-300"): t["title"]
+                        span(
+                            cls="rounded px-1.5 py-0.5",
+                            style={"background": "rgba(139,92,246,.15)", "color": "#c4b5fd"},
+                        ):
+                            "done" if t["completed"] else "open"
+
+
+component QueryPanel():
+    query = useQuery({"queryKey": ["ecosystem-todos"], "queryFn": fetch_todos})
+
+    Section(title="Data fetching", lib="@tanstack/react-query", subtitle="QueryClientProvider + useQuery with real network state"):
+        div(cls="mb-3 flex items-center gap-2"):
+            button(
+                cls="rounded-lg bg-slate-800 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-700",
+                on_click=lambda: query.refetch(),
+            ):
+                "Refetch"
+            span(cls="text-xs text-slate-500"): f"dataUpdatedAt: {str(query.dataUpdatedAt)}"
+        TodoPreview()
+
+
+component QueryDemo():
+    Section(
+        title="Query client",
+        lib="@tanstack/react-query",
+        subtitle="QueryClient instantiated from HydraScript, provider mounted below",
+    ):
+        QueryClientProvider(client=client):
+            QueryPanel()

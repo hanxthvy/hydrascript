@@ -1,0 +1,77 @@
+# [xihanzu-NR]
+# Blog — data fetching + routing.
+#
+# Routing uses the runtime's own `use_path` / `navigate` / `Link`, not
+# react-router-dom, so this app exercises the compiler's built-in router.
+
+from "serpent" import use_path
+from "serpent" import Link
+
+from "./PostList.hyx" import PostList
+from "./PostDetail.hyx" import PostDetail
+from "./NotFound.hyx" import NotFound
+
+HOME = "/"
+MAX_POST_ID = 100
+
+
+def is_home(path: str):
+    return path == HOME or path == ""
+
+
+def parse_id_from_path(path: str):
+    parts = path.split("/")
+    tail = parts[len(parts) - 1]
+    if not tail.isdigit():
+        return 0
+    return int(tail)
+
+
+def in_range(post_id: int):
+    return post_id >= 1 and post_id <= MAX_POST_ID
+
+
+component Nav(path="/"):
+    posts_cls = f"rounded-lg px-3 py-1.5 text-xs font-medium {'bg-violet-600 text-white' if is_home(path) else 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'}"
+    header(cls="sticky top-0 z-40 border-b border-slate-800 bg-slate-950/80 backdrop-blur"):
+        div(cls="mx-auto flex max-w-5xl items-center gap-4 px-6 py-3"):
+            Link(to="/", cls="text-sm font-semibold text-white"):
+                "hydra/blog"
+            nav(cls="ml-auto flex items-center gap-1"):
+                Link(to="/", cls=posts_cls): "Posts"
+                a(
+                    href="https://jsonplaceholder.typicode.com",
+                    cls="rounded-lg px-3 py-1.5 text-xs font-medium text-slate-400 hover:bg-slate-800 hover:text-slate-200",
+                ):
+                    "API"
+
+
+component Footer():
+    footer(cls="mx-auto max-w-5xl px-6 pb-10 pt-4"):
+        p(cls="text-center text-xs text-slate-600"):
+            "Data from JSONPlaceholder · built with HydraScript"
+
+
+component App():
+    path = use_path()
+    post_id = parse_id_from_path(path)
+    on_detail = not is_home(path)
+    missing = not in_range(post_id)
+
+    div(cls="min-h-screen bg-slate-950 text-slate-200"):
+        Nav(path=path)
+
+        main(cls="mx-auto max-w-5xl px-6 py-8"):
+            if on_detail and missing:
+                NotFound()
+            elif on_detail:
+                PostDetail(path=path)
+            else:
+                div(cls="space-y-6"):
+                    div():
+                        h1(cls="text-2xl font-semibold text-white"): "Posts"
+                        p(cls="text-sm text-slate-400"):
+                            "Fetched with fetch_json; loading, error, and not-found states are explicit."
+                    PostList()
+
+        Footer()

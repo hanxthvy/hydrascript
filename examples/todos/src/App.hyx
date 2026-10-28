@@ -1,0 +1,270 @@
+# [xihanzu-NR]
+# Todos — global state via zustand + localStorage persistence.
+#
+# The store lives in this same file rather than a `store.hyx` module because
+# the compiler silently DROPS `export const`, so a store defined in another
+# file could not be imported. See the ecosystem report.
+
+from "serpent" import state, effect, computed, cx
+
+from "zustand" import create
+
+STORAGE_KEY = "hydra.todos.v1"
+FILTERS = ["all", "active", "done"]
+FILTER_LABELS = {"all": "All", "active": "Active", "done": "Done"}
+
+SEED = [
+    {"id": 1, "text": "Read the HydraScript README", "done": True},
+    {"id": 2, "text": "Port a component from TSX", "done": False},
+    {"id": 3, "text": "Ship the ecosystem fixture", "done": False},
+]
+
+
+def read_stored():
+    # Hydrate from localStorage; fall back to the seed list.
+    #
+    # Deliberately no try/except: the compiler silently drops the `try` block
+    # AND every statement after it inside a `def`, which truncated this
+    # function so badly that it returned undefined. A length check is enough
+    # because we are the only writer of this key.
+    if typeof(localStorage) == "undefined":
+        return SEED
+    raw = localStorage.getItem(STORAGE_KEY)
+    if raw == None or raw.length < 2:
+        return SEED
+    parsed = JSON.parse(raw)
+    if isinstance(parsed, list):
+        return parsed
+    return SEED
+
+
+def next_id(items: list):
+    return max([i["id"] for i in items] + [0]) + 1
+
+
+def rename_item(items: list, tid: int, text: str):
+    return [
+        {**i, "text": text} if i["id"] == tid else i
+        for i in items
+    ]
+
+
+def drop_item(items: list, tid: int):
+    return [i for i in items if i["id"] != tid]
+
+
+# ---------------------------------------------------------------- the store
+
+use_store = create(lambda set_, get_: {
+    "items": read_stored(),
+    "filter": "all",
+    "add": lambda text: set_(lambda s: {
+        "items": s["items"] + [{"id": next_id(s["items"]), "text": text, "done": False}]
+    }),
+    "toggle": lambda tid: set_(lambda s: {
+        "items": [
+            {**i, "done": not i["done"]} if i["id"] == tid else i
+            for i in s["items"]
+        ]
+    }),
+    "remove": lambda tid: set_(lambda s: {"items": drop_item(s["items"], tid)}),
+    "rename": lambda tid, text: set_(lambda s: {"items": rename_item(s["items"], tid, text)}),
+    "clear_done": lambda: set_(lambda s: {"items": [i for i in s["items"] if not i["done"]]}),
+    "set_filter": lambda f: set_({"filter": f}),
+})
+
+
+# --------------------------------------------------------------- components
+
+component Counter(items=None):
+    rows = items or []
+    total = len(rows)
+    done = len([i for i in rows if i["done"]])
+    left = total - done
+    pct = 0 if total == 0 else int(done * 100 / total)
+
+    div(cls="rounded-xl border border-slate-800 bg-slate-900/60 p-4"):
+        div(cls="flex items-baseline justify-between"):
+            p(cls="text-xs uppercase tracking-wide text-slate-500"): "Progress"
+            p(cls="text-xs text-slate-400 tabular-nums"): f"{done}/{total} done"
+        p(cls="mt-2 text-3xl font-semibold text-white tabular-nums"):
+            f"{left} left"
+        div(cls="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-slate-800"):
+            div(cls="h-full rounded-full bg-violet-500", style={"width": f"{pct}%"})
+
+
+component TodoRow(item=None, on_toggle=None, on_remove=None, on_rename=None):
+    it = item or {}
+    editing, set_editing = state(False)
+    draft, set_draft = state(it["text"])
+
+    def commit():
+        text = draft.strip()
+        if text != "":
+            on_rename(it["id"], text)
+        else:
+            set_draft(it["text"])
+        set_editing(False)
+
+    def start():
+        set_draft(it["text"])
+        set_editing(True)
+
+    li(cls="group flex items-center gap-3 border-b border-slate-800 px-4 py-3 last:border-b-0"):
+        input(
+            type_="checkbox",
+            checked=it["done"],
+            cls="size-4 shrink-0 accent-violet-500",
+            on_change=lambda: on_toggle(it["id"]),
+        )
+
+        if editing:
+            input(
+                value=draft,
+                auto_focus=True,
+                cls="flex-1 rounded-lg border border-violet-500 bg-slate-900 px-2 py-1 text-sm text-slate-100 outline-none",
+                on_change=lambda e: set_draft(e.target.value),
+                on_key_down=lambda e: commit() if e.key == "Enter" else None,
+                on_blur=commit,
+            )
+        else:
+            span(
+                cls=cx(
+                    "flex-1 text-sm",
+                    {
+                        "text-slate-500 line-through": it["done"],
+                        "text-slate-100": not it["done"],
+                    },
+                ),
+                on_double_click=start,
+            ):
+                it["text"]
+
+        div(cls="flex items-center gap-1 opacity-0 transition group-hover:opacity-100"):
+            if not editing:
+                button(
+                    cls="rounded-md px-2 py-1 text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200",
+                    on_click=start,
+                ):
+                    "Edit"
+            button(
+                cls="rounded-md px-2 py-1 text-xs text-rose-300/80 hover:bg-rose-500/10 hover:text-rose-200",
+                on_click=lambda: on_remove(it["id"]),
+            ):
+                "Delete"
+
+
+component AddForm(on_add=None):
+    draft, set_draft = state("")
+
+    def submit():
+        text = draft.strip()
+        if text == "":
+            return
+        on_add(text)
+        set_draft("")
+
+    div(cls="flex gap-2"):
+        input(
+            value=draft,
+            placeholder="What needs doing?",
+            cls="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-violet-500",
+            on_change=lambda e: set_draft(e.target.value),
+            on_key_down=lambda e: submit() if e.key == "Enter" else None,
+        )
+        button(
+            cls="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-500",
+            on_click=submit,
+        ):
+            "Add"
+
+
+component FilterBar(filter="all", counts=None, on_set=None, on_clear=None):
+    c = counts or {}
+
+    div(cls="flex flex-wrap items-center gap-2"):
+        for f in FILTERS:
+            button(
+                key=f,
+                cls=cx(
+                    "rounded-full px-3 py-1.5 text-xs font-medium",
+                    {
+                        "bg-violet-600 text-white": filter == f,
+                        "bg-slate-800 text-slate-400 hover:bg-slate-700": filter != f,
+                    },
+                ),
+                on_click=lambda f=f: on_set(f),
+            ):
+                f"{FILTER_LABELS[f]} ({c[f]})"
+        button(
+            cls="ml-auto rounded-lg px-3 py-1.5 text-xs font-medium text-slate-400 hover:bg-slate-800 hover:text-rose-300",
+            on_click=on_clear,
+        ):
+            "Clear completed"
+
+
+component App():
+    store = use_store()
+    items = store["items"]
+    filter = store["filter"]
+
+    # Persist to localStorage on every change.
+    effect(lambda: localStorage.setItem(STORAGE_KEY, JSON.stringify(items)), [items])
+
+    visible = computed(
+        lambda: [
+            i for i in items
+            if filter == "all"
+            or (filter == "active" and not i["done"])
+            or (filter == "done" and i["done"])
+        ],
+        [items, filter],
+    )
+
+    counts = computed(
+        lambda: {
+            "all": len(items),
+            "active": len([i for i in items if not i["done"]]),
+            "done": len([i for i in items if i["done"]]),
+        },
+        [items],
+    )
+
+    empty = computed(lambda: len(visible) == 0, [visible])
+
+    div(cls="min-h-screen bg-slate-950 p-6 text-slate-200"):
+        div(cls="mx-auto max-w-2xl space-y-5"):
+            header():
+                h1(cls="text-2xl font-semibold text-white"): "Todos"
+                p(cls="text-sm text-slate-400"):
+                    "zustand store, persisted to localStorage."
+
+            Counter(items=items)
+
+            AddForm(on_add=store["add"])
+
+            div(cls="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/40"):
+                div(cls="border-b border-slate-800 px-4 py-3"):
+                    FilterBar(
+                        filter=filter,
+                        counts=counts,
+                        on_set=store["set_filter"],
+                        on_clear=store["clear_done"],
+                    )
+                if empty:
+                    div(cls="px-4 py-12 text-center"):
+                        p(cls="text-sm text-slate-500"):
+                            f"Nothing in “{FILTER_LABELS[filter]}”."
+                else:
+                    ul():
+                        for it in visible:
+                            TodoRow(
+                                key=it["id"],
+                                item=it,
+                                on_toggle=store["toggle"],
+                                on_remove=store["remove"],
+                                on_rename=store["rename"],
+                            )
+
+            p(cls="text-center text-xs text-slate-600"):
+                "Double-click a todo to edit it."

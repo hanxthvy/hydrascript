@@ -14,6 +14,7 @@ pub mod lexer;
 pub mod napi;
 pub mod parser;
 pub mod scaffold;
+pub mod tools;
 pub mod validate;
 
 pub use error::CompileError;
