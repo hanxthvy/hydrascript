@@ -1,0 +1,23 @@
+# [xihanzu-NR]
+# Assets — the "not JavaScript" half of a real React app.
+#
+# Three things every React project does and that used to fail here:
+#   1. import an image and use it as a URL
+#   2. import a stylesheet for its side effect (library CSS included)
+#   3. import a font / another binary asset
+#
+# `from "./assets/x.svg" import x` must emit `import x from './assets/x.svg'`.
+# A named import cannot be satisfied by any bundler's asset loader.
+
+import "./assets/asset-demo.css"
+from "./assets/hydra-mark.svg" import hydra_mark
+
+component AssetDemo():
+    div(className="space-y-3"):
+        div(className="hydra-asset-card"):
+            img(src=hydra_mark, alt="HydraScript mark", className="h-8 w-8")
+            div():
+                div(className="text-sm font-medium"): "Asset pipeline"
+                div(className="hydra-asset-card__meta"): "svg as default export + css side-effect import"
+        p(className="text-xs opacity-60"):
+            "Kalau kamu bisa membaca ini dengan mark di sebelahnya, gambar, stylesheet, dan bundler-nya sepakat."

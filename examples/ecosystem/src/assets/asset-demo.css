@@ -1,0 +1,19 @@
+/* [xihanzu-NR] */
+/* Local stylesheet: proves `import "..."` side-effect CSS is bundled rather than
+   dropped, and that a library-style file reaches dist/assets/index.css. */
+.hydra-asset-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid rgba(204, 120, 92, 0.4);
+  border-radius: 0.75rem;
+  background: linear-gradient(135deg, rgba(204, 120, 92, 0.08), rgba(124, 58, 237, 0.08));
+}
+
+.hydra-asset-card__meta {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+  opacity: 0.75;
+}
