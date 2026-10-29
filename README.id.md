@@ -118,14 +118,13 @@ sebelum memercayai salah satunya.
 
 | Klaim | Nilai terukur | Caranya |
 |---|---|---|
-| Latensi `hydra --check` | median ~2,1 ms | 20 kali, termasuk spawn proses |
-| Latensi `hydra <file>` | median ~2,0 ms | 20 kali, termasuk spawn proses |
-| Kompilasi in-process (`hydra.node`) | median ~0,063 ms | 2000 iterasi panas, tanpa spawn |
+| Latensi `hydra --check` | median ~1,8–2,1 ms | 20 kali, termasuk spawn proses |
+| Latensi `hydra <file>` | median ~1,9–2,0 ms | 20 kali, termasuk spawn proses |
+| Kompilasi in-process (`hydra.node`) | median ~0,063–0,067 ms | 2000 iterasi panas, tanpa spawn |
 | Tes | 308 tes, semua lolos | `cargo test` (215 unit + 93 integrasi) |
 | Biner CLI | ~1,1 MB | `bin/hydra`, sudah di-strip |
 | Addon N-API | ~800 KB | `bin/hydra.node` |
 | Biaya runtime impor `hydra` | ~200 byte | Bikin app identik dengan dan tanpa impor |
-| Jumlah token, satu komponen | 130 vs 188 (−30,9%) | `benchmarks/tokens.py`, `cl100k_base` |
 | Keluaran SSG, halaman kecil | 3,6 KB HTML | `examples/blog` dengan `ssg: true` |
 
 **Yang tidak diklaim README ini, dan kenapa:**

@@ -119,9 +119,9 @@ believing any of it.
 
 | Claim | Measured value | How |
 |---|---|---|
-| `hydra --check` latency | ~2.1 ms median | 20 runs, process spawn included |
-| `hydra <file>` latency | ~2.0 ms median | 20 runs, process spawn included |
-| In-process compile (`hydra.node`) | ~0.063 ms median | 2000 warm iterations, no spawn |
+| `hydra --check` latency | ~1.8–2.1 ms median | 20 runs, process spawn included |
+| `hydra <file>` latency | ~1.9–2.0 ms median | 20 runs, process spawn included |
+| In-process compile (`hydra.node`) | ~0.063–0.067 ms median | 2000 warm iterations, no spawn |
 | Test suite | 308 tests, all passing | `cargo test` (215 unit + 93 integration) |
 | CLI binary | ~1.1 MB | `bin/hydra`, stripped |
 | N-API addon | ~800 KB | `bin/hydra.node` |
