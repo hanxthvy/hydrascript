@@ -1,15 +1,15 @@
 # [xihanzu-NR]
 # Dashboard — form + validation + table + local state.
 #
-# Runtime helpers used (all from the "serpent" runtime):
+# Runtime helpers used (all from the "hydra" runtime):
 #   state, computed, effect, debounce, toggle, sum, len, cx
 #
-# NOTE: the brief asked for `form_state` and `validators` from "serpent".
-# Neither exists in runtime/serpent.ts, so the form below builds its own
+# NOTE: the brief asked for `form_state` and `validators` from "hydra".
+# Neither exists in runtime/hydra.ts, so the form below builds its own
 # field state and per-field validation with plain `state` + module-level defs.
 
-from "serpent" import state, computed, effect, debounce, toggle, sum, len
-from "serpent" import cx
+from "hydra" import state, computed, effect, debounce, toggle, sum, len
+from "hydra" import cx
 
 from "./RowForm.hyx" import RowForm
 

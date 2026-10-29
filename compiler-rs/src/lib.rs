@@ -1,5 +1,5 @@
 // [xihanzu-NR]
-//! Serpent compiler library surface.
+//! HydraScript compiler library surface.
 //!
 //! The binary is a thin wrapper over this crate so tests (and any embedder)
 //! can call the compiler in-process instead of shelling out to the binary.
@@ -40,7 +40,7 @@ pub fn target_for(filename: &str) -> Target {
     }
 }
 
-/// Compile Serpent source to `(code, sourcemap_json)`.
+/// Compile HydraScript source to `(code, sourcemap_json)`.
 ///
 /// The front end (lexer + parser) is shared; only the emitter differs by target.
 /// `filename` is only used for the source map.

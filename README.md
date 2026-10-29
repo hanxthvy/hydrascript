@@ -748,7 +748,7 @@ ENVIRONMENT VARIABLES:
   HYDRA_NATIVE          Explicit path to hydra.node addon
   HYDRA_COMPILER        Explicit path to hydra CLI binary
   HYDRA_RUNNER          Explicit path to packages/cli/runner.mjs
-  HYDRA_RUNTIME_PATH    Override the runtime module the `serpent` import resolves to
+  HYDRA_RUNTIME_PATH    Override the runtime module the `hydra` import resolves to
 ```
 
 ### Output validation

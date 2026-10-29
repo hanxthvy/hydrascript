@@ -54,7 +54,6 @@ function findNativeAddon() {
   const candidates = [
     process.env.HYDRA_NATIVE,
     path.join(HERE, '../../bin/hydra.node'),
-    path.join(HERE, '../../bin/serpent.node'),
   ].filter(Boolean);
 
   for (const c of candidates) {
@@ -70,9 +69,7 @@ function findNativeAddon() {
 function cliFallbackCompile(file, source) {
   const candidates = [
     process.env.HYDRA_COMPILER,
-    process.env.SERPENT_COMPILER,
     path.join(HERE, '../../bin/hydra'),
-    path.join(HERE, '../../bin/serpent'),
   ].filter(Boolean);
 
   for (const bin of candidates) {
@@ -466,38 +463,27 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     throw new Error('[hydra] Entrypoint not found: expected src/main.hyx');
   }
 
-  // 2. Discover the runtime alias
+  // 2. Discover the runtime
   //
-  // The compiler emits `import { capitalize } from 'serpent'` for every helper
-  // a source used but did not import. Nothing aliased that specifier, so any
-  // project using a Python string method failed to bundle with a bare
-  // "Could not resolve 'serpent'". Resolve it to the runtime that ships in
-  // this package, and keep the legacy `hydra` specifier working.
+  // `hydra` is the single runtime specifier. The compiler emits
+  // `import { capitalize } from 'hydra'` for every helper a source used but did
+  // not import, and application code imports its React helpers (`state`,
+  // `use_path`, `mount`) from the same name. Both must resolve to the runtime
+  // that ships with this package, which carries every helper the compiler can
+  // emit.
+  //
+  // A project file must NOT shadow this specifier. `src/hydra.hys` is never
+  // going to have every helper the compiler can emit (`len_of`, `contains`,
+  // `list_remove`, ...), and pointing the specifier at it produced
+  // "No matching export in src/hydra.hys for import len_of". Import a project
+  // runtime by relative path instead.
   const pkgRoot = path.resolve(HERE, '../..');
-  // The project's own runtime file (`src/hydra.hys`) and the compiler's helper
-  // runtime are DIFFERENT things and must not share one alias.
-  //
-  // `serpent` is where the compiler emits imports for the Python-standard
-  // helpers it uses (`len_of`, `contains`, `list_remove`, ...). Pointing that
-  // at the project's runtime produced "No matching export in src/hydra.hys for
-  // import len_of" — the project file is never going to have every helper the
-  // compiler can emit, and it is the compiler's job to provide them.
-  //
-  // `hydra` is the application-facing runtime (`state`, `use_path`, `mount`).
-  // When the project ships its own, that one wins: it may carry app-specific
-  // helpers that the compiler runtime has never heard of.
-  const compilerRuntime =
+  const hydraAlias =
     [
       process.env.HYDRA_RUNTIME_PATH,
-      path.join(pkgRoot, 'runtime', 'serpent.ts'),
-      path.join(pkgRoot, 'runtime-js', 'serpent-js.js'),
-    ].find((f) => f && fs.existsSync(f)) || path.join(pkgRoot, 'runtime', 'serpent.ts');
-  const projectRuntime = [
-    path.resolve(cwd, 'src/hydra.hys'),
-    path.resolve(cwd, 'src/hydra.hs'),
-  ].find((f) => fs.existsSync(f));
-  const serpentAlias = compilerRuntime;
-  const hydraAlias = projectRuntime || compilerRuntime;
+      path.join(pkgRoot, 'runtime', 'hydra.ts'),
+      path.join(pkgRoot, 'runtime-js', 'hydra-js.js'),
+    ].find((f) => f && fs.existsSync(f)) || path.join(pkgRoot, 'runtime', 'hydra.ts');
 
   // 3. Bundle JavaScript via esbuild
   const clientResult = await esbuild.build({
@@ -550,9 +536,8 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     alias: {
       ...tsconfigAliases(cwd),
       '@': path.resolve(cwd, 'src'),
-      // Both specifiers point at the same runtime: `serpent` is what the
-      // compiler emits today, `hydra` is what older sources import.
-      serpent: serpentAlias,
+      // The runtime specifier: every helper the compiler emits, plus the
+      // React batteries application code imports.
       hydra: hydraAlias,
     },
     loader: {
@@ -747,12 +732,11 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
           resolveExtensions: ['.hyx', '.hys', '.hsx', '.hs', '.mjs', '.js', '.jsx', '.ts', '.tsx', '.json'],
           nodePaths: [path.join(cwd, 'node_modules'), path.join(pkgRoot, 'node_modules')],
           alias: {
-            // Same two specifiers as the browser build: missing `serpent` here
+            // Same runtime specifier as the browser build: missing it here
             // made the SSG pass fail after a successful client build.
             // tsconfig paths are included too, or a component importing `~lib/x`
             // would render on the client and throw during pre-render.
             ...tsconfigAliases(cwd),
-            serpent: serpentAlias,
             hydra: hydraAlias,
             '@': path.resolve(cwd, 'src'),
           },

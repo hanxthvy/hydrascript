@@ -1,6 +1,6 @@
 // [xihanzu-NR]
 /**
- * VS Code language support for Serpent (.hsx).
+ * VS Code language support for HydraScript (.hsx).
  *
  * Deliberately thin: a TextMate grammar for colour and a tiny LSP-shaped
  * diagnostics client that shells out to the native compiler. No language server
@@ -15,21 +15,16 @@ const fs = require('node:fs')
 function findCompiler(context) {
   const candidates = [
     path.join(context.extensionPath, 'bin', 'hydra'),
-    path.join(context.extensionPath, 'bin', 'serpent'),
     ...(vscode.workspace.workspaceFolders ?? []).map((f) =>
       path.join(f.uri.fsPath, 'compiler-rs', 'target', 'release', 'hydra'),
     ),
     ...(vscode.workspace.workspaceFolders ?? []).map((f) =>
-      path.join(f.uri.fsPath, 'compiler-rs', 'target', 'release', 'serpent'),
-    ),
-    ...(vscode.workspace.workspaceFolders ?? []).map((f) =>
-      path.join(f.uri.fsPath, 'node_modules', 'vite-plugin-serpent', 'bin', 'serpent'),
+      path.join(f.uri.fsPath, 'node_modules', 'vite-plugin-hydrascript', 'bin', 'hydra'),
     ),
     'hydra',
-    'serpent',
   ]
   for (const c of candidates) {
-    if (c === 'hydra' || c === 'serpent' || fs.existsSync(c)) return c
+    if (c === 'hydra' || fs.existsSync(c)) return c
   }
   return null
 }
@@ -51,14 +46,14 @@ function diagnose(doc, bin, collection) {
       hint ? `${m[1]}\n${hint[1]}` : m[1],
       vscode.DiagnosticSeverity.Error,
     )
-    diag.source = 'serpent'
+    diag.source = 'hydra'
     collection.set(doc.uri, [diag])
   })
 }
 
 function activate(context) {
   const bin = findCompiler(context)
-  const collection = vscode.languages.createDiagnosticCollection('serpent')
+  const collection = vscode.languages.createDiagnosticCollection('hydra')
   context.subscriptions.push(collection)
 
   if (bin) {

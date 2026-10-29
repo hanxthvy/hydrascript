@@ -2826,9 +2826,9 @@ mod tests {
 
     #[test]
     fn from_import_keeps_module_and_names() {
-        match &stmts("from serpent import state, effect\n")[0].kind {
+        match &stmts("from hydra import state, effect\n")[0].kind {
             Kind::Import { from, names } => {
-                assert_eq!(from.as_deref(), Some("serpent"));
+                assert_eq!(from.as_deref(), Some("hydra"));
                 assert_eq!(names, &vec!["state".to_string(), "effect".to_string()]);
             }
             other => panic!("got {:?}", other),
@@ -2837,10 +2837,10 @@ mod tests {
 
     #[test]
     fn bare_import_has_no_module() {
-        match &stmts("import serpent\n")[0].kind {
+        match &stmts("import hydra\n")[0].kind {
             Kind::Import { from, names } => {
                 assert!(from.is_none());
-                assert_eq!(names, &vec!["serpent".to_string()]);
+                assert_eq!(names, &vec!["hydra".to_string()]);
             }
             other => panic!("got {:?}", other),
         }

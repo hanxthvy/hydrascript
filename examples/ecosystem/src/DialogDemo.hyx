@@ -13,7 +13,7 @@ from "@radix-ui/react-dialog" import Root, Trigger, Portal, Overlay, Content, Ti
 
 from "sonner" import Toaster, toast
 
-from "serpent" import state, cx
+from "hydra" import state, cx
 
 from "./Section.hyx" import Section
 

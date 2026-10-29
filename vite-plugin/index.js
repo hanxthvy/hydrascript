@@ -20,13 +20,9 @@ function findCompiler(explicit) {
   const candidates = [
     explicit,
     process.env.HYDRA_COMPILER,
-    process.env.SERPENT_COMPILER,
     path.join(HERE, 'bin', 'hydra'),
-    path.join(HERE, 'bin', 'serpent'),
     path.join(HERE, '..', 'compiler-rs', 'target', 'release', 'hydra'),
-    path.join(HERE, '..', 'compiler-rs', 'target', 'release', 'serpent'),
     path.join(HERE, '..', 'compiler-rs', 'target', 'debug', 'hydra'),
-    path.join(HERE, '..', 'compiler-rs', 'target', 'debug', 'serpent'),
   ].filter(Boolean)
   for (const c of candidates) {
     if (existsSync(c)) return c
@@ -56,18 +52,18 @@ export function hydrascript(opts = {}) {
     } catch (e) {
       // The binary exits 1 with a caret-annotated message on stderr.
       const msg = (e.stderr || e.message || '').toString().trim()
-      res = { error: msg || `serpent: compile failed for ${file}` }
+      res = { error: msg || `hydra: compile failed for ${file}` }
     }
     cache.set(file, res)
     return res
   }
 
   return {
-    name: 'serpent',
+    name: 'hydra',
     enforce: 'pre',
 
     configResolved(cfg) {
-      if (opts.debug) cfg.logger.info(`[serpent] compiler: ${bin}`)
+      if (opts.debug) cfg.logger.info(`[hydra] compiler: ${bin}`)
     },
 
     async transform(source, id) {
@@ -87,7 +83,7 @@ export function hydrascript(opts = {}) {
         sourcefile: id,
       })
       if (opts.debug) {
-        this.info(`[serpent] ${path.basename(id)} -> ${res.code.split('\n').length} lines TSX`)
+        this.info(`[hydra] ${path.basename(id)} -> ${res.code.split('\n').length} lines TSX`)
       }
       return { code: js.code, map: js.map }
     },
@@ -98,5 +94,4 @@ export function hydrascript(opts = {}) {
   }
 }
 
-export const serpent = hydrascript
 export default hydrascript

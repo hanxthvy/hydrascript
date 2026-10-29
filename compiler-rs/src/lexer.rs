@@ -1,5 +1,5 @@
 // [xihanzu-NR]
-//! Tokenizer for the Serpent language.
+//! Tokenizer for the HydraScript language.
 //!
 //! Two jobs the AST-level tools cannot do: significant indentation, and
 //! knowing where a token started so errors can point at it.

@@ -5,7 +5,7 @@
 # the compiler silently DROPS `export const`, so a store defined in another
 # file could not be imported. See the ecosystem report.
 
-from "serpent" import state, effect, computed, cx
+from "hydra" import state, effect, computed, cx
 
 from "zustand" import create
 

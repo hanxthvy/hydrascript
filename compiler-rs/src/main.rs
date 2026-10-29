@@ -91,7 +91,7 @@ fn main() -> ExitCode {
     let (src, filename) = if from_stdin {
         let mut buf = String::new();
         if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
-            eprintln!("serpent: cannot read stdin: {}", e);
+            eprintln!("hydra: cannot read stdin: {}", e);
             return ExitCode::from(1);
         }
         let name = args
@@ -127,7 +127,7 @@ fn main() -> ExitCode {
         match std::fs::read_to_string(&path) {
             Ok(s) => (s, path),
             Err(e) => {
-                eprintln!("serpent: cannot read {}: {}", path, e);
+                eprintln!("hydra: cannot read {}: {}", path, e);
                 return ExitCode::from(1);
             }
         }
@@ -144,7 +144,7 @@ fn main() -> ExitCode {
                 let payload = format!("{{\"code\":{},\"map\":{}}}", json_string(&code), map);
                 if let Some(out_path) = out_file {
                     if let Err(e) = std::fs::write(&out_path, payload) {
-                        eprintln!("serpent: cannot write {}: {}", out_path, e);
+                        eprintln!("hydra: cannot write {}: {}", out_path, e);
                         return ExitCode::from(1);
                     }
                 } else {
@@ -162,7 +162,7 @@ fn main() -> ExitCode {
             );
             if let Some(out_path) = out_file {
                 if let Err(e) = std::fs::write(&out_path, full_out) {
-                    eprintln!("serpent: cannot write {}: {}", out_path, e);
+                    eprintln!("hydra: cannot write {}: {}", out_path, e);
                     return ExitCode::from(1);
                 }
             } else {

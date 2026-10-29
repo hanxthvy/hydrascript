@@ -3,7 +3,7 @@
 
 from "zustand" import create
 
-from "serpent" import cx
+from "hydra" import cx
 
 from "./Section.hyx" import Section
 

@@ -3,8 +3,8 @@
 #
 # Data source: JSONPlaceholder (public, CORS-enabled, no key).
 
-from "serpent" import state, computed, debounce, fetch_json, len, cx
-from "serpent" import Link
+from "hydra" import state, computed, debounce, fetch_json, len, cx
+from "hydra" import Link
 
 API = "https://jsonplaceholder.typicode.com/posts?_limit=24"
 

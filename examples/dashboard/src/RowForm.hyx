@@ -5,9 +5,9 @@
 # only appear once a field is touched (or after Create is pressed), and a
 # submit handler that refuses to call back while any error stands.
 
-from "serpent" import state, computed, cx
+from "hydra" import state, computed, cx
 
-# NOTE: the runtime's own `dict_get` cannot be imported. runtime/serpent.ts
+# NOTE: the runtime's own `dict_get` cannot be imported. runtime/hydra.ts
 # declares it twice (lines ~216 and ~333), so esbuild fails the whole bundle
 # with "Multiple exports with the same name 'dict_get'". This local helper is
 # the workaround; see the ecosystem report.

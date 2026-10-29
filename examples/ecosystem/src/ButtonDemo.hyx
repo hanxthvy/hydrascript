@@ -9,7 +9,7 @@ from "clsx" import clsx
 from "tailwind-merge" import twMerge
 from "lucide-react" import Plus, Check, Trash2, Search, ShieldCheck, Sparkles
 
-from "serpent" import state, cx
+from "hydra" import state, cx
 
 from "./Section.hyx" import Section
 

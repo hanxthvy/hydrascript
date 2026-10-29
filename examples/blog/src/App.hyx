@@ -4,8 +4,8 @@
 # Routing uses the runtime's own `use_path` / `navigate` / `Link`, not
 # react-router-dom, so this app exercises the compiler's built-in router.
 
-from "serpent" import use_path
-from "serpent" import Link
+from "hydra" import use_path
+from "hydra" import Link
 
 from "./PostList.hyx" import PostList
 from "./PostDetail.hyx" import PostDetail

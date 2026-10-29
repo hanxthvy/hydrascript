@@ -2,8 +2,8 @@
 # Post detail — one more fetch keyed on the id parsed out of the URL path,
 # plus the not-found fallback.
 
-from "serpent" import computed, fetch_json, len, cx
-from "serpent" import Link, navigate
+from "hydra" import computed, fetch_json, len, cx
+from "hydra" import Link, navigate
 
 API = "https://jsonplaceholder.typicode.com"
 

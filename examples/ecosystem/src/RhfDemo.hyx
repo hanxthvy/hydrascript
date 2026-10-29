@@ -10,9 +10,9 @@
 
 from "react-hook-form" import useForm
 
-from "serpent" import state, computed, cx
+from "hydra" import state, computed, cx
 
-# The runtime's `dict_get` is unusable: runtime/serpent.ts declares it twice,
+# The runtime's `dict_get` is unusable: runtime/hydra.ts declares it twice,
 # which makes esbuild reject the entire bundle. Local equivalent instead.
 def safe_get(o, key: str, fallback):
     if o == None:

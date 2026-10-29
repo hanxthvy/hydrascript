@@ -3,11 +3,11 @@
   "version": "0.1.0",
   "description": "HydraScript runtime — Pythonic batteries for React (.hsx) and modern JavaScript (.hs)",
   "type": "module",
-  "main": "./serpent.ts",
-  "types": "./serpent.ts",
+  "main": "./hydra.ts",
+  "types": "./hydra.ts",
   "exports": {
-    ".": "./serpent.ts",
-    "./js": "../runtime-js/serpent-js.js"
+    ".": "./hydra.ts",
+    "./js": "../runtime-js/hydra-js.js"
   },
   "peerDependencies": { "react": ">=18" },
   "keywords": ["react", "python", "hydrascript", "hsx", "compiler"],

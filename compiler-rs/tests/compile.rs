@@ -1,5 +1,5 @@
 // [xihanzu-NR]
-//! End-to-end integration tests for the Serpent compiler.
+//! End-to-end integration tests for the HydraScript compiler.
 //!
 //! Mirrors the reference Python test suite and extends it with all required
 //! edge cases: Unicode identifiers, Windows paths, CRLF line endings, nested
@@ -413,13 +413,13 @@ fn test_stmt_level_if_and_for() {
 #[test]
 fn test_imports_from_and_bare() {
     let src =
-        "from serpent import state, effect\nimport serpent\n\ncomponent A():\n    div: \"z\"\n";
+        "from hydra import state, effect\nimport hydra\n\ncomponent A():\n    div: \"z\"\n";
     let out = comp(src);
     assert_contains(
         &out,
         &[
-            "import serpent from 'serpent';",
-            "import { state, effect } from 'serpent';",
+            "import hydra from 'hydra';",
+            "import { state, effect } from 'hydra';",
         ],
     );
 }
@@ -644,7 +644,7 @@ fn test_edge_case_windows_style_paths() {
 
 #[test]
 fn test_balanced_full_todo_app() {
-    let src = r#"from serpent import state
+    let src = r#"from hydra import state
 
 component TodoApp():
     todos, set_todos = state(["Belajar Python", "Bikin Framework"])
@@ -725,7 +725,7 @@ fn test_hx_try_except_finally() {
     assert_contains(
         &out,
         &[
-            "import { ValueError, int } from 'serpent';",
+            "import { ValueError, int } from 'hydra';",
             "try {",
             "catch (__err) {",
             "if (__err instanceof ValueError) {",
@@ -859,7 +859,7 @@ fn test_feature_cls_conditional_dict() {
     assert_contains(
         &out,
         &[
-            "import { cx } from 'serpent';",
+            "import { cx } from 'hydra';",
             "className={cx(({\"btn\": true, \"active\": is_active, \"opacity-50\": is_disabled}))}",
         ],
     );
@@ -872,7 +872,7 @@ fn test_feature_cls_conditional_list() {
 "#;
     let out = comp(src);
     assert_contains(&out, &[
-        "import { cx } from 'serpent';",
+        "import { cx } from 'hydra';",
         "className={cx([\"card-base\", (highlight ? \"border-blue-500\" : \"border-gray-200\")])}",
     ]);
 }

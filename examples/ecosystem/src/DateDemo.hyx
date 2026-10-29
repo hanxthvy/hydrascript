@@ -3,7 +3,7 @@
 
 from "date-fns" import format, addDays, formatDistanceToNow, isAfter
 
-from "serpent" import computed
+from "hydra" import computed
 
 from "./Section.hyx" import Section
 

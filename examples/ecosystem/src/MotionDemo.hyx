@@ -5,7 +5,7 @@
 # bare `motion` entry point is the vanilla-JS API and does not export these.
 from "motion/react" import motion, AnimatePresence
 
-from "serpent" import state, toggle, cx
+from "hydra" import state, toggle, cx
 
 from "./Section.hyx" import Section
 

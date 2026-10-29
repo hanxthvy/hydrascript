@@ -1,6 +1,6 @@
 // [xihanzu-NR]
 /**
- * Serpent runtime — the batteries.
+ * HydraScript runtime — the batteries.
  *
  * Design rule: every export here must be explicable in one sentence, and must
  * not surprise a Python developer. Where React's model differs from Python's
@@ -220,7 +220,7 @@ export const dict_get = <T,>(o: any, key: string, fallback: T): T =>
 export function safe<A extends any[]>(fn: (...a: A) => void): (...a: A) => void {
   return (...a: A) => {
     try { fn(...a) } catch (e) {
-      console.error('[serpent] handler threw:', e)
+      console.error('[hydra] handler threw:', e)
       throw e  // rethrow: an error boundary should still see it
     }
   }
@@ -1303,7 +1303,7 @@ export function use_local_storage<T>(key: string, initial: T): [T, (v: T | ((pre
           try {
             window.localStorage.setItem(key, JSON.stringify(resolved))
           } catch (e) {
-            console.error(`[serpent] localStorage error for key "${key}":`, e)
+            console.error(`[hydra] localStorage error for key "${key}":`, e)
           }
         }
         return resolved
@@ -1991,7 +1991,7 @@ export function copy_text(s: string): boolean {
     document.body.removeChild(ta)
     return ok
   } catch (e) {
-    console.error('[serpent] copy failed:', e)
+    console.error('[hydra] copy failed:', e)
     return false
   }
 }
@@ -2242,7 +2242,7 @@ export const storage = {
       window.localStorage.setItem(key, JSON.stringify(value))
       return true
     } catch (e) {
-      console.error(`[serpent] storage.set("${key}") failed:`, e)
+      console.error(`[hydra] storage.set("${key}") failed:`, e)
       return false
     }
   },

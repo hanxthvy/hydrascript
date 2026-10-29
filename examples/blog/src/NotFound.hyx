@@ -1,7 +1,7 @@
 # [xihanzu-NR]
 # Fallback UI for a post id that is not numeric or out of range.
 
-from "serpent" import navigate
+from "hydra" import navigate
 
 
 component NotFound():

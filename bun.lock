@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "serpent-monorepo",
+      "name": "hydrascript-monorepo",
     },
     "demo2": {
       "name": "demo2",
@@ -11,7 +11,7 @@
       "dependencies": {
         "react": "^18.3.1",
         "react-dom": "^18.3.1",
-        "serpent": "workspace:*",
+        "hydrascript": "workspace:*",
       },
       "devDependencies": {
         "@types/react": "^18.3.1",
@@ -22,18 +22,18 @@
         "tailwindcss": "^3.4.16",
         "typescript": "^5.7.2",
         "vite": "^6.0.3",
-        "vite-plugin-serpent": "workspace:*",
+        "vite-plugin-hydrascript": "workspace:*",
       },
     },
     "runtime": {
-      "name": "serpent",
+      "name": "hydrascript",
       "version": "0.1.0",
       "peerDependencies": {
         "react": ">=18",
       },
     },
     "vite-plugin": {
-      "name": "vite-plugin-serpent",
+      "name": "vite-plugin-hydrascript",
       "version": "0.1.0",
       "peerDependencies": {
         "vite": ">=5",
@@ -377,7 +377,7 @@
 
     "semver": ["semver@6.3.1", "", { "bin": { "semver": "bin/semver.js" } }, "sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA=="],
 
-    "serpent": ["serpent@workspace:runtime"],
+    "hydrascript": ["hydrascript@workspace:runtime"],
 
     "source-map-js": ["source-map-js@1.2.1", "", {}, "sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA=="],
 
@@ -405,7 +405,7 @@
 
     "vite": ["vite@6.4.3", "", { "dependencies": { "esbuild": "^0.25.0", "fdir": "^6.4.4", "picomatch": "^4.0.2", "postcss": "^8.5.3", "rollup": "^4.34.9", "tinyglobby": "^0.2.13" }, "optionalDependencies": { "fsevents": "~2.3.3" }, "peerDependencies": { "@types/node": "^18.0.0 || ^20.0.0 || >=22.0.0", "jiti": ">=1.21.0", "less": "*", "lightningcss": "^1.21.0", "sass": "*", "sass-embedded": "*", "stylus": "*", "sugarss": "*", "terser": "^5.16.0", "tsx": "^4.8.1", "yaml": "^2.4.2" }, "optionalPeers": ["@types/node", "jiti", "less", "lightningcss", "sass", "sass-embedded", "stylus", "sugarss", "terser", "tsx", "yaml"], "bin": { "vite": "bin/vite.js" } }, "sha512-NTKlcQjlAK7MlQoyb6LgaqHc8sso/pVyUJYWMws3jg21uTJw/LddqIFPcPqP6PzpgbIcZyKI85sFE4HBrQDA8A=="],
 
-    "vite-plugin-serpent": ["vite-plugin-serpent@workspace:vite-plugin"],
+    "vite-plugin-hydrascript": ["vite-plugin-hydrascript@workspace:vite-plugin"],
 
     "yallist": ["yallist@3.1.1", "", {}, "sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g=="],
 

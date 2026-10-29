@@ -1,7 +1,7 @@
 {
-  "name": "vite-plugin-serpent",
+  "name": "vite-plugin-hydrascript",
   "version": "0.1.0",
-  "description": "Vite plugin: compile .hsx (Pythonic syntax) to React TSX via the native serpent compiler",
+  "description": "Vite plugin: compile .hsx (Pythonic syntax) to React TSX via the native hydra compiler",
   "type": "module",
   "main": "./index.js",
   "exports": {
