@@ -128,6 +128,8 @@ believing any of it.
 | Runtime cost of the `hydra` import | ~200 bytes | Built an identical app with and without it |
 | Token count, one component | 130 vs 188 (−30.9%) | `benchmarks/tokens.py`, `cl100k_base` |
 | SSG output, small page | 3.6 KB HTML | `examples/blog` with `ssg: true` |
+| Dev rebuild (`hydra dev` save) | 508–756 ms vs 1252 ms before | `benchmarks/build-ab.mjs --dev`, 3 edits each |
+| Production build (portfolio) | unchanged, ~2.3–2.6 s | Same script, 4 runs each |
 
 **What this README does not claim, and why:**
 
@@ -137,6 +139,11 @@ believing any of it.
   apples-to-apples, so they are gone.
 - No "zero extra kilobytes". The runtime is small (~200 bytes for a component
   that uses it) but not zero, and react + react-dom dominate any real bundle.
+- **No claim that the production build got faster.** It did not: repeated A/B
+  runs land inside each other's spread (~2.3–2.6 s). What got faster is the
+  `hydra dev` rebuild loop, because that is the path that runs hundreds of
+  times a day. The production path was already dominated by esbuild's own
+  minify+bundle work, which no option here changes.
 - No AI/LLM token-efficiency study. The old "12.6% fewer tokens across 5
   production components" had no script, no corpus, and no commit behind it. One
   component is measured instead, and the number is labelled as one component.
@@ -507,6 +514,26 @@ react-router, react-hook-form, sonner, lucide, clsx, tailwind-merge, date-fns) s
 a bundler regression shows up as a build failure.
 
 ---
+
+## Profiling a build
+
+    HYDRA_PROFILE=1 hydra build
+
+Prints a per-phase breakdown to stderr. Kept in the shipped runner because
+"where did the build time go" is the first question after any bundler change,
+and a profiler that lives in a scratch script gets rewritten every time. On the
+portfolio it reports roughly: client bundle 60%, bundled deps 20%, pre-render
+20% (the pre-render's esbuild pass overlaps the client one, so it shows as
+near-zero when the machine has a spare core).
+
+Two project options exist because of what the profile showed:
+
+- `"build": { "sourcemap": false }` — sourcemaps are the single most expensive
+  option in the client build. On by default; off is a real saving for a project
+  that debugs from the deployed source.
+- `HYDRA_NO_SSG=1` — skip pre-rendering for one build. `hydra dev` already
+  skips it, because a pre-rendered shell is for crawlers and nobody watching
+  the dev loop is one.
 
 ## Known limitations
 

@@ -126,6 +126,8 @@ sebelum memercayai salah satunya.
 | Addon N-API | ~800 KB | `bin/hydra.node` |
 | Biaya runtime impor `hydra` | ~200 byte | Bikin app identik dengan dan tanpa impor |
 | Keluaran SSG, halaman kecil | 3,6 KB HTML | `examples/blog` dengan `ssg: true` |
+| Rebuild dev (`hydra dev` saat save) | 508–756 ms, sebelumnya 1252 ms | `benchmarks/build-ab.mjs --dev`, 3 edit masing-masing |
+| Build produksi (portofolio) | tidak berubah, ~2,3–2,6 s | Skrip sama, 4 run masing-masing |
 
 **Yang tidak diklaim README ini, dan kenapa:**
 
@@ -136,6 +138,11 @@ sebelum memercayai salah satunya.
 - Tidak ada "nol kilobyte tambahan". Runtime-nya kecil (~200 byte untuk komponen
   yang memakainya) tapi bukan nol, dan react + react-dom mendominasi bundel
   nyata mana pun.
+- **Tidak ada klaim bahwa build produksi jadi lebih cepat.** Tidak: A/B
+  berulang hasilnya di dalam rentang satu sama lain (~2,3–2,6 s). Yang jadi
+  lebih cepat adalah loop rebuild `hydra dev`, karena itu jalur yang berjalan
+  ratusan kali sehari. Jalur produksi sudah didominasi kerja minify+bundle
+  esbuild sendiri, yang tidak diubah opsi apa pun di sini.
 - Tidak ada studi efisiensi token AI/LLM. Angka lama "12,6% lebih sedikit token
   di 5 komponen produksi" tidak punya skrip, korpus, maupun commit di
   belakangnya. Sekarang satu komponen yang diukur, dan angkanya disebut sebagai
@@ -507,6 +514,26 @@ motion, recharts, react-router, react-hook-form, sonner, lucide, clsx,
 tailwind-merge, date-fns) supaya regresi bundler muncul sebagai kegagalan build.
 
 ---
+
+## Profiling build
+
+    HYDRA_PROFILE=1 hydra build
+
+Mencetak rincian per fase ke stderr. Sengaja ikut dikirim di runner karena
+"waktu build habis di mana" adalah pertanyaan pertama setelah perubahan apa pun
+pada bundler, dan profiler yang hidup di skrip sementara akan ditulis ulang
+tiap kali. Di portofolio kira-kira: bundle klien 60%, pemuatan dependensi 20%,
+pra-render 20% (build pra-render tumpang tindih dengan bundle klien, jadi
+tampak mendekati nol saat mesin punya core senggang).
+
+Dua opsi proyek ada karena apa yang ditunjukkan profil:
+
+- `"build": { "sourcemap": false }` — sourcemap adalah opsi paling mahal di
+  build klien. Default menyala; mematikannya menghemat nyata untuk proyek yang
+  men-debug dari sumber yang di-deploy.
+- `HYDRA_NO_SSG=1` — lewati pra-render untuk satu build. `hydra dev` sudah
+  melewatinya, karena shell pra-render itu untuk crawler dan tidak ada yang
+  memantau dev loop yang seorang crawler.
 
 ## Keterbatasan yang diketahui
 

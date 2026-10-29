@@ -30,21 +30,44 @@ function resolvePkg(name, cwd) {
   }
 }
 
+// One cache per resolved path. `hydra dev` rebuilds on every save, and these
+// four packages are ~400-500 ms of the first build; re-importing them on each
+// rebuild was pure repetition. Resolving is still done per call so a project
+// whose node_modules changed is picked up.
+const bundlerDepsCache = new Map();
+
+// `hydra dev` keeps one esbuild context alive and calls rebuild() on each save.
+// A fresh `esbuild.build` re-parses the entire module graph every time; a
+// context keeps the graph and re-resolves only what changed. Cleared when a
+// build throws, so a broken option cannot wedge the dev loop forever.
+let devEsbuildContext = null;
+
+
 async function loadBundlerDeps(cwd) {
   const esbuildPath = resolvePkg('esbuild', cwd);
   const postcssPath = resolvePkg('postcss', cwd);
   const twPath = resolvePkg('tailwindcss', cwd);
   const apPath = resolvePkg('autoprefixer', cwd);
 
-  const esbuild = await import(esbuildPath);
-  const postcssMod = await import(postcssPath);
+  const key = [esbuildPath, postcssPath, twPath, apPath].join('\u0000');
+  const cached = bundlerDepsCache.get(key);
+  if (cached) return cached;
+
+  // Four independent dynamic imports, started together. Awaiting them one at a
+  // time serialised module resolution and cost ~300 ms it did not have to.
+  const [esbuild, postcssMod, twMod, apMod] = await Promise.all([
+    import(esbuildPath),
+    import(postcssPath),
+    import(twPath),
+    import(apPath),
+  ]);
   const postcss = postcssMod.default || postcssMod;
-  const twMod = await import(twPath);
   const tailwindcss = twMod.default || twMod;
-  const apMod = await import(apPath);
   const autoprefixer = apMod.default || apMod;
 
-  return { esbuild, postcss, tailwindcss, autoprefixer };
+  const deps = { esbuild, postcss, tailwindcss, autoprefixer };
+  bundlerDepsCache.set(key, deps);
+  return deps;
 }
 
 function findNativeAddon() {
@@ -117,11 +140,16 @@ function rewriteDynamicImports(code) {
 
 function createHydraEsbuildPlugin() {
   const native = findNativeAddon();
+  // Keyed by path AND source. Keying on path alone was enough for a one-shot
+  // build but not for an incremental rebuild: esbuild re-runs onLoad for a
+  // file that changed, and a path-only cache would hand back the previous
+  // compile for the new text. The comparison is what makes the cache safe to
+  // keep across rebuilds.
   const cache = new Map();
 
   function compile(file, source) {
     const hit = cache.get(file);
-    if (hit !== undefined) return hit;
+    if (hit !== undefined && hit.source === source) return hit.res;
 
     let res;
     if (native) {
@@ -129,7 +157,7 @@ function createHydraEsbuildPlugin() {
     } else {
       res = cliFallbackCompile(file, source);
     }
-    cache.set(file, res);
+    cache.set(file, { source, res });
     return res;
   }
 
@@ -433,8 +461,123 @@ function outputUrl(cwd, outDir, base, key) {
   return base + rel;
 }
 
+// Phase timing, opt-in: `HYDRA_PROFILE=1 hydra build`. Printed to stderr so it
+// never mixes into build output that tools parse. Kept in the shipped runner
+// because "where did the build time go" is the first question after any change
+// to this file, and a profiler that only exists in a scratch script gets
+// rewritten every time.
+const PROFILING = process.env.HYDRA_PROFILE === '1';
+const phaseTimes = [];
+function phase(name, t0) {
+  if (!PROFILING) return;
+  phaseTimes.push([name, Number(process.hrtime.bigint() - t0) / 1e6]);
+}
+function phaseStart() {
+  return PROFILING ? process.hrtime.bigint() : 0n;
+}
+function phaseReport(totalMs) {
+  if (!PROFILING || phaseTimes.length === 0) return;
+  const accounted = phaseTimes.reduce((a, [, ms]) => a + ms, 0);
+  console.error('\n[hydra:profile] phase breakdown');
+  for (const [name, ms] of phaseTimes) {
+    const pct = ((ms / totalMs) * 100).toFixed(1);
+    console.error(`  ${name.padEnd(26)} ${ms.toFixed(1).padStart(8)} ms  ${pct.padStart(5)}%`);
+  }
+  // The remainder is process start, config reading and module loading — real
+  // time the user waits for, so it is reported rather than hidden.
+  const rest = totalMs - accounted;
+  console.error(`  ${'(other)'.padEnd(26)} ${rest.toFixed(1).padStart(8)} ms  ${((rest / totalMs) * 100).toFixed(1).padStart(5)}%`);
+  console.error(`  ${'TOTAL'.padEnd(26)} ${totalMs.toFixed(1).padStart(8)} ms\n`);
+}
+
+/**
+ * Build the SSR bundle for pre-rendering. Returns `{ code }`.
+ *
+ * Split out of `runBuild` so it can be started before the client bundle and
+ * awaited at the pre-render step — the two builds read the same sources and
+ * share nothing else, so running them in sequence was leaving ~340 ms of a
+ * two-core machine idle.
+ *
+ * React stays external as bare specifiers. A second copy would mean a second
+ * hook dispatcher and an "invalid hook call" at render time.
+ */
+async function buildSsgBundle(esbuild, cwd, pkgRoot, ssgEntry, hydraAlias, config, mode, base) {
+  const jsxRuntimePath = resolvePkg('react/jsx-runtime', cwd);
+  let jsxDevRuntimePath;
+  try {
+    jsxDevRuntimePath = resolvePkg('react/jsx-dev-runtime', cwd);
+  } catch {}
+
+  const ssgResult = await esbuild.build({
+    entryPoints: [ssgEntry],
+    bundle: true,
+    write: false,
+    // CommonJS, not ESM. React itself is CommonJS, and an ESM bundle
+    // that keeps it external turns into `require("react")` inside a
+    // module Node loaded as ESM — which throws "Dynamic require of
+    // react is not supported". As CJS the require is native, and the
+    // react instance is shared with the renderer through the same
+    // require cache, so hooks see one dispatcher.
+    format: 'cjs',
+    platform: 'node',
+    jsx: 'automatic',
+    target: 'node18',
+    plugins: [
+      createHydraEsbuildPlugin(),
+      {
+        name: 'hydra-ssg-external-react',
+        setup(build) {
+          build.onResolve({ filter: /^react(\/.*)?$/ }, (args) => {
+            if (args.path === 'react' || args.path === 'react/jsx-runtime') {
+              return { path: args.path, external: true };
+            }
+            if (args.path === 'react/jsx-dev-runtime' && jsxDevRuntimePath) {
+              return { path: args.path, external: true };
+            }
+            try {
+              resolvePkg(args.path, cwd);
+              return { path: args.path, external: true };
+            } catch {}
+          });
+        },
+      },
+    ],
+    resolveExtensions: ['.hyx', '.hys', '.hsx', '.hs', '.mjs', '.js', '.jsx', '.ts', '.tsx', '.json'],
+    nodePaths: [path.join(cwd, 'node_modules'), path.join(pkgRoot, 'node_modules')],
+    alias: {
+      // Same runtime specifier as the browser build: missing it here
+      // made the SSG pass fail after a successful client build.
+      ...tsconfigAliases(cwd),
+      hydra: hydraAlias,
+      '@': path.resolve(cwd, 'src'),
+    },
+    loader: {
+      // `write: false` with no output path can never run a `file` loader
+      // ("Cannot use the file loader without an output path"), so assets
+      // stay inline here. Only the HTML string matters in this pass.
+      '.css': 'empty',
+      '.png': 'text',
+      '.jpg': 'text',
+      '.jpeg': 'text',
+      '.gif': 'text',
+      '.svg': 'text',
+      ...(config.compiler?.jsxInJs === false ? {} : { '.js': 'jsx' }),
+    },
+    // SSR is what this pass *is*, so a library that branches on
+    // `import.meta.env.SSR` takes its server path instead of touching
+    // `window`.
+    define: envDefines(mode, base, true),
+  });
+
+  return { code: ssgResult.outputFiles[0].text };
+}
+
 export async function runBuild(cwd = process.cwd(), opts = {}) {
   const t0 = Date.now();
+  // Dev rebuilds call this repeatedly, and module-level counters would carry
+  // the previous build's phases into the next report — percentages over 100%
+  // and a breakdown that describes no single build.
+  if (PROFILING) phaseTimes.length = 0;
 
   const config = readConfig(cwd);
   // `mode` drives the environment shims, and nothing else. Explicit caller >
@@ -449,7 +592,9 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   const base = normalizeBase(config.base);
   fs.mkdirSync(assetsDir, { recursive: true });
 
+  let _p = phaseStart();
   const { esbuild, postcss, tailwindcss, autoprefixer } = await loadBundlerDeps(cwd);
+  phase('1. load bundler deps', _p);
 
   // 1. Discover entrypoint
   const entryCandidates = [
@@ -485,8 +630,57 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
       path.join(pkgRoot, 'runtime-js', 'hydra-js.js'),
     ].find((f) => f && fs.existsSync(f)) || path.join(pkgRoot, 'runtime', 'hydra.ts');
 
+  // 8. Pre-render (SSG) — started here, awaited at step 8 below.
+  //
+  // The SSR bundle is built from `src/App.hyx` and shares nothing with the
+  // client bundle except the sources it reads, so it can be built while the
+  // client bundle is being built. On the portfolio that is ~340 ms of the
+  // build, previously spent waiting with nothing else happening.
+  //
+  // Started as a settled-shape promise: an early rejection with no handler
+  // attached yet would surface as an unhandled rejection and take the process
+  // down, and SSG failure is deliberately non-fatal (step 8 reports it).
+  const ssgEntryCandidates = [
+    path.join(cwd, 'src/App.hyx'),
+    path.join(cwd, 'src/App.hsx'),
+    path.join(cwd, 'src/App.jsx'),
+    path.join(cwd, 'src/App.tsx'),
+    path.join(cwd, 'src/App.js'),
+    entryPoint,
+  ];
+  // Pre-render exists for crawlers, not for the person looking at the page, and
+  // `hydra dev` rebuilds on every save. Skipping it in dev is where the loop
+  // gets noticeably shorter; `hydra build` still pre-renders.
+  const ssgWanted =
+    config.rendering?.ssg !== false &&
+    !opts.dev &&
+    process.env.HYDRA_NO_SSG !== '1';
+  const ssgEntry = ssgWanted
+    ? ssgEntryCandidates.find((f) => fs.existsSync(f))
+    : undefined;
+
+  let ssgPromise = null;
+  if (ssgEntry) {
+    ssgPromise = buildSsgBundle(esbuild, cwd, pkgRoot, ssgEntry, hydraAlias, config, mode, base)
+      .then((result) => ({ result }))
+      .catch((err) => ({ err }));
+  }
+
   // 3. Bundle JavaScript via esbuild
-  const clientResult = await esbuild.build({
+  //
+  // Tailwind starts here rather than after the bundle. It reads `src/` and
+  // `index.html` on its own and never looks at esbuild's output, so the two
+  // are independent — and on a Tailwind project the CSS pass was the single
+  // longest phase after the bundle. Running them together hides it.
+  //
+  // Step 5 below still merges Tailwind's CSS with whatever esbuild collected;
+  // only the waiting moved, not the order of the output.
+  _p = phaseStart();
+  const tailwindPromise = compileTailwind(cwd, config, postcss, tailwindcss, autoprefixer)
+    .then((css) => ({ css }))
+    .catch((err) => ({ err }));
+
+  const clientBuildOptions = {
     entryPoints: [entryPoint],
     // Metafile keys then come back relative to the project, which is what
     // `dist/.hydra-build.json` should contain and what the emitted entry name
@@ -494,7 +688,12 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     absWorkingDir: cwd,
     bundle: true,
     minify: true,
-    sourcemap: true,
+    // Sourcemaps are ~900 ms of a production build on this box — the single
+    // most expensive option in this call. Projects that deploy straight to a
+    // server and debug from the deployed source can turn them off with
+    // `"build": { "sourcemap": false }`; the default stays `true` because
+    // silently dropping a debugger aid is worse than an opt-out.
+    sourcemap: config.build?.sourcemap !== false,
     jsx: 'automatic',
     format: 'esm',
     platform: 'browser',
@@ -554,7 +753,32 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
       // into assets/index.css below.
     },
     define: envDefines(mode, base),
-  });
+  };
+
+  let clientResult;
+  if (opts.dev) {
+    // Incremental in dev: the context is created once and every later save is
+    // a rebuild(), which reuses the parsed graph of every unchanged file.
+    try {
+      if (!devEsbuildContext) {
+        devEsbuildContext = await esbuild.context(clientBuildOptions);
+      }
+      clientResult = await devEsbuildContext.rebuild();
+    } catch (err) {
+      // A context that failed to create (or failed mid-rebuild) is not
+      // reusable; drop it so the next save starts clean instead of throwing
+      // the same error for the rest of the session.
+      if (devEsbuildContext) {
+        try { await devEsbuildContext.dispose(); } catch {}
+      }
+      devEsbuildContext = null;
+      throw err;
+    }
+  } else {
+    clientResult = await esbuild.build(clientBuildOptions);
+  }
+
+  phase('2. esbuild client bundle', _p);
 
   const metafile = clientResult.metafile;
 
@@ -582,7 +806,14 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   // (its preflight has to sit under the library rules, exactly as it would if
   // the import order decided the order), and the libraries follow.
   const cssParts = [];
-  const tailwindCss = await compileTailwind(cwd, config, postcss, tailwindcss, autoprefixer);
+  _p = phaseStart();
+  const tailwindOutcome = await tailwindPromise;
+  // A Tailwind failure used to propagate and kill the build. It still does —
+  // but only here, after the bundle is on disk, and with the same error.
+  if (tailwindOutcome.err) throw tailwindOutcome.err;
+  const tailwindCss = tailwindOutcome.css;
+  phase('3. tailwind (overlapped)', _p);
+  _p = phaseStart();
   if (tailwindCss !== null) cssParts.push(tailwindCss);
 
   const cssKeys = Object.keys(metafile.outputs).filter((k) => k.endsWith('.css'));
@@ -626,6 +857,8 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     fs.rmSync(outputPath(cwd, key) + '.map', { force: true });
   }
 
+  phase('4. css merge', _p);
+
   // 6. Generate dist/index.html
   const htmlInPath = path.join(cwd, 'index.html');
   const htmlOutPath = path.join(outDir, 'index.html');
@@ -668,100 +901,26 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   }
 
   // 8. SSG Pre-rendering (default true for SEO)
-  if (config.rendering?.ssg !== false) {
-    const ssgEntryCandidates = [
-      path.join(cwd, 'src/App.hyx'),
-      path.join(cwd, 'src/App.hsx'),
-      path.join(cwd, 'src/App.jsx'),
-      path.join(cwd, 'src/App.tsx'),
-      path.join(cwd, 'src/App.js'),
-      entryPoint,
-    ];
-    const ssgEntry = ssgEntryCandidates.find((f) => fs.existsSync(f));
-    if (ssgEntry) {
+  //
+  // The bundle was already built in the background (see the ssgPromise set up
+  // before the client bundle); this step only awaits it and renders. A failure
+  // in the background build surfaces here, where it has always been reported.
+  _p = phaseStart();
+  if (ssgPromise) {
+    {
       try {
         const reactPath = resolvePkg('react', cwd);
-        const jsxRuntimePath = resolvePkg('react/jsx-runtime', cwd);
-        let jsxDevRuntimePath;
-        try {
-          jsxDevRuntimePath = resolvePkg('react/jsx-dev-runtime', cwd);
-        } catch {}
 
-        const ssgResult = await esbuild.build({
-          entryPoints: [ssgEntry],
-          bundle: true,
-          write: false,
-          // CommonJS, not ESM. React itself is CommonJS, and an ESM bundle
-          // that keeps it external turns into `require("react")` inside a
-          // module Node loaded as ESM — which throws "Dynamic require of
-          // react is not supported". As CJS the require is native, and the
-          // react instance is shared with the renderer through the same
-          // require cache, so hooks see one dispatcher.
-          format: 'cjs',
-          platform: 'node',
-          jsx: 'automatic',
-          target: 'node18',
-          plugins: [
-            createHydraEsbuildPlugin(),
-            {
-              name: 'hydra-ssg-external-react',
-              setup(build) {
-                // Kept external as BARE specifiers, never as `file://` URLs.
-                // React must be a single instance shared with the renderer
-                // below: hooks dispatch through the copy the component code
-                // imported, so a second copy means a null dispatcher and an
-                // "invalid hook call" at pre-render time. A `file://` URL was
-                // also unusable — the SSR bundle is written to disk and
-                // imported as a file, and a URL specifier there turns into
-                // `require("file:///...")`, which Node rejects outright.
-                build.onResolve({ filter: /^react(\/.*)?$/ }, (args) => {
-                  if (args.path === 'react' || args.path === 'react/jsx-runtime') {
-                    return { path: args.path, external: true };
-                  }
-                  if (args.path === 'react/jsx-dev-runtime' && jsxDevRuntimePath) {
-                    return { path: args.path, external: true };
-                  }
-                  try {
-                    resolvePkg(args.path, cwd);
-                    return { path: args.path, external: true };
-                  } catch {}
-                });
-              },
-            },
-          ],
-          resolveExtensions: ['.hyx', '.hys', '.hsx', '.hs', '.mjs', '.js', '.jsx', '.ts', '.tsx', '.json'],
-          nodePaths: [path.join(cwd, 'node_modules'), path.join(pkgRoot, 'node_modules')],
-          alias: {
-            // Same runtime specifier as the browser build: missing it here
-            // made the SSG pass fail after a successful client build.
-            // tsconfig paths are included too, or a component importing `~lib/x`
-            // would render on the client and throw during pre-render.
-            ...tsconfigAliases(cwd),
-            hydra: hydraAlias,
-            '@': path.resolve(cwd, 'src'),
-          },
-          loader: {
-            // `write: false` with no output path can never run a `file` loader
-            // ("Cannot use the file loader without an output path"), so assets
-            // stay inline here. Only the HTML string matters in this pass.
-            '.css': 'empty',
-            '.png': 'text',
-            '.jpg': 'text',
-            '.jpeg': 'text',
-            '.gif': 'text',
-            '.svg': 'text',
-            ...(config.compiler?.jsxInJs === false ? {} : { '.js': 'jsx' }),
-          },
-          // SSR is what this pass *is*, so a library that branches on
-          // `import.meta.env.SSR` takes its server path instead of touching
-          // `window`.
-          define: envDefines(mode, base, true),
-        });
+        let _s = phaseStart();
+        const ssgOutcome = await ssgPromise;
+        if (ssgOutcome.err) throw ssgOutcome.err;
+        const ssgCode = ssgOutcome.result.code;
 
+        phase('5a. ssg bundle (esbuild)', _s);
+        _s = phaseStart();
         // Run SSR execution in a safe context
         setupSSRGlobals();
 
-        const ssgCode = ssgResult.outputFiles[0].text;
         // Written to disk inside the project and loaded with a require rooted
         // at that file, so every `require("react")` in the bundle resolves
         // against the project's own node_modules. Loading from a `data:` URL
@@ -779,6 +938,8 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
           try { fs.rmSync(ssgOut, { force: true }); } catch {}
         }
 
+        phase('5b. ssg load bundle', _s);
+        _s = phaseStart();
         const reactDomServerPath = resolvePkg('react-dom/server', cwd);
         const { renderToString } = await import(pathToFileURL(reactDomServerPath).href);
         const reactMod = await import(pathToFileURL(reactPath).href);
@@ -789,7 +950,16 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
           throw new Error('Could not find exported App component in SSR bundle');
         }
 
+        phase('5c. ssg import react', _s);
+        _s = phaseStart();
         const renderedHtml = renderToString(React.createElement(AppComponent));
+        phase('5d. renderToString', _s);
+        // Sub-phases above replace the coarser '5. ssg render' entry: the
+        // parent span covers exactly them plus the HTML injection, and
+        // reporting both made the table add up to more than the build.
+        for (let i = phaseTimes.length - 1; i >= 0; i--) {
+          if (phaseTimes[i][0] === '5. ssg render') { phaseTimes.splice(i, 1); break; }
+        }
 
         if (fs.existsSync(htmlOutPath)) {
           let html = fs.readFileSync(htmlOutPath, 'utf8');
@@ -803,8 +973,11 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     }
   }
 
+  phase('5. ssg render', _p);
+
   const ms = Date.now() - t0;
   console.log(`[hydra] Built successfully in ${ms}ms -> ${path.relative(cwd, outDir)}/`);
+  phaseReport(ms);
 }
 
 const MIME_TYPES = {
@@ -968,6 +1141,21 @@ export async function serveDirectory(dir, port = 5173, host = '0.0.0.0', opts = 
     const contentType = MIME_TYPES[ext] || 'application/octet-stream';
     res.writeHead(200, { 'Content-Type': contentType });
     fs.createReadStream(filePath).pipe(res);
+  });
+
+  // Without a handler this raises an unhandled 'error' event, which kills the
+  // whole process — taking the file watcher with it, so `hydra dev` died with
+  // a stack trace and no rebuilds the moment the port was busy. An empty port
+  // is a normal thing to hit (another dev server, a stray preview).
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(
+        `[hydra] Port ${port} is already in use. Stop the other process, or set ` +
+        `"server": { "port": <other> } in hydraconfig.json.`,
+      );
+    } else {
+      console.error(`[hydra] Server error: ${err.message}`);
+    }
   });
 
   server.listen(port, host, () => {
