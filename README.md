@@ -500,6 +500,9 @@ out to the `hydra` binary for diagnostics; there is no separate language server.
 
 ---
 
+`hydra watch` writes its output to `watch-out/`, mirroring `src/` — never
+next to the sources it reads.
+
 ## Testing
 
 ```bash

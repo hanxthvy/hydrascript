@@ -500,6 +500,9 @@ memanggil biner `hydra` untuk diagnostik; tidak ada language server terpisah.
 
 ---
 
+`hydra watch` menulis hasilnya ke `watch-out/`, mencerminkan `src/` — tidak
+pernah di sebelah sumber yang dibacanya.
+
 ## Pengujian
 
 ```bash

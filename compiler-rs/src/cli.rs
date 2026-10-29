@@ -281,6 +281,27 @@ fn targets(args: &[String]) -> Vec<PathBuf> {
     found
 }
 
+/// Where a compiled file goes: `watch-out/` (or `dist-watch/` if the caller says
+/// so), mirroring the source tree.
+///
+/// Both `build` and `watch` used to write next to the source — `src/App.hyx`
+/// became `src/App.tsx`. In a project that keeps its sources under version
+/// control that is destructive: generated files appear beside real ones, `git
+/// add` picks them up, and a reader cannot tell which is authored. Nothing
+/// imports these outputs (the bundler compiles in-process), so they are a
+/// readable view and belong in one throwaway directory.
+fn output_paths(path: &Path) -> (PathBuf, PathBuf) {
+    let is_js = path
+        .extension()
+        .map_or(false, |x| x == "hys" || x == "hs" || x == "hx");
+    let out_ext = if is_js { "mjs" } else { "tsx" };
+    let rel = path.strip_prefix("src").unwrap_or(path);
+    let base = Path::new("watch-out");
+    let out_file = base.join(rel).with_extension(out_ext);
+    let map_path = base.join(rel).with_extension(format!("{}.map", out_ext));
+    (out_file, map_path)
+}
+
 fn build(args: &[String]) -> ExitCode {
     if args.iter().any(|a| a == "-w" || a == "--watch") {
         let stripped: Vec<String> = args
@@ -311,12 +332,10 @@ fn build(args: &[String]) -> ExitCode {
             .map_or_else(|| "out.hyx".into(), |n| n.to_string_lossy().to_string());
         match compile(&src, &name) {
             Ok((code, map)) => {
-                let is_js = path
-                    .extension()
-                    .map_or(false, |x| x == "hys" || x == "hs" || x == "hx");
-                let out_ext = if is_js { "mjs" } else { "tsx" };
-                let out_file = path.with_extension(out_ext);
-                let map_path = path.with_extension(format!("{}.map", out_ext));
+                let (out_file, map_path) = output_paths(path);
+                if let Some(parent) = out_file.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
                 let map_name = map_path
                     .file_name()
                     .map_or_else(|| "out.map".into(), |n| n.to_string_lossy().to_string());
@@ -398,16 +417,16 @@ pub fn watch(args: &[String]) -> ExitCode {
                         .map_or_else(|| "out.hyx".into(), |n| n.to_string_lossy().to_string());
                     match compile(&src, &name) {
                         Ok((code, map)) => {
-                            let is_js = path
-                                .extension()
-                                .map_or(false, |x| x == "hys" || x == "hs" || x == "hx");
-                            let out_ext = if is_js { "mjs" } else { "tsx" };
-                            let out_file = path.with_extension(out_ext);
-                            let map_path = path.with_extension(format!("{}.map", out_ext));
+                            let (out_file, map_path) = output_paths(path);
+                            if let Some(parent) = out_file.parent() {
+                                let _ = fs::create_dir_all(parent);
+                            }
                             let map_name = map_path.file_name().map_or_else(
                                 || "out.map".into(),
                                 |n| n.to_string_lossy().to_string(),
                             );
+                            // The map sits beside the output inside watch-out/,
+                            // so the bare filename is correct here.
                             let with_ref = format!("{}\n//# sourceMappingURL={}\n", code, map_name);
                             let _ = fs::write(&out_file, with_ref);
                             let _ = fs::write(&map_path, map);
