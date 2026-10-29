@@ -1,0 +1,11 @@
+# [xihanzu-NR]
+from hydra import state, effect
+
+component Counter(initial_count: int = 0, step: int = 1):
+    count, set_count = state(initial_count)
+    effect(lambda: console.log(f"count {count}"), [count])
+    div(className="counter-card"):
+        h2: f"Value: {count}"
+        div(className="button-group"):
+            button(type="button", onClick=lambda: set_count(count - step), className="btn btn-secondary"): "-"
+            button(type="button", onClick=lambda: set_count(count + step), className="btn btn-primary"): "+"

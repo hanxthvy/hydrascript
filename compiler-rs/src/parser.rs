@@ -171,6 +171,38 @@ impl Parser {
         res
     }
 
+    /// The binding before `in` in a comprehension: `x`, or `k, v` / `(k, v)`.
+    /// Returns the JS destructuring target — `x`, or `[k, v]`.
+    ///
+    /// Shared by list, dict and set comprehensions. The list path grew tuple
+    /// support first and the other two did not, so `{k: v for k, v in pairs}`
+    /// failed to parse with `expected Kw("in"), found Comma` while
+    /// `[v for k, v in pairs]` worked. One helper, so they cannot drift again.
+    fn comprehension_target(&mut self) -> PResult<String> {
+        let has_paren = if self.cur().ty == TokType::LParen {
+            self.i += 1;
+            true
+        } else {
+            false
+        };
+        let mut targets = vec![self.ident()?];
+        while self.cur().ty == TokType::Comma {
+            self.i += 1;
+            if has_paren && self.cur().ty == TokType::RParen {
+                break;
+            }
+            targets.push(self.ident()?);
+        }
+        if has_paren {
+            self.eat(TokType::RParen)?;
+        }
+        Ok(if targets.len() == 1 {
+            targets.into_iter().next().unwrap()
+        } else {
+            format!("[{}]", targets.join(", "))
+        })
+    }
+
     /// The `for x in xs if cond` tail of a comprehension. `key`/`value` are the
     /// parts emitted per element; for a set comprehension `value` is None and
     /// the key doubles as the element.
@@ -182,7 +214,7 @@ impl Parser {
         t: &Token,
     ) -> PResult<Node> {
         self.eat(TokType::Kw("for"))?;
-        let target = self.ident()?;
+        let target = self.comprehension_target()?;
         self.eat(TokType::Kw("in"))?;
         // `coalesce()` rather than `expr()`: an `if` after the iterable filters,
         // it is not a ternary.
@@ -2001,29 +2033,7 @@ impl Parser {
                 // list comprehension
                 if self.cur().ty == TokType::Kw("for") {
                     self.i += 1;
-                    let mut targets = Vec::new();
-                    let has_paren = if self.cur().ty == TokType::LParen {
-                        self.i += 1;
-                        true
-                    } else {
-                        false
-                    };
-                    targets.push(self.ident()?);
-                    while self.cur().ty == TokType::Comma {
-                        self.i += 1;
-                        if has_paren && self.cur().ty == TokType::RParen {
-                            break;
-                        }
-                        targets.push(self.ident()?);
-                    }
-                    if has_paren {
-                        self.eat(TokType::RParen)?;
-                    }
-                    let target = if targets.len() == 1 {
-                        targets.into_iter().next().unwrap()
-                    } else {
-                        format!("[{}]", targets.join(", "))
-                    };
+                    let target = self.comprehension_target()?;
                     self.eat(TokType::Kw("in"))?;
                     // `coalesce()` not `expr()`: an `if` here filters, it is not a ternary.
                     let iter = self.coalesce()?;

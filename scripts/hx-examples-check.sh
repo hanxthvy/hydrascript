@@ -19,7 +19,7 @@
 set -uo pipefail
 
 HYDRA_REPO="${HYDRA_REPO:-/root/projects/hydra}"
-HYDRA_BIN="${HYDRA_BIN:-$HYDRA_REPO/compiler-rs/target/release/hydra}"
+HYDRA_BIN="${HYDRA_BIN:-$HYDRA_REPO/bin/hydra}"
 HYDRA_RUNNER="${HYDRA_RUNNER:-$HYDRA_REPO/packages/cli/runner.mjs}"
 EXAMPLES_DIR="${EXAMPLES_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/examples}"
 LOG="${HX_LOG:-/tmp/hx-examples.log}"

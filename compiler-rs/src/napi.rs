@@ -1,7 +1,8 @@
 // [xihanzu-NR]
 //! Direct Node-API (N-API) bindings for in-memory Node.js integration.
 //!
-//! Enables zero-IPC, zero-subprocess compilation from Vite and Node.js tools.
+//! Enables in-process compilation — no subprocess spawn, no IPC — for Node.js
+//! tools (bundlers, editors, the runner).
 
 use crate::compile;
 

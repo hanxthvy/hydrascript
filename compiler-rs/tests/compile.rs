@@ -1166,3 +1166,42 @@ fn test_feature_import_as_alias() {
     let out = comp(src);
     assert_contains(&out, &["Image as ImageIcon", "Download"]);
 }
+
+#[test]
+fn test_feature_dict_comprehension_tuple_target() {
+    // `{k: v for k, v in pairs}` used to fail to parse with
+    // `expected Kw("in"), found Comma` while the list form worked, because
+    // the dict/set comprehension tail read a single identifier. The list path
+    // grew tuple targets first and the others silently lagged.
+    let src = "component A():\n    d = {k: v for k, v in pairs}\n    div: \"ok\"\n";
+    let out = comp(src);
+    assert_contains(
+        &out,
+        &["Object.fromEntries(pairs.map(([k, v]) => [k , v]))"],
+    );
+}
+
+#[test]
+fn test_feature_dict_comprehension_tuple_target_filtered() {
+    let src =
+        "component A():\n    d = {k: v for k, v in pairs if v > 0}\n    div: \"ok\"\n";
+    let out = comp(src);
+    assert_contains(
+        &out,
+        &["Object.fromEntries(pairs.filter(([k, v]) => (v > 0)).map(([k, v]) => [k , v]))"],
+    );
+}
+
+#[test]
+fn test_feature_set_comprehension_tuple_target() {
+    let src = "component A():\n    s = {k for k, v in pairs}\n    div: \"ok\"\n";
+    let out = comp(src);
+    assert_contains(&out, &["new Set(pairs.map(([k, v]) => k))"]);
+}
+
+#[test]
+fn test_feature_comprehension_parenthesised_tuple_target() {
+    let src = "component A():\n    x = [v for (k, v) in items]\n    div: \"ok\"\n";
+    let out = comp(src);
+    assert_contains(&out, &["items.map(([k, v]) => v)"]);
+}

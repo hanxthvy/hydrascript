@@ -6,7 +6,7 @@
 //!   hydra <file.hsx> -o out.tsx compile to file
 //!   hydra --json <file.hsx>     emit {code, map} JSON for editor/plugin use
 //!   hydra --check <file.hsx>    parse only, exit 1 on error
-//!   hydra --stdin               read source from stdin (used by the Vite plugin)
+//!   hydra --stdin               read source from stdin (used by the editor plugin)
 
 use hydra::compile;
 use std::io::{Read, Write};
@@ -19,7 +19,7 @@ fn usage() -> String {
         "hydra {VERSION} — Pythonic syntax for React (.hyx) & Node (.hys)\n\
          \n\
          USAGE:\n\
-         \x20 hydra dev [options]         start Vite dev server\n\
+         \x20 hydra dev [options]         build and serve, rebuild on change\n\
          \x20 hydra build [options]       build for production\n\
          \x20 hydra preview [options]     preview production build\n\
          \x20 hydra run <file.hys> [args] execute script directly in memory\n\

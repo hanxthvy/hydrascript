@@ -1,122 +1,164 @@
 <!-- [xihanzu-NR] -->
 # HydraScript
 
-**The Pythonic Language and Meta-Framework for React and Modern Web Applications**  
-A native Rust compiler, zero-IPC Node-API runtime, and zero-config meta-framework with zero runtime overhead.
+**A Pythonic syntax for React, compiled by a native Rust binary.**
 
 [English](README.md) | [Bahasa Indonesia](README.id.md)
 
 ---
 
+## What this is
+
+HydraScript compiles indentation-based `.hyx` files to React TSX and `.hys` files
+to plain JavaScript. The compiler is a Rust binary; a small Node runner wraps
+esbuild, PostCSS and Tailwind to produce a site.
+
+Status: **0.1.0, pre-1.0.** The language works and is tested; it is not
+battle-tested at scale, and the file-based router and language server described
+in older documents do not exist yet. Treat this as usable-if-you-like-it, not
+production-hardened.
+
+---
+
 ## Table of Contents
 
-- [Overview](#overview)
-- [Design Philosophy](#design-philosophy)
-- [Why HydraScript: Pain Points in Vanilla TSX](#why-hydrascript-pain-points-in-vanilla-tsx)
-- [Syntax & Feature Matrix](#syntax--feature-matrix)
-- [Side-by-Side Syntax Comparisons](#side-by-side-syntax-comparisons)
-  - [1. Basic Component Declaration & Auto-Fragment](#1-basic-component-declaration--auto-fragment)
-  - [2. Reactive State & Side Effects](#2-reactive-state--side-effects)
-  - [3. Multi-Branch Conditionals & Pattern Matching](#3-multi-branch-conditionals--pattern-matching)
-  - [4. Dynamic Classes & Event Modifiers](#4-dynamic-classes--event-modifiers)
-  - [5. Collection Iteration & Key Props](#5-collection-iteration--key-props)
-  - [6. Application Entrypoint (`src/main.hyx`)](#6-application-entrypoint-srcmainhyx)
-  - [7. Backend Logic & Slicing (`.hys` vs `.ts`)](#7-backend-logic--slicing-hys-vs-ts)
-- [Meta-Framework Mode](#meta-framework-mode)
-  - [CLI Commands](#cli-commands)
-  - [Zero-Config Architecture](#zero-config-architecture)
-  - [Configuration Reference (`hydraconfig.json`)](#configuration-reference-hydraconfigjson)
-- [Compiler Architecture & Performance](#compiler-architecture--performance)
-  - [Pipeline Flow](#pipeline-flow)
-  - [Compilation Latency Benchmarks](#compilation-latency-benchmarks)
-- [Language Reference](#language-reference)
-  - [Component Definition](#component-definition)
-  - [Property and Event Conventions](#property-and-event-conventions)
-  - [Hooks & React Batteries](#hooks--react-batteries)
-  - [JavaScript Globals Whitelist](#javascript-globals-whitelist)
-  - [Module Imports and Exports](#module-imports-and-exports)
-- [CLI Reference](#cli-reference)
-- [Production Deployment](#production-deployment)
-  - [Static Hosting](#static-hosting)
-  - [Docker Container](#docker-container)
-- [Editor Support](#editor-support)
-- [Contributing & Architectural Roadmap](#contributing--architectural-roadmap)
+- [What this is](#what-this-is)
+- [A 30-second example](#a-30-second-example)
+- [Honest comparison with TSX](#honest-comparison-with-tsx)
+- [What is measured, and how](#what-is-measured-and-how)
+- [Syntax reference](#syntax-reference)
+- [Language features](#language-features)
+- [Components and JSX output](#components-and-jsx-output)
+- [Runtime (`hydra`)](#runtime-hydra)
+- [Built-in functions](#built-in-functions)
+- [Meta-framework: `hydra dev` / `build` / `preview`](#meta-framework)
+- [Configuration](#configuration)
+- [CLI reference](#cli-reference)
+- [Installation](#installation)
+- [Editor support](#editor-support)
+- [Testing](#testing)
+- [Known limitations](#known-limitations)
 - [License](#license)
 
 ---
 
-## Overview
-
-HydraScript is an indentation-based language and complete web meta-framework that combines the conciseness, visual clarity, and readability of Python with the power and ubiquity of the React and JavaScript ecosystems.
-
-The project consists of three core components:
-1. **The Native Compiler (`compiler-rs`)**: A self-contained binary written in pure Rust that compiles `.hyx` files (legacy: `.hsx`) to React TypeScript/JSX and `.hys` files (legacy: `.hs`, `.hx`) to clean ES Modules in sub-millisecond times.
-2. **The In-Memory Node-API Bridge (`hydra.node`)**: A native C-ABI shared library allowing bundlers and dev servers to call the compiler in-memory without spawning child processes.
-3. **The Standalone Meta-Framework CLI (`packages/cli`)**: An integrated runner that wraps Vite, Tailwind CSS, and Autoprefixer programmatically, eliminating the need for `vite.config.ts`, `tailwind.config.ts`, or `tsconfig.json` in user projects.
-
----
-
-## Design Philosophy
-
-### 1. Zero Runtime Tax
-HydraScript introduces zero proprietary client-side runtimes. The code you write in `.hyx` compiles directly to idiomatic React 18/19 components, JSX calls, and native browser hooks. There is no virtual machine, no interpreter overhead, and zero extra kilobytes sent to the user's browser.
-
-### 2. Syntax-Level Elimination of Boilerplate
-JSX requires developers to navigate opening and closing tags, double-curly braces for attribute interpolation, template literals for dynamic class names, and nested ternary chains for multi-branch rendering. HydraScript replaces this with clean Pythonic indentation, f-strings, list comprehensions, native dictionaries, and block-level control flow.
-
-### 3. Radical Toolchain Simplicity
-Modern web development often requires 5-8 configuration files before writing a single line of code (`tsconfig.json`, `vite.config.ts`, `tailwind.config.ts`, `postcss.config.js`, `eslint.config.js`). HydraScript reduces this to a single optional `hydraconfig.json`.
-
----
-
-## Why HydraScript: Pain Points in Vanilla TSX
-
-| Area | Vanilla TSX / React | HydraScript (`.hyx` / `.hys`, legacy `.hsx` / `.hs`) |
-|---|---|---|
-| **Element Hierarchy** | Closing tags required (`<div><header><h1></h1></header></div>`) | Clean indentation-based blocks (`div: header: h1: ...`) |
-| **Multi-Branch Rendering** | Nested ternaries (`a ? <B/> : c ? <D/> : <E/>`) | Pythonic `if / elif / else` inside UI trees |
-| **Pattern Matching** | IIFEs `(() => { switch(s) { ... } })()` | Native `match / case` directly inside tree blocks |
-| **Falsy Zero Leak** | `count && <Badge/>` renders unwanted `0` text | Strict boolean truthiness check compiled automatically |
-| **Dynamic Classes** | External libraries (`clsx`, `classnames`) required | Native dictionary syntax: `cls={"btn": True, "active": is_active}` |
-| **Event Modifiers** | Repetitive `e.preventDefault(); e.stopPropagation();` | Declarative modifiers: `on_submit_prevent_stop=handle_submit` |
-| **List Iteration** | `.map((item, idx) => <li key={item.id}>...</li>)` | Pythonic loop: `for item in items: li(key=item.id): item.name` |
-| **String Formatting** | Backtick template literals: `` `${base}/${id}` `` | Clean f-strings: `f"{base}/{id}"` |
-| **Multi-Root Nodes** | Manual fragment wrappers `<> ... </>` | Automatic fragment insertion by compiler |
-| **State Declaration** | Verbose destructuring `const [val, setVal] = useState(0)` | Pythonic tuple unpacking: `val, set_val = state(0)` |
-| **Global Builtins** | Can conflict with custom component names | Whitelist ensures `Math.cos()`, `Date.now()` are never JSX tags |
-
----
-
-## AI Code Generation & Empirical Token Efficiency
-
-Based on empirical benchmarks comparing identical component pairs between Vanilla TSX and HydraScript:
-
-1. **Static Token Reduction (-12.6%)**: In side-by-side component comparisons, HydraScript reduces raw BPE tokens (`cl100k_base`) by **12.6%** (3,378 vs 3,865 tokens across 5 production components) and lines of code by **30.6%** (236 vs 340 LOC).
-2. **Syntactic Overhead Elimination**: In standard TSX, **19.2% of all tokens** are consumed purely by closing tags (`</div>`, `</section>`, `</span>`), braces (`{}`), and import statements. HydraScript's indentation-based syntax drops syntactic framing overhead to under 4.8%.
-3. **Zero Tag-Mismatch Hallucinations**: One of the most prevalent LLM failure modes in JSX is unclosed or mismatched closing tags deep in nested trees. HydraScript's indentation-based hierarchy completely eliminates closing-tag syntax errors.
-4. **1st-Pass Direct Generation**: In direct-to-disk workflows (without throwaway scratchpad testing), models achieve a **100% 1st-pass validation rate** on `hydra --check` (8/8 production files valid on first check).
-5. **Linear Control Flow**: Native `if / elif / else` and `for ... in` constructs eliminate nested ternary expressions (`a ? <B/> : c ? <D/> : <E/>`) and IIFEs, significantly reducing logic errors during model generation.
-
----
-
-## Syntax & Feature Matrix
-
-### Indentation-Based Layout
-Single-line inline children use a colon followed by content; multi-line children use an indented block:
+## A 30-second example
 
 ```python
-# Inline
-h1: "System Status"
+# [xihanzu-NR]
+from hydra import state
 
-# Block
+component Counter(start: int = 0):
+    count, set_count = state(start)
+
+    div(className="counter"):
+        h2: f"Value: {count}"
+        button(onClick=lambda: set_count(count + 1)): "Add"
+```
+
+compiles to (verbatim compiler output, base64 source-map footer trimmed):
+
+```tsx
+// [xihanzu-NR]
+// GENERATED by hydra — edit the .hsx file, not this one
+import { state } from 'hydra';
+
+export function Counter({ start = 0 }: CounterProps) {
+  let [count, set_count] = state(start);
+  return (
+    <div className="counter">
+      <h2>{`Value: ${count}`}</h2>
+      <button onClick={(() => set_count((count + 1)))}>Add</button>
+    </div>
+  );
+}
+
+export interface CounterProps {
+  start?: number;
+}
+```
+
+No virtual machine, no interpreter: the output is ordinary React. The only
+HydraScript-specific thing in it is the `hydra` import, and that import appears
+only when the file actually calls a helper.
+
+---
+
+## Honest comparison with TSX
+
+HydraScript is shorter for the things JSX is verbose about, and neither better
+nor worse for everything else. This is the actual shape of the trade:
+
+| Area | TSX | HydraScript | Verified how |
+|---|---|---|---|
+| Element nesting | Closing tags | Indentation | Read the emitted TSX |
+| Multi-branch UI | Nested ternaries / IIFE switch | `if / elif / else`, `match` | Compiled both |
+| Dynamic classes | `clsx(...)` import | `cls={...}` dict, no import | Emitted `cx(...)` |
+| Event prevent/stop | Manual `e.preventDefault()` | `on_submit_prevent_stop=fn` | Emitted both calls |
+| List rendering | `.map()` + `key` | `for x in xs:` + `key=` | Emitted `.map()` |
+| String interpolation | Template literals | f-strings | Emitted template literal |
+| State | `const [v, setV] = useState()` | `v, set_v = state()` | Emitted `useState` |
+| Multiple roots | Manual `<>...</>` | Automatic | Emitted fragment |
+| Token count for the same component | 188 tokens | 130 tokens | `benchmarks/tokens.py` |
+
+The last row is measured on one component in the repo, not a corpus — see the
+next section for exactly what is and is not claimed.
+
+**A claim this README used to make and no longer does:** that HydraScript fixes
+the "falsy zero leak" (`count && <Badge/>` rendering `0`). It does not. The
+compiler emits `count && (<span>…)` exactly like TSX does, so `0` renders. Use
+`if count:` if you want the guard.
+
+---
+
+## What is measured, and how
+
+Every number below comes from `node benchmarks/measure.mjs`, run on the machine
+that built this repo (2 vCPU, Linux x86_64, Node v22). Run it yourself before
+believing any of it.
+
+| Claim | Measured value | How |
+|---|---|---|
+| `hydra --check` latency | ~2.1 ms median | 20 runs, process spawn included |
+| `hydra <file>` latency | ~2.0 ms median | 20 runs, process spawn included |
+| In-process compile (`hydra.node`) | ~0.063 ms median | 2000 warm iterations, no spawn |
+| Test suite | 308 tests, all passing | `cargo test` (215 unit + 93 integration) |
+| CLI binary | ~1.1 MB | `bin/hydra`, stripped |
+| N-API addon | ~800 KB | `bin/hydra.node` |
+| Runtime cost of the `hydra` import | ~200 bytes | Built an identical app with and without it |
+| Token count, one component | 130 vs 188 (−30.9%) | `benchmarks/tokens.py`, `cl100k_base` |
+| SSG output, small page | 3.6 KB HTML | `examples/blog` with `ssg: true` |
+
+**What this README does not claim, and why:**
+
+- No "Nx faster than `tsc`" figures. Comparing against another toolchain
+  requires running that toolchain on the same machine with the same input; the
+  old numbers here (1,610×, 24×, 3.3×) were neither reproducible nor
+  apples-to-apples, so they are gone.
+- No "zero extra kilobytes". The runtime is small (~200 bytes for a component
+  that uses it) but not zero, and react + react-dom dominate any real bundle.
+- No AI/LLM token-efficiency study. The old "12.6% fewer tokens across 5
+  production components" had no script, no corpus, and no commit behind it. One
+  component is measured instead, and the number is labelled as one component.
+
+---
+
+## Syntax reference
+
+### Indentation
+
+`h1: "text"` puts one child inline. A trailing `:` with an indented block nests:
+
+```python
 div(className="container"):
     header(className="header"):
         h1: "System Status"
         p: "All telemetry nodes online."
 ```
 
-### Auto-Fragment Insertion
-When a component or block has multiple sibling roots, the compiler wraps them in `<> ... </>` automatically:
+### Multiple roots
+
+Siblings at the top of a component wrap in a fragment automatically:
 
 ```python
 component MetricPair(label: str, value: str):
@@ -124,564 +166,78 @@ component MetricPair(label: str, value: str):
     span(className="value"): value
 ```
 
-Compiles to:
 ```tsx
 export function MetricPair({ label, value }: MetricPairProps) {
   return (
-    <>
-      <span className="label">{label}</span>
-      <span className="value">{value}</span>
-    </>
+  <>
+    <span className="label">{label}</span>
+    <span className="value">{value}</span>
+  </>
   );
 }
 ```
 
----
+### Props and events
 
-## Side-by-Side Syntax Comparisons
+`class` / `cls` → `className`, `for` → `htmlFor`, `tab_index` → `tabIndex`,
+`on_click` → `onClick`, `on_change` → `onChange`, `on_submit` → `onSubmit`,
+`on_key_down` → `onKeyDown`. `aria_*` and `data_*` keep their hyphens.
 
-### 1. Basic Component Declaration & Auto-Fragment
+Suffixes add the boilerplate for you:
 
-#### Vanilla TSX
-```tsx
-import React from 'react';
+* `on_submit_prevent=fn` → `e.preventDefault()` then `fn(e)`
+* `on_click_stop=fn` → `e.stopPropagation()` then `fn(e)`
+* `on_click_prevent_stop=fn` → both
 
-export interface UserBadgeProps {
-  name: string;
-  role?: string;
-  isOnline?: boolean;
-}
+### Dynamic classes
 
-export function UserBadge({ name, role = 'Member', isOnline = false }: UserBadgeProps) {
-  return (
-    <>
-      <span className="user-name">{name}</span>
-      <span className="user-role">{role}</span>
-      {isOnline && <span className="status-dot" />}
-    </>
-  );
-}
-```
-
-#### HydraScript (`.hyx`, legacy `.hsx`)
 ```python
-# [xihanzu-NR]
-component UserBadge(name: str, role: str = "Member", is_online: bool = False):
-    span(className="user-name"): name
-    span(className="user-role"): role
-    if is_online:
-        span(className="status-dot")
+div(cls={"btn": True, "active": is_active, "muted": not is_active}): "Hi"
 ```
+
+emits `className={cx({...})}` with `cx` imported from `hydra`.
 
 ---
 
-### 2. Reactive State & Side Effects
+## Language features
 
-#### Vanilla TSX
-```tsx
-import React, { useState, useEffect } from 'react';
-
-export function Counter({ initialCount = 0, step = 1 }: { initialCount?: number; step?: number }) {
-  const [count, setCount] = useState<number>(initialCount);
-
-  useEffect(() => {
-    console.log(`Current count: ${count}`);
-  }, [count]);
-
-  return (
-    <div className="counter-card">
-      <h2>Value: {count}</h2>
-      <div className="button-group">
-        <button type="button" onClick={() => setCount(count - step)} className="btn btn-secondary">
-          -
-        </button>
-        <button type="button" onClick={() => setCount(count + step)} className="btn btn-primary">
-          +
-        </button>
-      </div>
-    </div>
-  );
-}
-```
-
-#### HydraScript (`.hyx`, legacy `.hsx`)
-```python
-# [xihanzu-NR]
-from hydra import state, effect
-
-component Counter(initial_count: int = 0, step: int = 1):
-    count, set_count = state(initial_count)
-
-    effect(lambda: console.log(f"Current count: {count}"), [count])
-
-    div(className="counter-card"):
-        h2: f"Value: {count}"
-        div(className="button-group"):
-            button(
-                type="button",
-                onClick=lambda: set_count(count - step),
-                className="btn btn-secondary",
-            ):
-                "-"
-            button(
-                type="button",
-                onClick=lambda: set_count(count + step),
-                className="btn btn-primary",
-            ):
-                "+"
-```
-
----
-
-### 3. Multi-Branch Conditionals & Pattern Matching
-
-#### Vanilla TSX
-```tsx
-export function StatusPanel({ status, loadAverage }: { status: string; loadAverage: number }) {
-  return (
-    <section className="monitor-panel">
-      {(() => {
-        switch (status) {
-          case 'healthy':
-            return <div className="status-green">Systems Nominal</div>;
-          case 'degraded':
-            return <div className="status-amber">High Pressure</div>;
-          case 'critical':
-            return <div className="status-red">Node Offline</div>;
-          default:
-            return <div className="status-gray">Initializing</div>;
-        }
-      })()}
-
-      {loadAverage > 4.0 ? (
-        <div className="warning">CPU Critical: {loadAverage.toFixed(2)}</div>
-      ) : loadAverage > 2.0 ? (
-        <div className="info">CPU Moderate: {loadAverage.toFixed(2)}</div>
-      ) : (
-        <div className="normal">CPU Normal: {loadAverage.toFixed(2)}</div>
-      )}
-    </section>
-  );
-}
-```
-
-#### HydraScript (`.hyx`, legacy `.hsx`)
-```python
-# [xihanzu-NR]
-component StatusPanel(status: str, load_average: float):
-    section(className="monitor-panel"):
-        match status:
-            case "healthy":
-                div(className="status-green"): "Systems Nominal"
-            case "degraded":
-                div(className="status-amber"): "High Pressure"
-            case "critical":
-                div(className="status-red"): "Node Offline"
-            case _:
-                div(className="status-gray"): "Initializing"
-
-        if load_average > 4.0:
-            div(className="warning"): f"CPU Critical: {load_average:.2f}"
-        elif load_average > 2.0:
-            div(className="info"): f"CPU Moderate: {load_average:.2f}"
-        else:
-            div(className="normal"): f"CPU Normal: {load_average:.2f}"
-```
-
----
-
-### 4. Dynamic Classes & Event Modifiers
-
-#### Vanilla TSX
-```tsx
-import clsx from 'clsx';
-
-export function ContactModal({ onSubmit, isOpen = false, isSubmitting = false }) {
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    onSubmit();
-  };
-
-  return (
-    <div className={clsx('modal-backdrop', { 'opacity-100': isOpen, 'opacity-0': !isOpen })}>
-      <form onSubmit={handleSubmit} className="modal-form">
-        <label htmlFor="email_input">Email Address</label>
-        <input id="email_input" type="email" required placeholder="name@domain.com" />
-        <button type="submit" disabled={isSubmitting}>
-          {isSubmitting ? 'Sending...' : 'Send Message'}
-        </button>
-      </form>
-    </div>
-  );
-}
-```
-
-#### HydraScript (`.hyx`, legacy `.hsx`)
-```python
-# [xihanzu-NR]
-component ContactModal(on_submit, is_open: bool = False, is_submitting: bool = False):
-    div(cls={"modal-backdrop": True, "opacity-100": is_open, "opacity-0": not is_open}):
-        form(on_submit_prevent_stop=on_submit, className="modal-form"):
-            label(for="email_input"): "Email Address"
-            input(id="email_input", type="email", required=True, placeholder="name@domain.com")
-            button(type="submit", disabled=is_submitting):
-                "Sending..." if is_submitting else "Send Message"
-```
-
----
-
-### 5. Collection Iteration & Key Props
-
-#### Vanilla TSX
-```tsx
-export function AlertList({ alerts }: { alerts: Array<{ id: string; message: string; severity: string }> }) {
-  return (
-    <ul className="alert-list">
-      {alerts.map((alert) => (
-        <li key={alert.id} className={`alert-item alert-${alert.severity}`}>
-          <span className="alert-msg">{alert.message}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}
-```
-
-#### HydraScript (`.hyx`, legacy `.hsx`)
-```python
-# [xihanzu-NR]
-component AlertList(alerts: list):
-    ul(className="alert-list"):
-        for alert in alerts:
-            li(key=alert.id, className=f"alert-item alert-{alert.severity}"):
-                span(className="alert-msg"): alert.message
-```
-
----
-
-### 6. Application Entrypoint (`src/main.hyx`)
-
-#### Vanilla TSX (`src/main.tsx`)
-```tsx
-import React from 'react';
-import ReactDOM from 'react-dom/client';
-import { App } from './App';
-import './index.css';
-
-const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement);
-root.render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);
-```
-
-#### HydraScript (`src/main.hyx`)
-```python
-# [xihanzu-NR]
-from "react-dom/client" import createRoot
-from "./App.hyx" import App
-import "./index.css"
-
-root_element = document.getElementById("root")
-createRoot(root_element).render(App())
-```
-
----
-
-### 7. Backend Logic & Slicing (`.hys` vs `.ts`)
-
-#### Vanilla TypeScript (`src/utils.ts`)
-```typescript
-import { readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-
-export async function processLogs(dir: string, maxItems: number) {
-  const raw = await readFile(join(dir, 'events.json'), 'utf8');
-  const events = JSON.parse(raw);
-  const sliced = events.slice(0, maxItems);
-  const result = {
-    timestamp: Date.now(),
-    count: sliced.length,
-    items: sliced,
-  };
-  await writeFile(join(dir, 'out.json'), JSON.stringify(result, null, 2), 'utf8');
-  return result;
-}
-```
-
-#### HydraScript (`src/utils.hys`)
-```python
-# [xihanzu-NR]
-from "node:fs/promises" import readFile, writeFile
-from "node:path" import join
-
-async def process_logs(dir: str, max_items: int):
-    raw = await readFile(join(dir, "events.json"), "utf8")
-    events = JSON.parse(raw)
-    sliced = events[:max_items]
-    result = {
-        "timestamp": Date.now(),
-        "count": len(sliced),
-        "items": sliced,
-    }
-    await writeFile(join(dir, "out.json"), JSON.stringify(result, None, 2), "utf8")
-    return result
-```
-
----
-
-## Meta-Framework Mode
-
-Hydra includes an in-memory application runner that integrates Vite, Rollup, PostCSS, Autoprefixer, and Tailwind CSS into a single CLI workflow.
-
-### CLI Commands
-* `hydra dev`: Starts the local development server with Hot Module Replacement (HMR).
-* `hydra build`: Runs a production build with asset hashing, dead-code elimination, and CSS minification.
-* `hydra preview`: Starts a local HTTP server serving the compiled production output (`dist/`).
-* `hydra run <file.hys>`: Executes a HydraScript logic file in-memory using Node or Bun (legacy `.hs` supported).
-
-### Zero-Config Architecture
-When `hydra dev` or `hydra build` runs in a directory containing `hydraconfig.json`:
-1. The Rust binary locates `packages/cli/runner.mjs`.
-2. The runner dynamically loads Vite and plugins from the local project's `node_modules`.
-3. In-memory configuration sets `configFile: false`, preventing Vite from looking for `vite.config.ts`.
-4. Tailwind and Autoprefixer are configured in-memory using settings from `hydraconfig.json`.
-5. The native Node-API addon (`hydra.node`) handles all `.hyx` and `.hys` transformations (with backwards compatibility for legacy `.hsx` and `.hs`).
-
-### Configuration Reference (`hydraconfig.json`)
-
-```json
-{
-  "$schema": "https://hydrascript.dev/schema.json",
-  "name": "production-app",
-  "version": "1.0.0",
-  "root": "./src",
-  "outputDir": "./dist",
-  "server": {
-    "port": 5173,
-    "host": "0.0.0.0"
-  },
-  "compiler": {
-    "target": "react-18",
-    "strict": true
-  },
-  "styling": {
-    "tailwind": true
-  },
-  "tailwind": {
-    "theme": {
-      "extend": {
-        "colors": {
-          "primary": "#f54e00",
-          "surface": "#f7f7f4",
-          "ink": "#26251e"
-        },
-        "fontFamily": {
-          "sans": ["Inter", "sans-serif"],
-          "mono": ["JetBrains Mono", "monospace"]
-        }
-      }
-    }
-  }
-}
-```
-
----
-
-## Compiler Architecture & Performance
-
-### Pipeline Flow
-
-```
-                 [ Source: .hyx / .hys (legacy: .hsx / .hs) ]
-                                 │
-                                 ▼
-                     [ Lexer (lexer.rs) ]
-       Indent/Dedent Tracking, F-Strings, Unicode Identifiers
-                                 │
-                                 ▼
-                   [ Parser (parser.rs) ]
-     Recursive Descent, Tree Blocks, Comprehensions, Operators
-                                 │
-                                 ▼
-               [ Semantic Analysis (emitter.rs) ]
-     JS Builtin Whitelist, Scope Tracker, Mutability Analysis
-                                 │
-                 ┌───────────────┴───────────────┐
-                 ▼                               ▼
-       Target: React (.hyx)             Target: JS (.hys)
-     (Legacy: .hsx)                   (Legacy: .hs / .hx)
-   TSX Components, Props Mapping     Clean ES Modules Output
-                 │                               │
-                 └───────────────┬───────────────┘
-                                 ▼
-         [ Node-API Shared Library (hydra.node) ]
-                 In-Memory Transform Pipeline
-```
-
-### Compilation Latency & Empirical Benchmarks
-
-#### A. Head-to-Head: HydraScript vs TypeScript (`tsc`)
-*Benchmarked on Linux x86_64, Intel Xeon Cascadelake, Node.js v20.19:*
-
-| Benchmark Dimension | TSX / Vite 6 (`tsc`) | HydraScript (`hydra`) | Speedup / Reduction |
-|---|---|---|---|
-| **Single-File Syntax Check** | `tsc --noEmit`: 5,700 ms | `hydra --check`: **3.54 ms** | **1,610x faster** |
-| **Transpilation (No Check)** | `esbuild`: 29.00 ms | `hydra`: **~1.20 ms** | **24x faster** |
-| **Production Build Time** | Vite 6 + `tsc`: 9.50 s | `hydra build`: **2.88 s** | **3.3x faster** |
-| **Source LOC (Full Dashboard)** | 1,000–1,500 LOC | **571 LOC** | **~50% fewer lines** |
-| **Static BPE Tokens (`cl100k`)** | 3,865 tokens | **3,378 tokens** | **12.6% fewer tokens** |
-| **Pre-rendered HTML** | CSR / Manual SSR | **18.7 KB native SSG** | Instant DOM pre-render |
-
-#### B. In-Memory Transform Performance
-*Tested on Linux x86_64, 16-Core AMD EPYC, Node.js v20.19:*
-
-| Workload | CLI Subprocess (`execFileSync`) | Node-API Addon (`hydra.node`) | Speedup |
-|---|---|---|---|
-| **15 Component Project** | 42.20 ms | **6.60 ms** | **6.4x faster** |
-| **1,500 Repeated Compiles** | 235.30 ms | **42.61 ms** | **5.5x faster** |
-| **Vite Full Production Build** | 4.96 s | **3.10 s** | **37% faster** |
-
-* Binary Size: ~756 KB release executable (stripped, LTO enabled).
-* Test Suite: 248 automated tests (159 unit tests + 89 end-to-end integration tests).
-
----
-
-## Language Reference
-
-### Component Definition
-```python
-component Name(prop_a: str, prop_b: int = 10, on_click=None):
-    div: f"{prop_a}: {prop_b}"
-```
-
-### Property and Event Conventions
-* `class`, `cls` -> `className`
-* `for` -> `htmlFor`
-* `tab_index` -> `tabIndex`
-* `on_click` -> `onClick`
-* `on_change` -> `onChange`
-* `on_submit` -> `onSubmit`
-* `on_key_down` -> `onKeyDown`
-* `on_mouse_enter` -> `onMouseEnter`
-* `aria_*` -> `aria-*`
-* `data_*` -> `data-*`
-
-Event modifier suffixes:
-* `_prevent`: Calls `event.preventDefault()`
-* `_stop`: Calls `event.stopPropagation()`
-* `_prevent_stop`: Calls both
-
-### Hooks & React Batteries
-HydraScript exposes Pythonic adapters for standard React primitives via the `hydra` runtime:
-
-| Hydra Function | Underlying React API | Description |
-|---|---|---|
-| `val, set_val = state(init)` | `useState` | Returns value and setter tuple |
-| `r = ref(init)` | `useRef` | Creates a persistent mutable ref |
-| `cb = callback(fn, deps)` | `useCallback` | Memoizes callback function |
-| `effect(fn, deps)` | `useEffect` | Runs side-effect on dependency change |
-| `val, toggle_fn, set_val = toggle(False)` | Custom hook | Boolean toggle with toggle function |
-| `is_mounted = use_mounted()` | Custom hook | Returns true after client mount |
-
-### JavaScript Globals Whitelist
-The compiler recognizes built-in JavaScript globals and ensures calls to their methods are never emitted as JSX tags:
-* `Math`, `Date`, `Array`, `Object`, `Number`, `String`, `Boolean`
-* `RegExp`, `JSON`, `Promise`, `Reflect`, `Intl`, `Set`, `Map`
-* `WeakSet`, `WeakMap`, `Symbol`, `Error`, `TypeError`, `RangeError`
-* `ResizeObserver`, `IntersectionObserver`, `MutationObserver`
-* `WebSocket`, `Worker`, `Audio`, `Image`, `FormData`, `URL`, `URLSearchParams`
-
-### Constructors and Optional Calls
-Python has no `new`, but every browser API a UI needs is reached by constructing
-one, so `new` is part of the language:
+Python semantics are preserved rather than approximated. Each of these is
+covered by a test in `compiler-rs/tests/compile.rs`:
 
 ```python
-def setup():
-    obs = new IntersectionObserver(on_change, {"threshold": 0.25})
-    obs.observe(el)
-    stamp = new Date()
-    return obs
-```
-
-`fn?.(x)` compiles to an optional call, so a callback prop needs no manual guard:
-
-```python
-def notify():
-    fn?.(count)
-```
-
-### Built-in Python Functions
-These compile without an import:
-
-| HydraScript | JavaScript |
-|---|---|
-| `len(xs)` / `len(d)` | `xs.length` / `len_of(d)` (dict-aware) |
-| `max(a, b)` / `max(xs)` | `Math.max(a, b)` / `Math.max(...xs)` |
-| `min(a, b)` / `min(xs)` | `Math.min(a, b)` / `Math.min(...xs)` |
-| `max(xs, key=f)` / `min(xs, default=0)` | `max_by` / `min_by` runtime helpers |
-| `abs(x)` / `round(x)` | `Math.abs(x)` / `Math.round(x)` |
-| `pow(a, b)` | `a ** b` |
-| `sum(xs)` / `sum(xs, start)` | `xs.reduce((a, b) => a + b, 0)` / `sum(xs, start)` |
-| `sorted(xs)` / `reversed(xs)` | non-mutating `slice()` then sort/reverse |
-| `sorted(xs, key=f, reverse=True)` | runtime helper |
-| `str(x)` / `int(x)` / `float(x)` / `bool(x)` | `String` / `parseInt` / `parseFloat` / `Boolean` |
-| `isinstance(x, int)` | `isinstance(x, Number)` |
-| `type(x).__name__` | `x.constructor.name` |
-| `enumerate(xs)` / `range(n)` / `zip(a, b)` | runtime helpers, imported automatically |
-| `any(xs)` / `all(xs)` | runtime helpers |
-| `print(x)` / `print(a, b)` | `console.log(x)` / variadic |
-| `assert cond, "msg"` | `assert_(cond, "msg")` — throws, never silently dropped |
-| `raise ValueError("x")` | `new ValueError("x")` |
-
-Python string methods with no JS equivalent (`s.capitalize()`, `s.title()`,
-`s.zfill(4)`, `s.isdigit()`) and the collection helpers Python exposes as
-methods (`", ".join(xs)`, `d.get(k, v)`, `xs.extend(ys)`, `d.keys()`) become
-calls into the runtime. The import is injected for you, so the source does not
-need to know the helper exists. The helpers delegate to a receiver that owns the
-equivalent native method (a `DOMTokenList` keeps its own `add`/`remove`), so
-`.add()` / `.remove()` stay safe on non-list objects.
-
-### Language features
-
-Python semantics are preserved rather than approximated:
-
-```python
-a = 0 < x < 10           # chained comparison: evaluated once per operand
-found = key in items     # membership, not property presence
-same = a is b            # identity
-a, b = b, a              # parallel assignment
-p = q = r = 0            # chained assignment
-name, age = get_user()   # destructuring (let when in a function scope)
-xs[1:3] / xs[:5] / xs[::2]   # slicing via runtime helpers
-{k: v for k, v in pairs} # dict comprehension
-{x for x in xs}          # set comprehension
+a = 0 < x < 10              # chained comparison
+found = key in items        # membership, not property presence
+same = a is b               # identity
+a, b = b, a                 # parallel assignment
+p = q = r = 0               # chained assignment
+name, age = get_user()      # destructuring
+xs[1:3] / xs[:5] / xs[::2]  # slicing
+{k: v for k, v in pairs}    # dict comprehension, tuple targets too
+{x for x in xs}             # set comprehension
 total = 0
 for x in xs:
-    total += x           # augmented assignment on any target
+    total += x              # augmented assignment on any target
 ```
 
-`def` with `yield` becomes a generator (`function*`); `class` with `__init__`
-becomes an ES class with `this`, `@staticmethod`, and inheritance; free functions
-can be decorated (`@deco` → `f = deco(f)`), and `@dataclass` synthesises
-`__init__` from annotated fields.
+`def` containing `yield` becomes a generator (`function*`). `class` with
+`__init__` becomes an ES class (`this`, `@staticmethod`, inheritance).
+`@deco` becomes `f = deco(f)`. `@dataclass` synthesises `__init__` from the
+annotated fields.
 
-`slot` inside a component body renders `props.children`; the component then
-receives a `children` prop automatically:
+`slot` in a component body renders `props.children` and adds `children` to the
+props type:
 
 ```python
 component Card(title: str):
     div(className="card"):
         h3: title
-        slot                # <- children land here
+        slot
 ```
 
-### Structured error types
+### Error types
 
-`type(x).__name__` works, and `class MyError(Exception)` produces a real JS class,
-so `raise MyError("msg")` / `raise ValueError("msg")` give usable stack traces:
+`class MyError(Exception)` produces a real JS class, and `raise` keeps a usable
+stack trace:
 
 ```python
 class ValidationError(Exception):
@@ -692,208 +248,285 @@ def check(x):
         raise ValidationError("negative")
 ```
 
-### Module Imports and Exports
+### The `.hys` side
+
+`.hys` files compile to plain JavaScript — no React, no JSX. Useful for scripts
+and Node utilities:
+
 ```python
-# Named import from package
-from "react" import useState, useEffect
+from "node:fs/promises" import readFile
 
-# Default / named import from local component
-from "./Header.hyx" import Header
+async def count_lines(path: str):
+    raw = await readFile(path, "utf8")
+    return len(raw.split("\n"))
+```
 
-# Namespace import
-import "three" as THREE
+Run one directly with `hydra run script.hys`.
 
-# Side-effect CSS import
-import "./index.css"
+---
 
-# Exporting a component
-export component Button(label: str):
+## Runtime (`hydra`)
+
+Both the compiler's helpers and the React adapters come from a single
+specifier, `hydra`, which resolves to `runtime/hydra.ts`.
+
+| Function | React API |
+|---|---|
+| `v, set_v = state(init)` | `useState` |
+| `r = ref(init)` | `useRef` |
+| `cb = callback(fn, deps)` | `useCallback` |
+| `effect(fn, deps)` | `useEffect` |
+| `v, toggle_fn, set_v = toggle(False)` | custom (3-tuple, not 2) |
+| `is_mounted = use_mounted()` | custom |
+
+The runtime also exports ~150 smaller helpers (`debounce`, `fetch_json`, `cx`,
+`get_path`, `use_dark_mode`, …). `hydra doctor` and `hydra list` are the quickest
+way to see what a project actually has.
+
+**Do not name your own runtime file `src/hydra.hys`.** The specifier `hydra` is
+the compiler's contract; a project file cannot satisfy every helper the compiler
+can emit, and shadowing it fails with `No matching export in src/hydra.hys for
+import len_of`. Import project code by relative path.
+
+---
+
+## Built-in functions
+
+These need no import:
+
+| HydraScript | Emits |
+|---|---|
+| `len(xs)` / `len(d)` | `xs.length` / dict-aware `len_of(d)` |
+| `max(a, b)` / `max(xs)` | `Math.max(a, b)` / spread |
+| `min(a, b)` / `min(xs)` | `Math.min(a, b)` / spread |
+| `abs(x)` / `round(x)` | `Math.abs` / `Math.round` |
+| `pow(a, b)` | `a ** b` |
+| `sum(xs)` / `sum(xs, start)` | reduce / runtime helper |
+| `sorted(xs)` / `reversed(xs)` | non-mutating |
+| `str` / `int` / `float` / `bool` | `String` / `parseInt` / `parseFloat` / `Boolean` |
+| `isinstance(x, int)` | `isinstance(x, Number)` |
+| `type(x).__name__` | `x.constructor.name` |
+| `enumerate` / `range` / `zip` | runtime helpers, auto-imported |
+| `any(xs)` / `all(xs)` | runtime helpers |
+| `print(x)` | `console.log(x)` |
+| `assert cond, "msg"` | `assert_(cond, "msg")` — throws |
+| `raise ValueError("x")` | `raise_(new ValueError("x"))` |
+
+Python string methods with no JS equivalent (`s.capitalize()`, `s.zfill(4)`,
+`s.isdigit()`) and collection helpers (`", ".join(xs)`, `d.get(k, v)`,
+`xs.extend(ys)`) call into the runtime. The import is injected for you. Helpers
+delegate to a receiver that owns the equivalent method, so `.add()` / `.remove()`
+stay safe on non-list objects like `DOMTokenList`.
+
+### Constructors
+
+Python has no `new`; browser APIs need it, so it is part of the language:
+
+```python
+def setup():
+    obs = new IntersectionObserver(on_change, {"threshold": 0.25})
+    obs.observe(el)
+    return obs
+```
+
+`fn?.(x)` compiles to an optional call.
+
+### Module imports
+
+```python
+from "react" import useState, useEffect   # named import
+from "./Header.hyx" import Header         # local component
+import "./index.css"                      # side-effect
+from "./logo.svg" import logo             # asset: default import
+export component Button(label: str):      # exported component
     button: label
-
-# Exporting a function or variable
-export def calculate_tax(amount):
+export def tax(amount):                   # exported function
     return amount * 0.11
-
-export API_URL = "https://api.domain.com/v1"
 ```
 
 ---
 
-## CLI Reference
+## Components and JSX output
 
-```
-hydra [COMMAND] [OPTIONS]
+A `component` becomes an exported React function component with a matching
+`Props` interface. Prop defaults map to destructuring defaults. `self` is `this`,
+`__init__` is the constructor, and `super().__init__(x)` becomes `super(x)`.
 
-COMMANDS:
-  dev                   Start development server with live HMR
-  build                 Compile and bundle project for production
-  preview               Preview production build locally
-  run <file.hys> [args] Execute HydraScript script in memory (legacy .hs supported)
-  watch [dir]           Watch directory and recompile on change
-  check <file.hyx>      Parse and validate syntax without emitting
-  fmt [--check] [files] Format .hyx/.hys sources (idempotent)
-  stats [dir]           Report file/line/definition counts for a codebase
-  doctor                Check the local toolchain and project health
-  init [dir]            Scaffold a new project
-  add <pkg> [--dev]     Install a dependency (npm/bun, detected)
-  remove <pkg>          Remove a dependency
-  list                  Show declared vs installed dependencies
-  clean [--all]         Remove build output (--all also clears caches)
-  analyze [dir]         Report bundle sizes and per-file weight
-  repl                  Start interactive HydraScript REPL session
-  --version, -v         Display compiler version information
-  --help, -h            Display help information
-
-ENVIRONMENT VARIABLES:
-  HYDRA_NATIVE          Explicit path to hydra.node addon
-  HYDRA_COMPILER        Explicit path to hydra CLI binary
-  HYDRA_RUNNER          Explicit path to packages/cli/runner.mjs
-  HYDRA_RUNTIME_PATH    Override the runtime module the `hydra` import resolves to
-```
-
-### Output validation
-
-Every emit is checked before it leaves the compiler. The check is narrow on
-purpose — it only rejects shapes that are *always* invalid JavaScript, never
-valid code:
-
-- a declaration whose target is a member or index expression
-  (`const node.style.transform = x` is a syntax error, not a declaration)
-- `new` with nothing to construct
-- unbalanced brackets (plain JS target only; JSX element tags are not
-  parenthesised, so the balance check is skipped for `.hyx` → `.tsx`)
-
-A failure here means a compiler bug, and the message says so instead of blaming
-your source. This exists because the compiler previously reported a successful
-build for output no JavaScript engine would accept, which surfaced later as a
-blank page in the browser.
+Output validation: every emit is checked before it leaves the compiler
+(`src/validate.rs`). It rejects shapes that are always invalid JavaScript — a
+declaration whose target is a member expression, `new` with nothing to
+construct, unbalanced brackets in plain-JS output. A failure here is a compiler
+bug and the message says so. This exists because the compiler once reported
+success for output no JS engine would accept.
 
 ---
 
-## Installation & Getting Started
+## Meta-framework
 
-### 1. Direct from GitHub via npm (Recommended)
-You do not need to clone the repository or manually compile Rust binaries. Install directly using npm:
+**`hydra dev`, `build` and `preview` use esbuild, not Vite.** PostCSS,
+Autoprefixer and Tailwind are driven programmatically, so a project needs no
+`vite.config.ts`, `tailwind.config.ts` or `postcss.config.js`.
 
-```bash
-# Global installation (adds 'hydra' to your terminal PATH)
-npm install -g hanxthvy/hydrascript
+| Command | Does |
+|---|---|
+| `hydra dev` | Builds, serves, and rebuilds on file change |
+| `hydra build` | Production build: hashed assets, minified CSS, SSG |
+| `hydra preview` | Serves `dist/` (builds first if it is missing) |
+| `hydra run <file.hys>` | Executes a script in-process |
 
-# Or install as a dev dependency in your local project
-npm install -D hanxthvy/hydrascript
+**On "HMR":** `hydra dev` watches `src/` and rebuilds, and the rebuild is visible
+within about 10 seconds. It does **not** push updates to the browser — there is
+no websocket, no hot-module protocol. You refresh the page. Calling that HMR
+would be wrong, so this README does not.
+
+**On SSG:** pre-rendering is opt-in per project (`"rendering": { "ssg": true }`)
+and the example projects ship with it off, so their `dist/index.html` is a
+~400-byte shell that renders on the client. With `ssg: true`, React's
+`renderToString` output is injected and the build prints
+`SSG: Pre-rendered HTML injected`.
+
+Build output: `dist/index.html`, `dist/assets/index-<hash>.js`, `dist/assets/index.css`,
+plus chunks for dynamic `import()`.
+
+---
+
+## Configuration
+
+A single optional `hydraconfig.json` in the project root:
+
+```json
+{
+  "name": "production-app",
+  "root": "./src",
+  "outputDir": "./dist",
+  "base": "/",
+  "server": {
+    "port": 5173,
+    "host": "0.0.0.0",
+    "proxy": { "/api": "http://127.0.0.1:8000" }
+  },
+  "compiler": {
+    "target": "react-18",
+    "strict": true
+  },
+  "rendering": { "ssg": true },
+  "styling": { "tailwind": true },
+  "tailwind": {
+    "theme": {
+      "extend": {
+        "colors": { "primary": "#f54e00" }
+      }
+    }
+  }
+}
 ```
 
-### 2. On-Demand Execution with npx (Zero Installation)
-Similar to Next.js and Astro, you can run Hydra commands on demand without pre-installing:
+`base` also handles subpath deployment: with `"/sub/"`, HTML, chunks and assets
+all reference `/sub/`, and `hydra preview` serves them there. `server.proxy`
+forwards during dev and preview, keeping the prefix intact.
 
-```bash
-# Run local development server
-npx github:hanxthvy/hydrascript dev
+Environment variables: `HYDRA_NATIVE` (addon path), `HYDRA_COMPILER` (CLI path),
+`HYDRA_RUNNER` (runner path), `HYDRA_RUNTIME_PATH` (what `hydra` resolves to).
 
-# Run production build
-npx github:hanxthvy/hydrascript build
+---
 
-# Run production preview
-npx github:hanxthvy/hydrascript preview
+## CLI reference
+
+```
+hydra <file.hyx>             compile to stdout
+hydra <file.hys> -o out.mjs  compile to a file
+hydra --check <file.hyx>     parse only; exit 1 on error
+hydra --json <file.hyx>      emit {code, map}
+hydra --stdin [filename]     read from stdin
+hydra run <file.hys> [args]  execute a script
+hydra repl                   interactive REPL
+hydra watch [dir]            watch and recompile on change
+hydra fmt [--check] [files]  format sources (idempotent)
+hydra stats [dir]            file/line/definition counts
+hydra doctor                 report toolchain and project health
+hydra init [dir]             scaffold a project
+hydra add <pkg> [--dev]      install a dependency
+hydra remove <pkg>           remove a dependency
+hydra list                   declared vs installed
+hydra clean [--all]          remove build output
+hydra analyze [dir]          bundle size report
+hydra dev | build | preview  the meta-framework commands
 ```
 
-### 3. Building from Source
-Ensure Rust (1.80+) and Cargo are installed:
+Run `hydra doctor` first when a build misbehaves — it reports node, npm, bun,
+config discovery and source counts.
+
+---
+
+## Installation
+
+```bash
+# As a dev dependency in a project
+npm install -D github:hanxthvy/hydrascript
+
+# Or globally
+npm install -g github:hanxthvy/hydrascript
+```
+
+The npm package ships prebuilt binaries for Linux x86_64 only. On macOS, Windows
+or ARM, build from source:
 
 ```bash
 git clone https://github.com/hanxthvy/hydrascript.git
 cd hydrascript/compiler-rs
-
-# Run full test suite (248 tests)
-cargo test
-
-# Build optimized release binary & Node-API addon
 cargo build --release
-
-# Symlink or copy to system PATH
-cp target/release/hydra /usr/local/bin/hydra
+cp target/release/hydra ../bin/hydra
+cp target/release/libhydra.so ../bin/hydra.node
 ```
 
-### 4. Scaffolding a New Project
-```bash
-# In an empty directory with package.json
-npm install react react-dom
-npm install -D hanxthvy/hydrascript
-
-# Create your entrypoint in src/main.hyx and run:
-npx hydra dev
-```
+Requirements: Node 18+, Rust 1.75+ (edition 2021) to build the compiler.
+`npm install` brings esbuild, PostCSS, Tailwind and Autoprefixer, which the
+runner loads from the project's own `node_modules`.
 
 ---
 
-## Production Deployment
+## Editor support
 
-### Static Hosting
-For Vercel, Netlify, Cloudflare Pages, or GitHub Pages:
-
-```bash
-# Build static assets
-npm run build # executes 'hydra build'
-
-# Output directory
-dist/
-```
-
-Configure your hosting provider:
-* **Build Command**: `hydra build` (or `npm run build`)
-* **Output Directory**: `dist`
-
-### Docker Container
-A multi-stage Dockerfile for production deployment:
-
-```dockerfile
-# [xihanzu-NR]
-FROM node:20-alpine AS builder
-WORKDIR /app
-
-# Install dependencies
-COPY package*.json hydraconfig.json ./
-RUN npm ci
-
-# Copy source and native tools
-COPY . .
-
-# Build with Hydra
-RUN npx hydra build
-
-FROM nginx:alpine AS runner
-COPY --from=builder /app/dist /usr/share/nginx/html
-EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
-```
+`editors/vscode` provides syntax highlighting and inline compiler diagnostics.
+Copy or symlink it into `~/.vscode/extensions/hydrascript` and reload. It shells
+out to the `hydra` binary for diagnostics; there is no separate language server.
 
 ---
 
-## Editor Support
+## Testing
 
-### VS Code
-Syntax highlighting support is provided in `editors/vscode`:
-1. Copy or symlink `editors/vscode` to `~/.vscode/extensions/hydrascript`.
-2. Reload VS Code.
-3. `.hyx`, `.hys`, and legacy `.hsx`/`.hs` files will display syntax coloring, keyword recognition, and indentation guides.
+```bash
+cd compiler-rs && cargo test          # 308 tests: 215 unit + 93 integration
+node benchmarks/measure.mjs           # the numbers quoted above
+bash scripts/hx-examples-check.sh     # builds every example/ project
+```
+
+The examples are the end-to-end suite. `examples/ecosystem` deliberately depends
+on 14 real React packages (radix, tanstack query, zustand, zod, motion, recharts,
+react-router, react-hook-form, sonner, lucide, clsx, tailwind-merge, date-fns) so
+a bundler regression shows up as a build failure.
 
 ---
 
-## Contributing & Architectural Roadmap
+## Known limitations
 
-HydraScript is actively developing toward a v1.0 GA release. Comprehensive architectural plans, including file-based routing and a native language server (`hydra-lsp`), are documented in:
-* [`PRODUCTION_BLUEPRINT.md`](PRODUCTION_BLUEPRINT.md): Architectural roadmap and meta-framework specification.
-* [`CRITIQUE_AND_ROADMAP.md`](CRITIQUE_AND_ROADMAP.md): Detailed compiler diagnostics and edge-case analysis.
+Honest list, current as of 0.1.0:
 
-To run the compiler test suite locally:
-```bash
-cd compiler-rs
-cargo test
-```
+- **f-string format specs are dropped.** `f"{x:.2f}"` compiles to
+  `` `${x}` `` — the `.2f` is silently lost. Call `x.toFixed(2)` instead. A
+  diagnostic for this is not implemented yet.
+- No `getattr(x, "y", default)`, no multiple inheritance, no `super().method()`
+  with keyword arguments.
+- Keyword arguments work for functions defined in the same file; imported
+  functions must be called positionally (the compiler cannot see their
+  signature).
+- Prebuilt binary is Linux x86_64 only.
+- npm publishes nothing yet — installs come from the GitHub URL.
+- File-based routing and `hydra-lsp` are planned, not present. Older documents
+  in this repo's history described them as if they existed; they do not.
 
 ---
 
 ## License
 
-MIT License. Copyright (c) Reyhan Akhtar Afriansyah (Hanz).
-All rights reserved.
+MIT. Copyright (c) Reyhan Akhtar Afriansyah (Hanz).
