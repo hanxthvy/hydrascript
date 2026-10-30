@@ -351,7 +351,7 @@ const TAILWIND_CONFIG_TEMPLATE: &str = r#"// [xihanzu-NR]
  * produce the same classes; keep the two in step when you change the theme.
  */
 export default {
-  content: ['./index.html', './src/**/*.{hyx,hys,hsx,hs,html}'],
+  content: ['./index.html', './src/**/*.{hyx,hys,hsx,hs,tsx,ts,jsx,js,mjs,html}'],
   theme: { extend: {} },
   plugins: [],
 };

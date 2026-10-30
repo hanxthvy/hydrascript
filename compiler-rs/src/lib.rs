@@ -66,6 +66,25 @@ pub fn compile_for(
     match target {
         Target::React => {
             let mut em = emitter::Emitter::new();
+            // Relative imports are resolved against the file's own directory so
+            // the emitter can emit a default import for a component that only
+            // default-exports. Without it, every such component failed the
+            // build with `No matching export`. `filename` may be a bare name
+            // (`-`) when compiling from stdin; then there is nothing to resolve
+            // against and the named form is used, as before.
+            let parent = std::path::Path::new(filename).parent();
+            let dir = match parent {
+                Some(d) if !d.as_os_str().is_empty() => Some(d.to_path_buf()),
+                // A bare filename means "the file the CLI was pointed at in the
+                // working directory", which is how `hydra App.hyx` arrives here.
+                _ if filename != "-" && !filename.is_empty() => {
+                    std::env::current_dir().ok()
+                }
+                _ => None,
+            };
+            if let Some(d) = dir {
+                em = em.with_base_dir(d);
+            }
             let code = em.run(&module)?;
             let map = em.sourcemap(filename, src);
             // TSX: element tags make bracket counting meaningless.

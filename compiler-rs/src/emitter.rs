@@ -421,12 +421,69 @@ impl Scope {
     }
 }
 
+
+/// How a relative import should be emitted.
+///
+/// React components in the wild are overwhelmingly `export default`. This
+/// compiler has always emitted a named import for a relative path, which means
+/// every such component failed the build with
+/// `No matching export in "./X.tsx" for import "X"` until the author added a
+/// second, named export. That is a papercut on every single third-party or
+/// hand-written component, so the emitter now looks at the file.
+///
+/// Reads the module only to decide the import shape, and only for relative
+/// specifiers. Anything unreadable falls back to the named form, which is what
+/// an author writing `from "./local.hys" import helper` wants.
+fn import_shapes_as_default(spec: &str, base_dir: Option<&std::path::Path>) -> bool {
+    let dir = match base_dir {
+        Some(d) => d,
+        None => return false,
+    };
+    if !(spec.starts_with("./") || spec.starts_with("../")) {
+        return false;
+    }
+    let base = dir.join(spec);
+    const EXTS: &[&str] = &["", ".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs", ".hyx", ".hys"];
+    for ext in EXTS {
+        let candidate = if ext.is_empty() {
+            base.clone()
+        } else {
+            std::path::PathBuf::from(format!("{}{}", base.display(), ext))
+        };
+        let source = match std::fs::read_to_string(&candidate) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let has_default = source.contains("export default")
+            || source.contains("module.exports")
+            || source.contains("exports.default");
+        if !has_default {
+            continue;
+        }
+        // `export { X }` / `export const X` / `export function X` mean the named
+        // import already works, and a default import would then be wrong.
+        let named_hints = ["export {", "export const ", "export function ", "export class "];
+        if named_hints.iter().any(|h| source.contains(h)) {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
 pub struct Emitter {
     pub lines: Vec<String>,
     pub linemap: Vec<usize>,
     pub cur_src: usize,
     pub depth: usize,
     pub imports: HashSet<String>,
+    /// Directory of the file being compiled, when known.
+    ///
+    /// Used to answer one question at emit time: does a relative import point
+    /// at a module that exports the requested name, or only a default? React
+    /// components are written `export default`, and emitting a named import for
+    /// one fails the build until the author re-exports by name.
+    pub base_dir: Option<std::path::PathBuf>,
     /// Runtime helpers the source actually used (capitalize, title, ...).
     /// Collected during emission so the import is injected only when needed.
     pub used_helpers: std::cell::RefCell<HashSet<String>>,
@@ -462,7 +519,15 @@ impl Emitter {
             class_names: std::cell::RefCell::new(std::collections::HashSet::new()),
             head_lines: Vec::new(),
             scopes: Vec::new(),
+            base_dir: None,
         }
+    }
+
+    /// Point the emitter at the file's directory so it can resolve relative
+    /// imports and tell a named export from a default-only module.
+    pub fn with_base_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.base_dir = Some(dir.into());
+        self
     }
 
     fn pad(&self) -> String {
@@ -1747,12 +1812,16 @@ impl Emitter {
                     } else if names.len() == 1 && names[0].starts_with("* as ") {
                         self.imports
                             .insert(format!("import {} from '{}';", names[0], f));
-                    } else if crate::hx_target::asset_import(f) && names.len() == 1 {
-                        // Asset modules expose a single default export, never a
-                        // named one: `from "./logo.svg" import logo` has to become
-                        // `import logo from './logo.svg'` or the bundler fails
-                        // with `No matching export in "logo.svg" for import
-                        // "logo"`. See `asset_import` for the reasoning.
+                    } else if names.len() == 1
+                        && (crate::hx_target::asset_import(f)
+                            || import_shapes_as_default(f, self.base_dir.as_deref()))
+                    {
+                        // A module with only a default export — an asset, or a
+                        // React component written `export default` — can never
+                        // satisfy a named import. `from "./X.tsx" import X` has
+                        // to become `import X from './X.tsx'`, or the build fails
+                        // with `No matching export in "./X.tsx" for import "X"`.
+                        // See `asset_import` and `import_shapes_as_default`.
                         self.imports
                             .insert(format!("import {} from '{}';", names[0], f));
                     } else {
@@ -1946,12 +2015,16 @@ impl Emitter {
                     } else if names.len() == 1 && names[0].starts_with("* as ") {
                         self.imports
                             .insert(format!("import {} from '{}';", names[0], f));
-                    } else if crate::hx_target::asset_import(f) && names.len() == 1 {
-                        // Asset modules expose a single default export, never a
-                        // named one: `from "./logo.svg" import logo` has to become
-                        // `import logo from './logo.svg'` or the bundler fails
-                        // with `No matching export in "logo.svg" for import
-                        // "logo"`. See `asset_import` for the reasoning.
+                    } else if names.len() == 1
+                        && (crate::hx_target::asset_import(f)
+                            || import_shapes_as_default(f, self.base_dir.as_deref()))
+                    {
+                        // A module with only a default export — an asset, or a
+                        // React component written `export default` — can never
+                        // satisfy a named import. `from "./X.tsx" import X` has
+                        // to become `import X from './X.tsx'`, or the build fails
+                        // with `No matching export in "./X.tsx" for import "X"`.
+                        // See `asset_import` and `import_shapes_as_default`.
                         self.imports
                             .insert(format!("import {} from '{}';", names[0], f));
                     } else {
@@ -2651,6 +2724,58 @@ mod tests {
         );
         has_all(&out, &["<li key={it}>"]);
         lacks(&out, "key={key}");
+    }
+
+    // ------------------------------------------------- interop: default exports
+
+    /// A React component written `export default` must be imported as a default.
+    /// Every such component used to fail the build with
+    /// `No matching export in "./X.tsx" for import "X"`.
+    #[test]
+    fn relative_default_export_emits_default_import() {
+        let dir = std::env::temp_dir().join("hydra-emitter-interop");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Card.tsx"),
+            "export default function Card() { return null }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("Named.tsx"),
+            "export const Named = () => null;\nexport function other() {}\n",
+        )
+        .unwrap();
+
+        let src = "from \"./Card.tsx\" import Card\ncomponent A():\n    Card()\n";
+        let lines: Vec<String> = src.split('\n').map(String::from).collect();
+        let toks = crate::lexer::lex(src).unwrap();
+        let module = crate::parser::Parser::new(toks, lines).module().unwrap();
+        let out = Emitter::new().with_base_dir(&dir).run(&module).unwrap();
+        assert!(
+            out.contains("import Card from './Card.tsx';"),
+            "default-exporting component must be a default import, got:\n{out}"
+        );
+        assert!(!out.contains("import { Card }"), "named form must not be used");
+
+        let src2 = "from \"./Named.tsx\" import Named\ncomponent B():\n    Named()\n";
+        let lines2: Vec<String> = src2.split('\n').map(String::from).collect();
+        let toks2 = crate::lexer::lex(src2).unwrap();
+        let module2 = crate::parser::Parser::new(toks2, lines2).module().unwrap();
+        let out2 = Emitter::new().with_base_dir(&dir).run(&module2).unwrap();
+        assert!(
+            out2.contains("import { Named } from './Named.tsx';"),
+            "a module with named exports keeps the named form, got:\n{out2}"
+        );
+    }
+
+    /// Without a base directory there is nothing to read, so the historical
+    /// named form is kept — compiling from stdin must not change behaviour.
+    #[test]
+    fn no_base_dir_keeps_named_import() {
+        let out =
+            emit_tsx("from \"./Whatever.tsx\" import Whatever\ncomponent A():\n    Whatever()\n");
+        assert!(out.contains("import { Whatever }"), "got:\n{out}");
     }
 }
 

@@ -365,7 +365,7 @@ async function compileTailwind(cwd, config, postcss, tailwindcss, autoprefixer) 
     ...userTailwind,
     content: Array.from(new Set([
       path.join(cwd, 'index.html'),
-      path.join(cwd, 'src/**/*.{hyx,hys,hsx,hs,html,css}'),
+      path.join(cwd, 'src/**/*.{hyx,hys,hsx,hs,tsx,ts,jsx,js,mjs,html,css}'),
       ...(userTailwind.content || []),
     ])),
     theme: userTailwind.theme || { extend: {} },
