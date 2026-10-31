@@ -6,7 +6,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 const selfRequire = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -107,12 +107,29 @@ function findNativeAddon() {
   return null;
 }
 
+/**
+ * The CLI binary, when it is present beside the package.
+ *
+ * Mirrors `cliFallbackCompile`'s lookup on purpose: one place decides where the
+ * compiler lives, so the build-time semantic check and the compile fallback
+ * cannot end up using different binaries.
+ */
+function findCliBinary() {
+  const candidates = [
+    process.env.HYDRA_COMPILER,
+    path.join(HERE, '../../bin/hydra'),
+  ].filter(Boolean);
+  for (const bin of candidates) {
+    if (fs.existsSync(bin)) return bin;
+  }
+  return null;
+}
+
 function cliFallbackCompile(file, source) {
   const candidates = [
     process.env.HYDRA_COMPILER,
     path.join(HERE, '../../bin/hydra'),
   ].filter(Boolean);
-
   for (const bin of candidates) {
     if (fs.existsSync(bin)) {
       try {
@@ -658,6 +675,40 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
       `[hydra] warning: using ${path.relative(cwd, entryPoint)} as the entrypoint; ` +
         `also found ${otherEntries.join(', ')}. Delete the unused one to silence this.`,
     );
+  }
+
+  // 1b. Semantic check, ACROSS THE SOURCE — before anything is bundled.
+  //
+  // The runtime gate renders the page and fails on a throw, so it only sees the
+  // code a render actually executes. A broken call inside an event handler, or
+  // on a branch render does not take, was never executed: the build succeeded
+  // and the crash shipped to the browser. Demonstrated with
+  // `if take: n = len(d.keys())` — that emitted a JS method call that throws on
+  // a plain object, and with `take=0` the build reported success.
+  //
+  // The checker knows about exactly this class (names no runtime provides), it
+  // was simply never invoked during a build. Running it here is what closes the
+  // hole, because the source is read even where a render never goes.
+  //
+  // Only warnings that mean "this will throw" fail the build; `hydra check`
+  // without `--strict` stays advisory.
+  if (process.env.HYDRA_NO_CHECK !== '1') {
+    const srcDir = path.join(cwd, 'src');
+    const bin = findCliBinary();
+    if (bin && fs.existsSync(srcDir)) {
+      const res = spawnSync(bin, ['check', '--strict', srcDir], { encoding: 'utf8' });
+      if (res.status === 1) {
+        // Say what is wrong in the words that matter: not "warning", but the
+        // reason a warning is fatal here.
+        const detail = (res.stderr || res.stdout || '').trim();
+        throw new Error(
+          `[hydra] semantic check failed. These are names no runtime provides, so ` +
+            `the bundle would throw in the browser instead of failing here ` +
+            `(the runtime gate cannot see code a render never runs):\n${detail}\n` +
+            `= fix the names above, or set HYDRA_NO_CHECK=1 to build anyway`,
+        );
+      }
+    }
   }
 
   // 2. Discover the runtime

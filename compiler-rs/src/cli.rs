@@ -271,11 +271,24 @@ fn collect(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
 }
 
 fn targets(args: &[String]) -> Vec<PathBuf> {
-    let files: Vec<PathBuf> = args
-        .iter()
-        .filter(|a| !a.starts_with('-'))
-        .map(PathBuf::from)
-        .collect();
+    // A DIRECTORY argument used to be read as a file: `hydra check examples/blog/src`
+    // said "clean: 1 file(s) checked" because `fs::read_to_string` on a directory
+    // fails and the loop just skipped it. Expanding directories here is what makes
+    // "check the whole source" mean what it says.
+    let mut files: Vec<PathBuf> = Vec::new();
+    for a in args.iter().filter(|a| !a.starts_with('-')) {
+        let p = PathBuf::from(a);
+        if p.is_dir() {
+            let mut found = Vec::new();
+            for ext in &["hyx", "hys", "hsx", "hs", "hx"] {
+                collect(&p, ext, &mut found);
+            }
+            found.sort();
+            files.extend(found);
+        } else {
+            files.push(p);
+        }
+    }
     if !files.is_empty() {
         return files;
     }
@@ -556,9 +569,24 @@ pub fn repl() -> ExitCode {
 
 fn check(args: &[String]) -> ExitCode {
     let files = targets(args);
+    // `--strict` promotes the semantic warnings to a failure. The default stays
+    // advisory: a build with a warning still produces the right bundle, and a
+    // style finding should not red someone's CI.
+    //
+    // The build uses this. A name the compiler cannot bind (`any`, `getattr`,
+    // `setattr`, `frozenset`) compiles to a call to something that does not
+    // exist, and the runtime gate only notices if the render happens to run that
+    // line — put it in an event handler and the crash ships. Since that warning
+    // is the only warning the gate cannot be trusted to give, it has to be able
+    // to stop a build.
+    let strict = args.iter().any(|a| a == "--strict")
+        || std::env::var("HYDRA_STRICT").is_ok_and(|v| v != "0");
+    // `targets` already drops anything starting with `-`, so `--strict` is not
+    // in this list.
+    let paths: Vec<&PathBuf> = files.iter().collect();
     let mut errors = 0usize;
     let mut warnings = 0usize;
-    for path in &files {
+    for path in &paths {
         let Ok(src) = fs::read_to_string(path) else {
             continue;
         };
@@ -587,15 +615,23 @@ fn check(args: &[String]) -> ExitCode {
         return ExitCode::from(1);
     }
     if warnings > 0 {
+        if strict {
+            eprintln!(
+                "\n{} warning(s), and --strict is on: these are names no runtime \
+                 provides, so the build would ship a crash",
+                warnings
+            );
+            return ExitCode::from(1);
+        }
         // Warnings never change the exit code: a build with warnings still
         // produces the right bundle, and CI should not red on a style finding.
         println!(
             "\x1b[32mclean\x1b[0m: {} file(s) checked, \x1b[33m{} warning(s)\x1b[0m",
-            files.len(),
+            paths.len(),
             warnings
         );
     } else {
-        println!("\x1b[32mclean\x1b[0m: {} file(s) checked", files.len());
+        println!("\x1b[32mclean\x1b[0m: {} file(s) checked", paths.len());
     }
     ExitCode::SUCCESS
 }

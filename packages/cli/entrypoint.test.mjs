@@ -133,6 +133,80 @@ test('a project with no candidate entrypoint fails with all four names listed', 
   }
 });
 
+test('a build refuses to ship a name no runtime provides', async () => {
+  // The runtime gate renders the page, so it only sees code a render actually
+  // runs. `if take: v = any([1])` with take=0 used to build successfully and
+  // carry `any(` into the shipped bundle, where it throws when the user
+  // triggers that path. The build must fail instead.
+  if (!fs.existsSync(HYDRA)) return t.skip(`${HYDRA} not built`);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hydra-checkgate-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'),
+      JSON.stringify({ name: 'g', private: true, type: 'module' }));
+    fs.writeFileSync(path.join(dir, 'hydraconfig.json'),
+      JSON.stringify({ name: 'g', root: './src', outputDir: './dist' }));
+    fs.writeFileSync(path.join(dir, 'src', 'App.hyx'),
+      'component App(take):\n' +
+      '    if take:\n' +
+      '        v = any([1])\n' +
+      '    else:\n' +
+      '        v = 1\n' +
+      '    div: f"v={v}"\n');
+    fs.writeFileSync(path.join(dir, 'src', 'main.hyx'),
+      'from "react-dom/client" import createRoot\n' +
+      'from "./App.hyx" import App\n' +
+      'root = document.getElementById("root")\n' +
+      'createRoot(root).render(App(take=0))\n');
+
+    const runner = await import('./runner.mjs');
+    await assert.rejects(
+      () => runner.runBuild(dir, { dev: false, mode: 'production' }),
+      (e) => {
+        assert.match(e.message, /semantic check failed/,
+          `expected a semantic-check failure, got: ${e.message}`);
+        assert.match(e.message, /any/,
+          'the error should name the offending symbol');
+        return true;
+      },
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a build still succeeds when the code is clean', async (t) => {
+  // The counterpart: the check above must not block working code. A branch-local
+  // assignment used after the branch is legal and hoisted by the emitter.
+  if (!fs.existsSync(HYDRA)) return t.skip(`${HYDRA} not built`);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hydra-clean-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'),
+      JSON.stringify({ name: 'c', private: true, type: 'module' }));
+    fs.writeFileSync(path.join(dir, 'hydraconfig.json'),
+      JSON.stringify({ name: 'c', root: './src', outputDir: './dist' }));
+    fs.writeFileSync(path.join(dir, 'src', 'App.hyx'),
+      'component App(take):\n' +
+      '    if take:\n' +
+      '        n = len([1, 2])\n' +
+      '    else:\n' +
+      '        n = 1\n' +
+      '    div: f"n={n}"\n');
+    fs.writeFileSync(path.join(dir, 'src', 'main.hyx'),
+      'from "react-dom/client" import createRoot\n' +
+      'from "./App.hyx" import App\n' +
+      'root = document.getElementById("root")\n' +
+      'createRoot(root).render(App(take=1))\n');
+
+    const res = execFileSync(HYDRA, ['check', '--strict', path.join(dir, 'src')],
+      { encoding: 'utf8' });
+    assert.match(res, /clean/, `strict check should pass, got: ${res}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('serveDirectory is importable without starting anything', () => {
   // Importing the runner must not open a socket; the test above imports it too,
   // and this pins the invariant so a future top-level side effect is caught.

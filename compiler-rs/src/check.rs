@@ -242,6 +242,9 @@ impl Checker {
                         collect_assign_targets(t, &mut self.hoisted);
                     }
                 }
+                Kind::AugAssign { target, .. } => {
+                    collect_assign_targets(target, &mut self.hoisted);
+                }
                 Kind::Import { names, .. } => {
                     for n in names {
                         self.hoisted.insert(n.clone());
@@ -254,6 +257,55 @@ impl Checker {
                 Kind::DecoratedDef { inner, .. } => {
                     let one = vec![(**inner).clone()];
                     self.collect_hoisted(&one);
+                }
+                // Descend into control flow. Two reasons, both found by running
+                // this checker in strict mode over an app that builds fine:
+                //
+                //  1. The emitter hoists: a name assigned inside an `if:` is
+                //     declared with a single `let` at the top of the function
+                //     (see `Emitter::scan_at`, which scans nested blocks for
+                //     exactly this). A checker that only looked at statements
+                //     directly in the body reported `if t: n = 1` followed by
+                //     `f"{n}"` as "used but never bound" — a false positive on
+                //     legal code.
+                //  2. It errs toward BINDING, which is the safe direction now
+                //     that a warning can fail a build. Under-warning misses a
+                //     real bug; over-warning breaks a working project.
+                //
+                // Names assigned inside a nested `def`/`component`/`class` are
+                // deliberately NOT collected: those are separate scopes and the
+                // emitter does not hoist out of them either.
+                Kind::If { body, orelse, .. } => {
+                    self.collect_hoisted(body);
+                    if let Some(o) = orelse {
+                        self.collect_hoisted(o);
+                    }
+                }
+                Kind::For { target, body, .. } => {
+                    // The loop variable is assigned by the loop itself.
+                    self.hoisted.insert(target.clone());
+                    self.collect_hoisted(body);
+                }
+                Kind::While { body, .. } => self.collect_hoisted(body),
+                Kind::Try {
+                    body,
+                    handlers,
+                    orelse,
+                    finally,
+                } => {
+                    self.collect_hoisted(body);
+                    for h in handlers {
+                        if let Some(n) = &h.name {
+                            self.hoisted.insert(n.clone());
+                        }
+                        self.collect_hoisted(&h.body);
+                    }
+                    if let Some(o) = orelse {
+                        self.collect_hoisted(o);
+                    }
+                    if let Some(f) = finally {
+                        self.collect_hoisted(f);
+                    }
                 }
                 _ => {}
             }
@@ -476,6 +528,21 @@ impl Checker {
             Kind::ExprStmt(e) => self.walk(e),
             Kind::If { test, body, orelse } => {
                 self.walk(test);
+                // A name assigned in a branch is hoisted to the top of the
+                // function by the emitter (`Emitter::scan_at` scans nested
+                // blocks for exactly this) and JS bindings are function-scoped.
+                // Walking each branch in its own scope reported
+                // `if t: n = 1` … `f"{n}"` as "used but never bound" — a false
+                // positive on legal code, found by running --strict over an app
+                // that builds fine. Bind into the ENCLOSING scope first.
+                let mut assigned = HashSet::new();
+                collect_assigns_recursive(body, &mut assigned);
+                if let Some(o) = orelse {
+                    collect_assigns_recursive(o, &mut assigned);
+                }
+                for name in assigned {
+                    self.bind(&name);
+                }
                 self.walk_scoped(body);
                 if let Some(o) = orelse {
                     self.walk_scoped(o);
@@ -483,10 +550,23 @@ impl Checker {
             }
             Kind::While { test, body } => {
                 self.walk(test);
+                // Same hoisting as `if`: a name assigned in the loop body exists
+                // after the loop.
+                let mut assigned = HashSet::new();
+                collect_assigns_recursive(body, &mut assigned);
+                for name in assigned {
+                    self.bind(&name);
+                }
                 self.walk_scoped(body);
             }
             Kind::For { target, iter, body } => {
                 self.walk(iter);
+                self.bind(target);
+                let mut assigned = HashSet::new();
+                collect_assigns_recursive(body, &mut assigned);
+                for name in assigned {
+                    self.bind(&name);
+                }
                 self.push_scope();
                 self.bind(target);
                 self.bind_local_defs(body);
@@ -499,6 +579,22 @@ impl Checker {
                 orelse,
                 finally,
             } => {
+                // Same hoisting as `if`: a binding made in any arm exists after
+                // the whole statement.
+                let mut assigned = HashSet::new();
+                collect_assigns_recursive(body, &mut assigned);
+                for h in handlers {
+                    collect_assigns_recursive(&h.body, &mut assigned);
+                }
+                if let Some(o) = orelse {
+                    collect_assigns_recursive(o, &mut assigned);
+                }
+                if let Some(f) = finally {
+                    collect_assigns_recursive(f, &mut assigned);
+                }
+                for name in assigned {
+                    self.bind(&name);
+                }
                 self.walk_scoped(body);
                 for h in handlers {
                     self.push_scope();
@@ -904,6 +1000,63 @@ fn collect_assign_targets(target: &Node, out: &mut HashSet<String>) {
     }
 }
 
+/// Every name assigned ANYWHERE inside a block, at any nesting depth.
+///
+/// Separate from `collect_assign_targets`, which unwraps one assignment target.
+/// This descends into control flow, because the emitter hoists a branch-local
+/// binding to the top of the function. Does NOT descend into a nested
+/// `def`/`component`/`class` — those are separate scopes.
+fn collect_assigns_recursive(body: &[Node], out: &mut HashSet<String>) {
+    for n in body {
+        match &n.kind {
+            Kind::Assign { target, .. } => collect_assign_targets(target, out),
+            Kind::ChainedAssign { targets, .. } => {
+                for t in targets {
+                    collect_assign_targets(t, out);
+                }
+            }
+            Kind::TupleAssign { targets, .. } => {
+                for t in targets {
+                    collect_assign_targets(t, out);
+                }
+            }
+            Kind::AugAssign { target, .. } => collect_assign_targets(target, out),
+            Kind::If { body, orelse, .. } => {
+                collect_assigns_recursive(body, out);
+                if let Some(o) = orelse {
+                    collect_assigns_recursive(o, out);
+                }
+            }
+            Kind::For { target, body, .. } => {
+                out.insert(target.clone());
+                collect_assigns_recursive(body, out);
+            }
+            Kind::While { body, .. } => collect_assigns_recursive(body, out),
+            Kind::Try {
+                body,
+                handlers,
+                orelse,
+                finally,
+            } => {
+                collect_assigns_recursive(body, out);
+                for h in handlers {
+                    if let Some(nm) = &h.name {
+                        out.insert(nm.clone());
+                    }
+                    collect_assigns_recursive(&h.body, out);
+                }
+                if let Some(o) = orelse {
+                    collect_assigns_recursive(o, out);
+                }
+                if let Some(f) = finally {
+                    collect_assigns_recursive(f, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// A tree head is a component when it starts uppercase; `div` and `span` are
 /// HTML elements and are not names that must resolve.
 fn starts_component(id: &str) -> bool {
@@ -1165,6 +1318,51 @@ mod tests {
 
     fn msgs(src: &str) -> Vec<String> {
         warn(src).into_iter().map(|w| w.message).collect()
+    }
+
+    #[test]
+    fn branch_local_assignment_binds_after_the_branch() {
+        // The emitter hoists a branch-local binding to the top of the function
+        // (see `Emitter::scan_at`), so `if t: n = 1` followed by `f"{n}"` is
+        // legal code. This was a FALSE POSITIVE that mattered: strict mode is
+        // what lets a build refuse to ship, and refusing on working code would
+        // make the check useless. Found by running --strict over a real app.
+        let m = msgs("component A(t):\n    if t:\n        n = 1\n    else:\n        n = 2\n    div: f\"{n}\"\n");
+        assert_eq!(m.len(), 0, "{m:?}");
+    }
+
+    #[test]
+    fn loop_variable_binds_after_the_loop() {
+        let m = msgs("component A(xs):\n    for x in xs:\n        pass\n    div: f\"{x}\"\n");
+        assert_eq!(m.len(), 0, "{m:?}");
+    }
+
+    #[test]
+    fn assignment_inside_while_binds_after_it() {
+        let m = msgs("component A(t):\n    while t:\n        n = 1\n    div: f\"{n}\"\n");
+        assert_eq!(m.len(), 0, "{m:?}");
+    }
+
+    #[test]
+    fn assignment_inside_try_binds_after_it() {
+        // Bare `except:` so the only thing under test is the hoisting of `n`;
+        // `except E:` would additionally (correctly) report the unbound `E`.
+        let m = msgs("component A():\n    n = 0\n    try:\n        n = 1\n    except:\n        n = 2\n    div: f\"{n}\"\n");
+        assert_eq!(m.len(), 0, "{m:?}");
+    }
+
+    #[test]
+    fn assignment_inside_except_binds_after_the_try() {
+        let m = msgs("component A():\n    n = 0\n    try:\n        pass\n    except:\n        n = 2\n    div: f\"{n}\"\n");
+        assert_eq!(m.len(), 0, "{m:?}");
+    }
+
+    #[test]
+    fn a_name_no_runtime_provides_is_still_reported() {
+        // The fix above must not swallow the real finding: this is the class
+        // that made a build able to ship a crash.
+        let m = msgs("component A():\n    v = any([1])\n    div: f\"{v}\"\n");
+        assert!(m.iter().any(|s| s.contains("any")), "{m:?}");
     }
 
     #[test]
