@@ -25,3 +25,6 @@ target/
 .DS_Store
 *.swp
 .vscode-test/
+
+# Packed tarballs from `npm pack` / the pack-install check.
+*.tgz

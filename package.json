@@ -41,5 +41,21 @@
     "test:node": "node --test packages/cli/plugin.test.mjs packages/cli/server.test.mjs packages/cli/entrypoint.test.mjs packages/cli/dts.test.mjs",
     "test:examples": "bash scripts/hx-examples-check.sh",
     "types": "hydra types"
-  }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "bin/",
+    "packages/",
+    "runtime/",
+    "vite-plugin/index.js",
+    "vite-plugin/package.json",
+    "schema.json",
+    "LICENSE",
+    "README.md",
+    "README.id.md",
+    "SPEC.md",
+    "MIGRATING.md"
+  ]
 }

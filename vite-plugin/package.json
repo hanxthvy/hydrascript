@@ -8,11 +8,11 @@
     ".": "./index.js"
   },
   "files": [
-    "index.js",
-    "bin/"
+    "index.js"
   ],
   "peerDependencies": {
-    "vite": ">=5"
+    "vite": ">=5",
+    "hydrascript": ">=0.3"
   },
   "dependencies": {
     "esbuild": "^0.25.0"

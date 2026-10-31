@@ -34,7 +34,12 @@ function findCompiler(explicit) {
   const candidates = [
     explicit,
     process.env.HYDRA_COMPILER,
-    path.join(HERE, 'bin', 'hydra'),
+    // The compiler binary is owned by the `hydrascript` package, not by this
+    // plugin. A private copy here is a second copy that can silently lag behind
+    // the compiler it is supposed to be running, so the order is: the repo's
+    // build, then the package that owns it, then PATH. `HERE/bin/hydra` was the
+    // first entry and is deliberately gone.
+    path.join(HERE, '..', 'bin', 'hydra'),
     path.join(HERE, '..', 'compiler-rs', 'target', 'release', 'hydra'),
     path.join(HERE, '..', 'compiler-rs', 'target', 'debug', 'hydra'),
   ].filter(Boolean)

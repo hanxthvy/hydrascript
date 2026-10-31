@@ -181,3 +181,26 @@ jobs:
           HYDRA_NO_GATE=1 "$GITHUB_WORKSPACE/bin/hydra" build
           test -f dist/index.html
           echo "scaffold build produced dist/index.html"
+
+  # Everything above tests the REPOSITORY. What a user installs is the TARBALL,
+  # and the two differ in ways that pass every unit test and break on install: a
+  # missing entry in `files`, a binary that did not get packed, a plugin that
+  # resolves the compiler relative to a directory that is not shipped. This packs,
+  # installs into a clean project, and builds a scaffolded app with the installed
+  # binary.
+  pack:
+    name: pack + install + build (what a user gets)
+    runs-on: ubuntu-latest
+    needs: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          name: hydra-binaries
+          path: bin/
+      - run: chmod +x bin/hydra
+      - name: Pack, install, build
+        run: bash scripts/pack-install-check.sh
