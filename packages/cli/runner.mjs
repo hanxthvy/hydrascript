@@ -10,6 +10,19 @@ import { execFileSync } from 'node:child_process';
 const selfRequire = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * The entrypoint filenames, in priority order. ONE list: the runner resolves
+ * against it, the error message names every one of them, and a test in
+ * `entrypoint.test.mjs` checks `hydra init` produces a project the runner
+ * accepts, so the scaffold cannot drift away from this.
+ */
+export const ENTRY_CANDIDATES = [
+  'src/main.hyx',
+  'src/main.hsx',
+  'src/index.hyx',
+  'src/index.hsx',
+];
+
 function resolvePkg(name, cwd) {
   const bases = [
     HERE,
@@ -603,16 +616,14 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   // and `index.hyx` built from `main.hyx` while `index.hyx` sat there looking
   // equally like the entrypoint. Say so instead — the wrong entrypoint
   // produces a site that builds fine and shows the wrong app.
-  const entryCandidates = [
-    path.join(cwd, 'src/main.hyx'),
-    path.join(cwd, 'src/main.hsx'),
-    path.join(cwd, 'src/index.hyx'),
-    path.join(cwd, 'src/index.hsx'),
-  ];
+  //
+  // `ENTRY_CANDIDATES` is exported so the "not found" error, the docs and any
+  // other consumer read ONE list. A second copy of these four names is how the
+  // scaffold and the runner drift apart.
+  const entryCandidates = ENTRY_CANDIDATES.map((f) => path.join(cwd, f));
   const entryPoint = entryCandidates.find((f) => fs.existsSync(f));
   if (!entryPoint) {
-    const names = entryCandidates.map((f) => path.relative(cwd, f)).join(', ');
-    throw new Error(`[hydra] Entrypoint not found. Create one of: ${names}`);
+    throw new Error(`[hydra] Entrypoint not found. Create one of: ${ENTRY_CANDIDATES.join(', ')}`);
   }
   const otherEntries = entryCandidates
     .filter((f) => fs.existsSync(f) && f !== entryPoint)

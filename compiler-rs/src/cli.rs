@@ -117,6 +117,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("preview") => preview_cmd(&args[1..]),
         Some("watch") => watch(&args[1..]),
         Some("check") => check(&args[1..]),
+        Some("types") => types_cmd(&args[1..]),
         Some("init") => crate::scaffold::init(&args[1..]),
         Some("fmt") => crate::fmt::run(&args[1..]),
         Some("stats") => crate::scaffold::stats(&args[1..]),
@@ -130,7 +131,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some(other) => {
             eprintln!("hydra: unknown command {:?}", other);
             eprintln!(
-                "try: hydra dev | build | preview | run | watch | repl | check | init | --help"
+                "try: hydra dev | build | preview | run | watch | repl | check | types | init | --help"
             );
             ExitCode::from(2)
         }
@@ -596,5 +597,64 @@ fn check(args: &[String]) -> ExitCode {
     } else {
         println!("\x1b[32mclean\x1b[0m: {} file(s) checked", files.len());
     }
+    ExitCode::SUCCESS
+}
+
+/// `hydra types` — write TypeScript declarations next to the sources.
+///
+/// This is what makes a `.hyx` module visible to `tsc`. Without it TypeScript
+/// reports `TS2307: Cannot find module './Widget.hyx' or its corresponding type
+/// declarations`, and the only alternatives are an error or a `declare module
+/// '*.hyx'` shim that turns every import into `any` and silently removes type
+/// checking exactly where a TS user needs it.
+///
+/// The file is written as `<source>.d.ts` — that is, `Widget.hyx.d.ts`. That
+/// exact name is what TypeScript looks for next to `Widget.hyx`; a sibling
+/// `Widget.d.ts` would be ignored.
+///
+/// A module with no exports produces no file, so a hand-written declaration is
+/// never overwritten with an empty one.
+pub fn types_cmd(args: &[String]) -> ExitCode {
+    let files = targets(args);
+    if files.is_empty() {
+        eprintln!("hydra types: no source files found");
+        return ExitCode::from(1);
+    }
+    let mut written = 0usize;
+    let mut skipped = 0usize;
+    let mut failed = 0usize;
+    for path in &files {
+        let Ok(src) = fs::read_to_string(path) else {
+            continue;
+        };
+        let name = path
+            .file_name()
+            .map_or_else(|| "out.hyx".into(), |n| n.to_string_lossy().to_string());
+        match crate::compile_dts(&src, &name) {
+            Ok(dts) if dts.is_empty() => skipped += 1,
+            Ok(dts) => {
+                let out = PathBuf::from(format!("{}.d.ts", path.to_string_lossy()));
+                match fs::write(&out, dts) {
+                    Ok(()) => written += 1,
+                    Err(e) => {
+                        eprintln!("hydra types: cannot write {}: {}", out.display(), e);
+                        failed += 1;
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("{}", e.pretty());
+                failed += 1;
+            }
+        }
+    }
+    if failed > 0 {
+        eprintln!("\n{} file(s) failed to produce declarations", failed);
+        return ExitCode::from(1);
+    }
+    println!(
+        "\x1b[32mwrote\x1b[0m {} declaration(s), skipped {} (no exports)",
+        written, skipped
+    );
     ExitCode::SUCCESS
 }

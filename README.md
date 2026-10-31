@@ -18,6 +18,19 @@ battle-tested at scale, and the file-based router and language server described
 in older documents do not exist yet. Treat this as usable-if-you-like-it, not
 production-hardened.
 
+### The syntax is frozen at 0.3
+
+No new language features are planned before 1.0. That is a decision, not
+inertia: a small language earns trust by standing still long enough for people
+to build on it, and every added construct is an emitter path to maintain
+forever. What changes between now and 1.0 is plumbing, not syntax: the build,
+the dev server, diagnostics, bundler integration, CI, and type declarations. If
+an idea needs new syntax, the answer is almost always no.
+
+Breaking changes still happen, and every one of them carries a codemod or a
+migration note. No exceptions, even with few users: projects die because people
+stop daring to upgrade, not because of missing features.
+
 ---
 
 ## Table of Contents
@@ -443,6 +456,8 @@ Environment variables: `HYDRA_NATIVE` (addon path), `HYDRA_COMPILER` (CLI path),
 hydra <file.hyx>             compile to stdout
 hydra <file.hys> -o out.mjs  compile to a file
 hydra --check <file.hyx>     parse only; exit 1 on error
+hydra check [files]          parse + warn (unbound names, unknown members)
+hydra types [files]          write <file>.hyx.d.ts for TypeScript
 hydra --json <file.hyx>      emit {code, map}
 hydra --stdin [filename]     read from stdin
 hydra run <file.hys> [args]  execute a script
@@ -462,6 +477,41 @@ hydra dev | build | preview  the meta-framework commands
 
 Run `hydra doctor` first when a build misbehaves — it reports node, npm, bun,
 config discovery and source counts.
+
+### Using HydraScript from TypeScript
+
+`.hyx` modules are visible to TypeScript, so a mixed project type-checks across
+the boundary. Generate the declarations once, and again whenever a component's
+parameters change:
+
+```bash
+npx hydra types        # writes src/Widget.hyx.d.ts next to src/Widget.hyx
+```
+
+The filename is the contract: TypeScript looks for `<file>.hyx.d.ts` beside
+`<file>.hyx`. A sibling `Widget.d.ts` is ignored.
+
+```tsx
+import { Widget } from './Widget.hyx'
+
+// `label` is a string and `size` is an optional number, straight from the
+// component's own parameters. A typo is an error, not a silent `any`:
+<Widget label="hi" size={2} />
+```
+
+Rules the generator follows, because a declaration that lies is worse than none:
+
+- Prop types come from the component's parameters, mapped from Python names
+  (`int`/`float` -> `number`, `str` -> `string`, `list` -> `any[]`). An
+  unannotated parameter becomes `any`, never a guess.
+- A construct it cannot represent is omitted rather than approximated: a class
+  gets a permissive index signature, not invented members.
+- A module with no exports produces no file, so a hand-written `.d.ts` is never
+  clobbered.
+
+A `declare module '*.hyx'` shim is the tempting five-minute alternative. It makes
+every import `any` and silently switches off type checking at exactly the
+boundary you wanted checked, so prefer `hydra types`.
 
 ---
 

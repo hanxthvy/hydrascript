@@ -5,7 +5,13 @@
 //! can call the compiler in-process instead of shelling out to the binary.
 
 pub mod ast;
+
+/// Tables derived at build time from files that are the single source of truth.
+pub mod generated {
+    include!(concat!(env!("OUT_DIR"), "/runtime_helpers.rs"));
+}
 pub mod check;
+pub mod dts;
 pub mod cli;
 pub mod emitter;
 pub mod error;
@@ -72,6 +78,19 @@ pub fn target_for(filename: &str) -> Target {
 /// `filename` is only used for the source map.
 pub fn compile(src: &str, filename: &str) -> Result<(String, String), CompileError> {
     compile_for(src, filename, target_for(filename))
+}
+
+/// TypeScript declarations for a module, as the text of a `.d.ts` file.
+///
+/// Returns an empty string when the module exports nothing worth declaring, so a
+/// caller can decide not to write a file at all rather than clobbering a
+/// hand-written one. Like the checker, this re-parses: it does not borrow the
+/// emitter's state, so it cannot change what is emitted.
+pub fn compile_dts(src: &str, filename: &str) -> Result<String, CompileError> {
+    let lines: Vec<String> = src.split('\n').map(|s| s.to_string()).collect();
+    let toks = lexer::lex(src)?;
+    let module = parser::Parser::new(toks, lines).module()?;
+    dts::emit(&module, filename)
 }
 
 /// Compile for an explicit target, ignoring the filename extension.

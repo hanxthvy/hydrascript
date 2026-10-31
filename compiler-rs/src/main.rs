@@ -64,6 +64,7 @@ fn main() -> ExitCode {
             | "build"
             | "preview"
             | "check"
+            | "types"
             | "init"
             | "run"
             | "watch"

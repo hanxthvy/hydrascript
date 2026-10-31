@@ -446,7 +446,7 @@ component Header(title: str = "HydraScript", links = [], current: str = "/", on_
             span(className="text-lg font-black tracking-tight text-indigo-600"): title
             nav(className="flex items-center gap-1"):
                 for link in links:
-                    NavLink(link=link, current=current, on_nav=on_nav)
+                    NavLink(key=link["path"], link=link, current=current, on_nav=on_nav)
 "#;
 
 const CARD_HYX_TEMPLATE: &str = r#"# [xihanzu-NR]
@@ -497,8 +497,11 @@ component Home(greeting: str = "Hello", samples = []):
                     p(className="text-xl font-bold text-slate-900"): stats["mean"]
         Card(title="Samples", subtitle="One <li> per entry, from a for loop"):
             ul(className="space-y-1 text-sm text-slate-600"):
+                # `key=` on the element returned by a `for` loop. Without it React
+                # warns on the very first build, and a scaffold should not open
+                # with a warning.
                 for value in samples:
-                    li: f"sample {value} squared is {value * value}"
+                    li(key=value): f"sample {value} squared is {value * value}"
 "#;
 
 const ABOUT_HYX_TEMPLATE: &str = r#"# [xihanzu-NR]
@@ -510,8 +513,8 @@ component About(version: str = "0.1.0"):
     div(className="space-y-6"):
         Card(title="About", subtitle=f"version {version}"):
             ul(className="list-disc space-y-1 pl-5 text-sm text-slate-600"):
-                for feature in features:
-                    li: feature
+                for index, feature in enumerate(features):
+                    li(key=index): feature
 "#;
 
 /// Plain ESM with no React: App.hyx imports summarise() and greeting() from

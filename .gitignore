@@ -1,2 +1,27 @@
-# scratch worklog, never part of the project
+# [xihanzu-NR]
+# Scratch worklogs, never part of the project.
 .worksprint.md
+.worksprint2.md
+
+# Dependencies. NOTE: without this, `git add -A` stages every dependency in the
+# repository — there are example projects and a plugin each with their own
+# node_modules, so a careless `add -A` offers ~28,000 files and 3.5M lines. It was
+# missing before and this file is the fix.
+node_modules/
+
+# Build output.
+dist/
+compiler-rs/target/
+target/
+
+# Generated type declarations. These are produced by `hydra types` from the
+# source; committing them means they can disagree with the component they
+# describe, which is the one thing the generator exists to prevent.
+*.hyx.d.ts
+*.hsx.d.ts
+*.hys.d.ts
+
+# Editor and OS noise.
+.DS_Store
+*.swp
+.vscode-test/

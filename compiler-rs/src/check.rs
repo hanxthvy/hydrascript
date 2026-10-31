@@ -27,6 +27,14 @@
 //! capped, so one typo used fifty times is reported once.
 
 use crate::ast::{CaseArm, FPart, Kind, Node};
+/// Names `runtime/hydra.ts` exports, generated at build time by `build.rs`.
+///
+/// The compiler injects `import { helper } from 'hydra'` for these on demand, so
+/// a bare use is correct and must not be reported. Generated rather than
+/// hand-written, because a hand-written copy drifts, and the drift is silent:
+/// a helper missing from the list is reported as an unbound name.
+pub use crate::generated::RUNTIME_HELPERS;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// A name that resolves without the author binding it.
@@ -48,7 +56,21 @@ fn is_browser_global(name: &str) -> bool {
     BROWSER_GLOBALS.contains(&name)
 }
 
-/// Python builtins the emitter lowers to plain JS or to a runtime helper.
+/// Python builtins the compiler demonstrably makes safe.
+///
+/// This list is NOT a guess, and NOT "Python has these". A name belongs here
+/// only if a bare use of it compiles to one of:
+///
+///   (a) lowered JavaScript (`len(x)` -> `len_of(x)`, `print(x)` -> `console.log(x)`), or
+///   (b) a value the compiler injects `import { ... } from 'hydra'` for
+///       (`int(x)` -> `parseInt(x)`, `range(n)`, `zip(a, b)`).
+///
+/// Anything else compiles to a bare identifier JS has no global for, which is a
+/// `ReferenceError` at runtime. The test `python_builtins_are_all_honoured`
+/// compiles a real use of every name below and fails if one is neither of those,
+/// so the list cannot rot into a lie. It was exactly that failure mode —
+/// `getattr(x, "k", 0)` emitted verbatim and crashing at runtime while the
+/// checker said nothing — that this rule exists to prevent.
 fn is_python_builtin(name: &str) -> bool {
     PYTHON_BUILTINS.contains(&name)
 }
@@ -1003,12 +1025,12 @@ fn is_ident(s: &str) -> bool {
 }
 
 const PYTHON_BUILTINS: &[&str] = &[
-    "abs", "all", "any", "bin", "bool", "bytes", "callable", "chr", "dict", "divmod", "enumerate",
-    "filter", "float", "format", "frozenset", "getattr", "hasattr", "hash", "hex", "id", "input",
-    "int", "isinstance", "issubclass", "iter", "len", "list", "map", "max", "min", "next", "object",
-    "oct", "open", "ord", "pow", "print", "range", "repr", "reversed", "round", "set", "setattr",
-    "slice", "sorted", "str", "sum", "super", "tuple", "type", "zip", "self", "cls", "None", "True",
-    "False", "not", "and", "or", "is", "in",
+    // Verified by `python_builtins_are_all_honoured`: each of these compiles to
+    // JavaScript, or to a name the emitter also imports from 'hydra'.
+    "abs", "bool", "len", "list", "max", "min", "pow", "print", "reversed", "round", "sorted",
+    "str", "sum", "int", "float", "isinstance", "enumerate", "range", "zip",
+    // Bare names that are always legal here, not builtins.
+    "self", "cls",
 ];
 
 const BROWSER_GLOBALS: &[&str] = &[
@@ -1126,177 +1148,7 @@ const BROWSER_GLOBALS: &[&str] = &[
     "window",
 ];
 
-/// Mirror of `runtime/hydra.ts` exports. A test parses that file and fails if
-/// the two lists disagree, so this cannot drift silently.
-const RUNTIME_HELPERS: &[&str] = &[
-    "Fragment",
-    "Link",
-    "Suspense",
-    "assert_",
-    "callback",
-    "camel_case",
-    "capitalize",
-    "center",
-    "chunk",
-    "clamp",
-    "clear_query",
-    "clear_query_cache",
-    "compact",
-    "computed",
-    "contains",
-    "context",
-    "copy_text",
-    "count",
-    "createContext",
-    "cx",
-    "debounce",
-    "debounced_fn",
-    "deep_clone",
-    "deep_merge",
-    "dict_fromkeys",
-    "dict_get",
-    "dict_pop",
-    "dict_popitem",
-    "dict_setdefault",
-    "dict_update",
-    "divmod",
-    "download",
-    "effect",
-    "enumerate",
-    "equals",
-    "escape_html",
-    "fetch_json",
-    "fetch_query",
-    "first",
-    "first_or",
-    "flatten",
-    "focus_element",
-    "form_state",
-    "format",
-    "format_bytes",
-    "format_currency",
-    "format_duration",
-    "format_number",
-    "format_percent",
-    "forwardRef",
-    "get_path",
-    "group_by",
-    "invalidate",
-    "isAlnum",
-    "isAlpha",
-    "isDigit",
-    "isLower",
-    "isSpace",
-    "isUpper",
-    "is_empty",
-    "isinstance",
-    "join",
-    "kebab_case",
-    "last",
-    "len",
-    "len_of",
-    "lerp",
-    "list_extend",
-    "list_index",
-    "list_insert",
-    "list_remove",
-    "ljust",
-    "local_storage",
-    "mask",
-    "max_by",
-    "merge",
-    "min_by",
-    "mount",
-    "navigate",
-    "omit",
-    "once",
-    "parse_number",
-    "partition",
-    "pascal_case",
-    "pick",
-    "pluralize",
-    "possessive",
-    "pow",
-    "prefers_dark",
-    "raise_",
-    "random_id",
-    "random_int",
-    "range",
-    "read_file",
-    "reducer",
-    "ref",
-    "retry",
-    "reversed",
-    "rjust",
-    "round_to",
-    "safe",
-    "sample",
-    "scroll_to",
-    "seed_query",
-    "set_add",
-    "set_discard",
-    "set_path",
-    "shuffle",
-    "sleep",
-    "slice_step",
-    "slugify",
-    "snake_case",
-    "sort_by",
-    "sorted",
-    "state",
-    "storage",
-    "str_partition",
-    "str_rpartition",
-    "strip_html",
-    "sum",
-    "swapcase",
-    "throttled_fn",
-    "title",
-    "toggle",
-    "truncate",
-    "truthy",
-    "unique",
-    "unique_by",
-    "use",
-    "useCallback",
-    "useContext",
-    "useDeferredValue",
-    "useEffect",
-    "useId",
-    "useLayoutEffect",
-    "useMemo",
-    "useRef",
-    "useState",
-    "useTransition",
-    "use_async",
-    "use_click_outside",
-    "use_copy",
-    "use_dark_mode",
-    "use_debounced",
-    "use_focus",
-    "use_hover",
-    "use_interval",
-    "use_key_press",
-    "use_local_storage",
-    "use_media_query",
-    "use_mounted",
-    "use_mutation",
-    "use_online",
-    "use_path",
-    "use_previous",
-    "use_query",
-    "use_scroll_position",
-    "use_throttled",
-    "use_timeout",
-    "use_visibility",
-    "use_window_size",
-    "uuid",
-    "validators",
-    "words",
-    "zfill",
-    "zip",
-    "zip_dict",
-];
+
 
 #[cfg(test)]
 mod tests {
@@ -1418,78 +1270,107 @@ mod tests {
         assert!(w[0].col > 0, "{w:?}");
     }
 
-    /// The helper list here is a copy of what `runtime/hydra.ts` exports. This
-    /// test parses that file and fails if the two drift, because a helper
-    /// missing from the list would be reported as an unbound name.
+    /// The helper list is generated from `runtime/hydra.ts` by `build.rs`, which
+    /// already fails the build if the scan finds too few names. This checks the
+    /// generated table actually arrived, since an empty or stale one would make
+    /// every runtime helper read as an unbound name.
     #[test]
-    fn runtime_helpers_are_all_known() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../runtime/hydra.ts");
-        let src = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
-        let exported = crate::check::tests::scan_runtime_exports(&src);
+    fn generated_helper_list_is_intact() {
         assert!(
-            exported.len() > 100,
-            "scan found only {} exports, the parser is wrong",
-            exported.len()
+            RUNTIME_HELPERS.len() > 100,
+            "generated helper list has only {} names; the build script is not running",
+            RUNTIME_HELPERS.len()
         );
-        let mut missing: Vec<&String> = exported
-            .iter()
-            .filter(|n| !is_runtime_helper(n))
-            .collect();
-        missing.sort();
-        assert!(
-            missing.is_empty(),
-            "runtime exports missing from RUNTIME_HELPERS: {missing:?}"
-        );
+        for must in ["capitalize", "state", "use_path", "len_of", "contains", "cx"] {
+            assert!(
+                is_runtime_helper(must),
+                "`{must}` is exported by runtime/hydra.ts but missing from the generated list"
+            );
+        }
+        // A name the runtime does not export must not be treated as a helper.
+        assert!(!is_runtime_helper("definitely_not_a_helper"));
     }
 
-    /// Pull the exported value names out of the runtime source. Mirrors what a
-    /// compiler user can call bare.
-    pub fn scan_runtime_exports(src: &str) -> std::collections::HashSet<String> {
-        let mut out = std::collections::HashSet::new();
-        for line in src.lines() {
-            let t = line.trim_start();
-            let Some(rest) = t.strip_prefix("export ") else {
-                continue;
-            };
-            let rest = rest.trim_start_matches("async ").trim_start();
-            // `export interface X` / `export type X` are types, not values.
-            if rest.starts_with("interface ") || rest.starts_with("type ") {
-                continue;
-            }
-            for kw in ["function ", "const ", "let ", "var ", "class ", "enum "] {
-                if let Some(after) = rest.strip_prefix(kw) {
-                    let name: String = after
-                        .chars()
-                        .take_while(|c| c.is_alphanumeric() || *c == '_')
-                        .collect();
-                    if !name.is_empty() {
-                        out.insert(name);
-                    }
-                }
-            }
+    /// Every name in `PYTHON_BUILTINS` must actually be honoured by the
+    /// compiler. A name that is neither lowered nor imported emits as a bare
+    /// identifier, which is a `ReferenceError` at runtime — and worse, the
+    /// checker would then stay silent about it precisely because the name is on
+    /// this list. This test is what stops the list from becoming a lie.
+    #[test]
+    fn python_builtins_are_all_honoured() {
+        // One use per name, in call position where that is how it is used.
+        let uses: &[(&str, &str)] = &[
+            ("abs", "abs(-1)"),
+            ("bool", "bool(x)"),
+            ("len", "len(xs)"),
+            ("list", "list(xs)"),
+            ("max", "max(a, b)"),
+            ("min", "min(a, b)"),
+            ("pow", "pow(a, b)"),
+            ("print", "print(x)"),
+            ("reversed", "reversed(xs)"),
+            ("round", "round(a)"),
+            ("sorted", "sorted(xs)"),
+            ("str", "str(x)"),
+            ("sum", "sum(xs)"),
+            ("int", "int(x)"),
+            ("float", "float(x)"),
+            ("isinstance", "isinstance(x, Number)"),
+            ("enumerate", "enumerate(xs)"),
+            ("range", "range(3)"),
+            ("zip", "zip(xs, ys)"),
+            ("self", "self"),
+            ("cls", "cls"),
+        ];
+        // The case table and the list must agree in BOTH directions, or the
+        // test silently stops covering a name.
+        for (name, _) in uses {
+            assert!(
+                is_python_builtin(name),
+                "`{name}` is exercised here but missing from PYTHON_BUILTINS"
+            );
         }
-        // `export { a, b as c }`
-        for line in src.lines() {
-            let t = line.trim();
-            let Some(inner) = t.strip_prefix("export {").and_then(|r| r.strip_suffix("};").or_else(|| r.strip_suffix('}'))) else {
-                continue;
-            };
-            for part in inner.split(',') {
-                let part = part.trim();
-                if part.is_empty() {
-                    continue;
-                }
-                let name = match part.split_once(" as ") {
-                    Some((_, alias)) => alias.trim(),
-                    None => part,
-                };
-                if name.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_') {
-                    out.insert(name.to_string());
-                }
-            }
+        for name in PYTHON_BUILTINS {
+            assert!(
+                uses.iter().any(|(n, _)| n == name),
+                "`{name}` is in PYTHON_BUILTINS but no case exercises it, so nothing \
+                 proves it is honoured"
+            );
         }
-        out
+        for (name, expr) in uses {
+            assert!(
+                is_python_builtin(name),
+                "`{name}` is exercised by this test but missing from PYTHON_BUILTINS"
+            );
+            let src = format!(
+                "component A(x, a, b, xs, ys, f, Number):\n    r = {expr}\n    div: \"ok\"\n"
+            );
+            let out = match crate::compile(&src, "t.hyx") {
+                Ok((code, _)) => code,
+                Err(e) => panic!("compiling `{expr}` failed: {}", e.pretty()),
+            };
+            // Honoured = the bare identifier was replaced, or imported.
+            let replaced = !out.contains(&format!(" {name}("))
+                && !out.contains(&format!("= {name};"))
+                && !out.contains(&format!("return {name}"));
+            let imported = out.contains(&format!("import {{ {name} }} from 'hydra'"));
+            let is_literal_name = *name == "self" || *name == "cls";
+            assert!(
+                replaced || imported || is_literal_name,
+                "`{expr}` emitted `{name}` verbatim with no import from 'hydra', \
+                 so it is a ReferenceError at runtime while the checker stays silent.\n\
+                 Emitted:\n{out}"
+            );
+        }
+    }
+
+    /// The specific bug that motivated the rule: `getattr` looked like a
+    /// builtin, so a call to it was accepted and emitted verbatim.
+    #[test]
+    fn getattr_is_reported_not_silently_emitted() {
+        let m = msgs("def f(obj):\n    x = getattr(obj, \"k\", 0)\n    return x\n");
+        assert_eq!(m.len(), 1, "{m:?}");
+        assert!(m[0].contains("getattr"), "{m:?}");
     }
 
     #[test]

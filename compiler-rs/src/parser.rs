@@ -925,6 +925,11 @@ impl Parser {
                 "bool" => "boolean".into(),
                 "None" => "null".into(),
                 "Any" => "any".into(),
+                // Bare `Array` and `Record` are not valid TypeScript: both are
+                // generic and require type arguments. The bare forms are
+                // expanded right after this, where it is known whether a type
+                // argument follows (`list[str]` -> `Array<string>`, plain
+                // `list` -> `Array<any>`).
                 "list" => "Array".into(),
                 "dict" => "Record".into(),
                 other => other.to_string(),
@@ -966,6 +971,10 @@ impl Parser {
             out.push('<');
             out.push_str(&inner.join(", "));
             out.push('>');
+        } else if base == "list" {
+            out = "Array<any>".into();
+        } else if base == "dict" {
+            out = "Record<string, any>".into();
         }
         while self.cur().ty == TokType::Op && self.cur().value == "|" {
             self.i += 1;

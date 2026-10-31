@@ -1,7 +1,7 @@
 {
   "name": "hydrascript",
   "version": "0.3.0",
-  "description": "Pythonic Syntax for React & Modern Web Applications — Standalone native Rust compiler with zero runtime overhead",
+  "description": "Pythonic Syntax for React & Modern Web Applications \u2014 Standalone native Rust compiler with zero runtime overhead",
   "type": "module",
   "bin": {
     "hydra": "./bin/hydra.js"
@@ -35,7 +35,11 @@
   },
   "scripts": {
     "build:compiler": "cd compiler-rs && cargo build --release && cp target/release/hydra ../bin/hydra && cp target/release/libhydra.so ../bin/hydra.node",
-    "test": "cd compiler-rs && cargo test",
-    "test:server": "node --test packages/cli/server.test.mjs"
+    "test": "cd compiler-rs && cargo test && cd .. && node --test packages/cli/plugin.test.mjs packages/cli/server.test.mjs packages/cli/entrypoint.test.mjs packages/cli/dts.test.mjs",
+    "test:server": "node --test packages/cli/server.test.mjs",
+    "test:rust": "cd compiler-rs && cargo test",
+    "test:node": "node --test packages/cli/plugin.test.mjs packages/cli/server.test.mjs packages/cli/entrypoint.test.mjs packages/cli/dts.test.mjs",
+    "test:examples": "bash scripts/hx-examples-check.sh",
+    "types": "hydra types"
   }
 }

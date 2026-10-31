@@ -17,6 +17,21 @@ Status: **0.3.0, pra-1.0.** Bahasanya bekerja dan diuji; belum teruji di skala
 besar, dan file-based router serta language server yang disebut dokumen lama
 belum ada. Anggap ini "layak dipakai kalau kamu suka", bukan tahan produksi.
 
+### Sintaksnya dibekukan di 0.3
+
+Tidak ada fitur bahasa baru yang direncanakan sampai 1.0. Ini keputusan, bukan
+kelambanan: bahasa kecil dipercaya dengan berdiri diam cukup lama sampai orang
+mau membangun di atasnya, dan setiap tambahan sintaks adalah jalur emitter yang
+harus dijaga seumur hidup. Yang berubah antara sekarang dan 1.0 adalah pipa
+ledeng, bukan bahasanya: build, dev server, diagnosa, integrasi bundler, CI, dan
+deklarasi tipe. Kalau sebuah ide butuh sintaks baru, jawabannya hampir selalu
+tidak.
+
+Perubahan yang merusak tetap terjadi, dan setiap yang merusak wajib membawa
+codemod atau catatan migrasi. Tidak ada pengecualian, walaupun penggunanya cuma
+sedikit: proyek mati bukan karena fiturnya kurang, tapi karena orang berhenti
+berani naik versi.
+
 ---
 
 ## Daftar Isi
@@ -443,6 +458,8 @@ Variabel lingkungan: `HYDRA_NATIVE` (jalur addon), `HYDRA_COMPILER` (jalur CLI),
 hydra <file.hyx>             kompilasi ke stdout
 hydra <file.hys> -o out.mjs  kompilasi ke berkas
 hydra --check <file.hyx>     parse saja; exit 1 kalau error
+hydra check [files]          parse + peringatan (nama tak terikat, member asing)
+hydra types [files]          tulis <file>.hyx.d.ts untuk TypeScript
 hydra --json <file.hyx>      keluarkan {code, map}
 hydra --stdin [filename]     baca dari stdin
 hydra run <file.hys> [args]  jalankan skrip
@@ -466,6 +483,33 @@ bun, penemuan config dan jumlah sumber.
 ---
 
 ## Instalasi
+
+### Memakai HydraScript dari TypeScript
+
+Modul `.hyx` bisa dilihat TypeScript, jadi proyek campuran ikut ter-cek lintas
+batas. Jalankan sekali, dan ulangi setiap parameter komponen berubah:
+
+```bash
+npx hydra types        # menulis src/Widget.hyx.d.ts di samping src/Widget.hyx
+```
+
+Nama berkasnya itu kontraknya: TypeScript mencari `<file>.hyx.d.ts` di samping
+`<file>.hyx`. `Widget.d.ts` di folder yang sama akan diabaikan.
+
+Aturan yang dipegang generator, karena deklarasi yang bohong lebih buruk daripada
+tidak ada:
+
+- Tipe prop diambil dari parameter komponen, dipetakan dari nama Python
+  (`int`/`float` -> `number`, `str` -> `string`, `list` -> `any[]`). Parameter
+  tanpa anotasi jadi `any`, bukan tebakan.
+- Yang tidak bisa diwakili dihilangkan, bukan dikira-kira: kelas dapat index
+  signature yang permisif, bukan member karangan.
+- Modul tanpa export tidak menghasilkan berkas, jadi `.d.ts` tulisan tangan tidak
+  pernah tertimpa.
+
+Shim `declare module '*.hyx'` itu alternatif lima menit yang menggoda. Dia membuat
+semua impor jadi `any` dan diam-diam mematikan pengecekan tipe tepat di batas yang
+ingin kamu cek, jadi lebih baik pakai `hydra types`.
 
 ```bash
 # Sebagai dev dependency di proyek
