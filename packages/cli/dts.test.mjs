@@ -115,11 +115,19 @@ test('a syntax error is reported and does not half-write a declaration', () => {
 // --- the one that actually matters ------------------------------------------
 
 function findTsc() {
+  // `TSC` first so CI can point at an explicit install, then the places a
+  // TypeScript may plausibly be on this machine.
   const candidates = [
+    process.env.TSC,
     path.join(REPO, 'node_modules', 'typescript', 'lib', 'tsc.js'),
+    // A global install: `npm i -g typescript` puts it next to the node binary.
+    path.join(path.dirname(process.execPath), '..', 'lib', 'node_modules',
+      'typescript', 'lib', 'tsc.js'),
+    '/usr/local/lib/node_modules/typescript/lib/tsc.js',
+    '/usr/lib/node_modules/typescript/lib/tsc.js',
     '/root/rpl_web/node_modules/typescript/lib/tsc.js',
     '/root/projects/payment/node_modules/typescript/lib/tsc.js',
-  ];
+  ].filter(Boolean);
   for (const c of candidates) if (fs.existsSync(c)) return c;
   return null;
 }
@@ -128,9 +136,18 @@ test('tsc reads the declaration: a wrong prop is an error, a right one is not', 
   const tsc = findTsc();
   const node = process.execPath;
   if (!tsc) {
-    // Skipping loudly. A vacuous pass here would hide a declaration that no
-    // TypeScript can actually consume.
-    t.skip(`no tsc on this machine (looked in a few known places); skipping the real check`);
+    // On a developer machine, skipping loudly is right: the declaration emitter
+    // is still tested by the cases above. In CI it is NOT acceptable — this test
+    // is the only one that proves the declarations can be consumed at all, and a
+    // skip there is a green build that verified nothing. That is exactly how the
+    // `runner` job passed while two real tests were failing.
+    if (process.env.CI) {
+      assert.fail(
+        'no tsc found, and CI must not skip this check. Install it in the ' +
+        'workflow (npm install -g typescript) or set TSC to its path.'
+      );
+    }
+    t.skip('no tsc on this machine (looked in known places); skipping the real check');
     return;
   }
   const dir = tmpProject({

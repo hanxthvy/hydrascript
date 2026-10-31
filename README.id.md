@@ -1,7 +1,10 @@
 <!-- [xihanzu-NR] -->
 # HydraScript
 
-**Sintaks Pythonic untuk React, dikompilasi oleh biner Rust native.**
+**Sintaks Pythonic untuk React, dikompilasi biner Rust native.**
+
+[![npm](https://img.shields.io/npm/v/hydrascript.svg)](https://www.npmjs.com/package/hydrascript)
+[![license](https://img.shields.io/npm/l/hydrascript.svg)](LICENSE)
 
 [English](README.md) | [Bahasa Indonesia](README.id.md)
 
@@ -513,10 +516,25 @@ ingin kamu cek, jadi lebih baik pakai `hydra types`.
 
 ```bash
 # Sebagai dev dependency di proyek
-npm install -D github:hanxthvy/hydrascript
+npm install -D hydrascript
 
-# Atau global
-npm install -g github:hanxthvy/hydrascript
+# Atau global, supaya perintah `hydra` ada di mana saja
+npm install -g hydrascript
+
+# Jalankan sekali tanpa memasang
+npx hydrascript init myapp
+```
+
+Paketnya ada di registry npm, dan nama paket berbeda dari nama perintah, itu
+sengaja. **Paketnya** `hydrascript`, **perintahnya** `hydra`. Jadi `npx hydrascript`
+memasang paketnya lalu menjalankan biner `hydra` di dalamnya. Di registry sudah ada
+paket lain bernama `hydra`, jadi `npx hydra` tanpa pemasangan lokal akan mengambil
+paket itu — selalu lewat `hydrascript`.
+
+Untuk mengunci commit tertentu alih-alih versi rilis:
+
+```bash
+npm install -D hydrascript@github:hanxthvy/hydrascript#<sha>
 ```
 
 Paket npm mengirim biner prabangun hanya untuk Linux x86_64. Di macOS, Windows

@@ -58,9 +58,27 @@ test('rewriteDynamicImports turns __import__ into a real import()', () => {
   assert.equal(rewriteDynamicImports('__import__(name)'), '__import__(name)');
 });
 
-test('esbuild plugin compiles .hyx from a plain JS entry', async (t) => {
+/**
+ * esbuild is a dependency of this package, so it is normally present. When it is
+ * not, skipping is fine on a laptop but NOT in CI: these three cases are the only
+ * coverage of the bundler plugins, and a silent skip there is a green build that
+ * verified nothing.
+ */
+function requireEsbuild(t) {
   const esbuild = loadEsbuild();
-  if (!esbuild) return t.skip('esbuild not installed');
+  if (!esbuild) {
+    if (process.env.CI) {
+      assert.fail('esbuild is not installed, and CI must not skip the plugin tests. Run `npm ci` in the repo root before this job.');
+    }
+    t.skip('esbuild not installed');
+    return null;
+  }
+  return esbuild;
+}
+
+test('esbuild plugin compiles .hyx from a plain JS entry', async (t) => {
+  const esbuild = requireEsbuild(t);
+  if (!esbuild) return;
 
   const dir = tmpdir('hydra-plugin-');
   const originalCwd = process.cwd();
@@ -91,8 +109,8 @@ test('esbuild plugin compiles .hyx from a plain JS entry', async (t) => {
 });
 
 test('the vite plugin returns plain JS, because Vite parses by extension', async (t) => {
-  const esbuild = loadEsbuild();
-  if (!esbuild) return t.skip('esbuild not installed');
+  const esbuild = requireEsbuild(t);
+  if (!esbuild) return;
 
   const dir = tmpdir('hydra-vite-');
   try {
@@ -152,8 +170,8 @@ test('the vite plugin surfaces a compile error instead of emitting broken code',
 });
 
 test('the vite plugin works with no plugin context at all', async (t) => {
-  const esbuild = loadEsbuild();
-  if (!esbuild) return t.skip('esbuild not installed');
+  const esbuild = requireEsbuild(t);
+  if (!esbuild) return;
   const dir = tmpdir('hydra-vite-noctx-');
   try {
     const file = path.join(dir, 'App.hyx');

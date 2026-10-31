@@ -3,7 +3,10 @@
 
 **A Pythonic syntax for React, compiled by a native Rust binary.**
 
-[English](README.md) | [Bahasa Indonesia](README.id.md)
+[![npm](https://img.shields.io/npm/v/hydrascript.svg)](https://www.npmjs.com/package/hydrascript)
+[![license](https://img.shields.io/npm/l/hydrascript.svg)](LICENSE)
+
+[npm](https://www.npmjs.com/package/hydrascript) | [English](README.md) | [Bahasa Indonesia](README.id.md)
 
 ---
 
@@ -519,10 +522,25 @@ boundary you wanted checked, so prefer `hydra types`.
 
 ```bash
 # As a dev dependency in a project
-npm install -D github:hanxthvy/hydrascript
+npm install -D hydrascript
 
-# Or globally
-npm install -g github:hanxthvy/hydrascript
+# Or globally, to get the `hydra` command anywhere
+npm install -g hydrascript
+
+# Run it once without installing
+npx hydrascript init myapp
+```
+
+The package is on the npm registry; the names differ, and that is deliberate.
+The **package** is `hydrascript`, the **command** is `hydra`. So `npx hydrascript`
+installs the package and runs the `hydra` binary inside it. There is an unrelated
+package already called `hydra` on the registry, so `npx hydra` without a local
+install would fetch that one instead — always go through `hydrascript`.
+
+To pin a specific commit instead of the released version:
+
+```bash
+npm install -D hydrascript@github:hanxthvy/hydrascript#<sha>
 ```
 
 The npm package ships prebuilt binaries for Linux x86_64 only. On macOS, Windows

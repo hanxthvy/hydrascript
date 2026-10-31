@@ -76,6 +76,17 @@ jobs:
           name: hydra-binaries
           path: bin/
       - run: chmod +x bin/hydra
+      # The repo's own dependencies FIRST: `entrypoint.test.mjs` builds a real
+      # project, so it needs esbuild, and `dts.test.mjs` needs a TypeScript to
+      # point at. Without this the plugin tests skipped and two entrypoint tests
+      # failed on `Cannot resolve package 'esbuild'` — a job whose green depended
+      # on what happened to be installed.
+      - name: Install repo dependencies
+        run: npm ci --no-audit --no-fund
+      # `npm ci` does not expose a global binary, and the dts test looks for
+      # typescript next to the node binary, so install it there.
+      - name: Install TypeScript
+        run: npm install -g typescript@5.6.3
       # The example projects have their own dependencies (react, and in the
       # ecosystem example 14 real packages), so they are installed once here
       # and reused by the examples job through the cache key.
@@ -86,7 +97,12 @@ jobs:
               (cd "$d" && npm install --no-audit --no-fund)
             fi
           done
-      - run: node --test packages/cli/*.test.mjs
+      - name: Node tests
+        env:
+          # Both suites refuse to skip in CI: a skip here is a build that verified
+          # nothing, which is how this job stayed green while asserting nothing.
+          CI: 'true'
+        run: node --test packages/cli/*.test.mjs
 
   examples:
     name: examples (build + runtime gate)
