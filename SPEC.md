@@ -114,6 +114,14 @@ is, not as it might become.
   for hooks.
 - **Guaranteed.** `a, b = b, a` where both names already exist is a plain
   assignment, not a redeclaration, so a swap works.
+- **Guaranteed.** `d.keys()`, `d.values()` and `d.items()` work on a plain dict
+  literal. They compile to runtime calls, not JS methods, because
+  `{"a": 1}` is a plain object with no `.keys`. `d.items()` yields `[key, value]`
+  pairs, so `for k, v in d.items():` destructures. A real `Map` is handled too.
+- **Guaranteed.** A build fails if `src/` uses a name no runtime provides. These
+  compiled to a call to something that does not exist, and the runtime gate cannot
+  see them: it renders the page, so code inside an event handler or on an untaken
+  branch was never executed. `HYDRA_NO_CHECK=1` builds anyway.
 - **Guaranteed.** `//` is floor division and emits `Math.floor(a / b)`.
 - **Guaranteed.** A bare use of a Python builtin is only legal when the compiler
   honours it, which means one of: it is lowered to JavaScript (`len`, `print`,
