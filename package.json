@@ -33,6 +33,7 @@
   },
   "scripts": {
     "build:compiler": "cd compiler-rs && cargo build --release && cp target/release/hydra ../bin/hydra && cp target/release/libhydra.so ../bin/hydra.node",
-    "test": "cd compiler-rs && cargo test"
+    "test": "cd compiler-rs && cargo test",
+    "test:server": "node --test packages/cli/server.test.mjs"
   }
 }

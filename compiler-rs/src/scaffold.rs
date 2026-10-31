@@ -50,7 +50,9 @@ USAGE:
 
 CHECKS:
   compiler version, node, bun (optional), npm,
-  hydraconfig.json (walked up from cwd), package.json, source file counts
+  hydraconfig.json (walked up from cwd), package.json, source file counts,
+  the shipped artifacts (bin/hydra, bin/hydra.node, packages/cli/runner.mjs)
+  with size, mtime and content hash
 
 EXIT:
   0  every check passed (warnings are allowed)
@@ -836,6 +838,14 @@ pub fn doctor(args: &[String]) -> ExitCode {
         src.display()
     );
 
+    // The artifacts are the part that goes stale silently. `hydra.node` is what
+    // the bundler calls in-process, so a build that copies the CLI binary but
+    // not the addon keeps running the OLD compiler while every source test
+    // passes. Printing size+mtime+hash means a stale copy is visible instead of
+    // being rediscovered as "the fix did not work".
+    println!();
+    artifact_report(&mut failed);
+
     println!();
     if failed > 0 {
         println!("{} check(s) failed", failed);
@@ -843,6 +853,95 @@ pub fn doctor(args: &[String]) -> ExitCode {
     } else {
         println!("all checks passed");
         ExitCode::SUCCESS
+    }
+}
+
+/// FNV-1a over the file bytes. This is a fingerprint for comparing one artifact
+/// against another on the same machine, not a security hash, and it keeps the
+/// compiler at zero dependencies.
+fn fingerprint(path: &Path) -> Option<(u64, u64, u64)> {
+    let bytes = fs::read(path).ok()?;
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in &bytes {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let mtime = fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())?;
+    Some((hash, mtime, bytes.len() as u64))
+}
+
+/// Resolve a path relative to the running binary. The addon and the runner ship
+/// beside it, so this works for a symlinked `/usr/local/bin/hydra` too.
+fn beside_binary(rel: &str) -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let candidate = dir.join(rel);
+    candidate.is_file().then_some(candidate)
+}
+
+fn artifact_report(failed: &mut usize) {
+    let artifacts = [
+        ("bin/hydra", "hydra"),
+        ("bin/hydra.node", "hydra.node"),
+        ("packages/cli/runner.mjs", "runner.mjs"),
+    ];
+
+    let mut stamp: Option<(u64, &'static str)> = None;
+
+    for (rel, label) in artifacts {
+        let Some(path) = beside_binary(rel).or_else(|| {
+            // A checkout keeps the runner two levels up from `target/release`.
+            let exe = std::env::current_exe().ok()?;
+            let mut dir = exe.parent()?.to_path_buf();
+            for _ in 0..4 {
+                dir = dir.parent()?.to_path_buf();
+                let c = dir.join(rel);
+                if c.is_file() {
+                    return Some(c);
+                }
+            }
+            None
+        }) else {
+            println!("fail  {} missing (expected beside the binary)", label);
+            *failed += 1;
+            continue;
+        };
+
+        match fingerprint(&path) {
+            Some((hash, mtime, len)) => {
+                println!(
+                    "ok    {} {:>8} bytes  hash {:016x}  mtime {}  ({})",
+                    label,
+                    len,
+                    hash,
+                    mtime,
+                    path.display()
+                );
+                // The addon is loaded in-process by the bundler; an older one is
+                // the classic stale-artifact bug, so say it out loud.
+                if rel == "bin/hydra.node" {
+                    stamp = Some((mtime, label));
+                } else if let Some((node_mtime, _)) = stamp {
+                    if mtime > node_mtime {
+                        println!(
+                            "warn  {} was built after hydra.node - rebuild the addon \
+                             (cargo build --release && cp target/release/libhydra.so bin/hydra.node)",
+                            label
+                        );
+                    }
+                    stamp = None;
+                }
+            }
+            None => {
+                println!("fail  {} unreadable at {}", label, path.display());
+                *failed += 1;
+            }
+        }
     }
 }
 

@@ -1078,6 +1078,14 @@ export async function serveDirectory(dir, port = 5173, host = '0.0.0.0', opts = 
   const proxy = opts.proxy && typeof opts.proxy === 'object' ? opts.proxy : {};
   const indexPath = path.join(dir, 'index.html');
   const rootDir = path.resolve(dir);
+  // `hydra preview` serves a frozen artifact: a busy port means the build is
+  // still correct but there is nothing to serve it on. Silently staying up
+  // holding no port is what let a process manager restart the whole thing
+  // forever, so the caller decides — preview exits, dev walks to the next port.
+  const allowPortFallback = opts.portFallback === true;
+  const portTries = allowPortFallback ? 10 : 1;
+  const startedAt = Date.now();
+  let actualPort = port;
 
   const server = http.createServer((req, res) => {
     const rawUrl = req.url || '/';
@@ -1099,6 +1107,25 @@ export async function serveDirectory(dir, port = 5173, host = '0.0.0.0', opts = 
     const target = matchProxy(proxy, reqPath);
     if (target) {
       proxyRequest(req, res, target, reqPath, rawUrl);
+      return;
+    }
+
+    // Every process on a box has one of these, and "something is on 5173"
+    // otherwise has no answer. Cheap enough to answer on every request, and
+    // something a supervisor can health-check without guessing from the port.
+    if (reqPath === '/__hydra/version' || reqPath === '/__hydra/healthz') {
+      const body = JSON.stringify({
+        name: 'hydra',
+        version: opts.version || null,
+        sha: opts.sha || null,
+        port: actualPort,
+        host,
+        root: rootDir,
+        config: opts.configPath || null,
+        uptime_s: Math.round((Date.now() - startedAt) / 1000),
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(body);
       return;
     }
 
@@ -1147,26 +1174,56 @@ export async function serveDirectory(dir, port = 5173, host = '0.0.0.0', opts = 
   // whole process — taking the file watcher with it, so `hydra dev` died with
   // a stack trace and no rebuilds the moment the port was busy. An empty port
   // is a normal thing to hit (another dev server, a stray preview).
-  server.on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-      console.error(
-        `[hydra] Port ${port} is already in use. Stop the other process, or set ` +
-        `"server": { "port": <other> } in hydraconfig.json.`,
-      );
-    } else {
-      console.error(`[hydra] Server error: ${err.message}`);
-    }
-  });
+  //
+  // The listener now settles a promise instead of only printing, so a caller
+  // can tell "serving on 5174" from "gave up". Callers that need a server to
+  // exist (a supervisor) reject; `dev` walks the next nine ports and only
+  // complains when they are all gone.
+  return new Promise((resolve, reject) => {
+    let tries = 0;
 
-  server.listen(port, host, () => {
-    console.log(`[hydra] Server running at http://${host === '0.0.0.0' ? 'localhost' : host}:${port}/`);
+    const onError = (err) => {
+      if (err.code === 'EADDRINUSE' && tries + 1 < portTries) {
+        tries += 1;
+        actualPort = port + tries;
+        console.error(
+          `[hydra] Port ${actualPort - 1} is already in use, trying ${actualPort}.`,
+        );
+        server.listen(actualPort, host);
+        return;
+      }
+      if (err.code === 'EADDRINUSE') {
+        console.error(
+          `[hydra] Port ${port} is already in use. Stop the other process, or set ` +
+          `"server": { "port": <other> } in hydraconfig.json.`,
+        );
+      } else {
+        console.error(`[hydra] Server error: ${err.message}`);
+      }
+      // A server that is not listening is not a served site: exit non-zero so a
+      // process manager sees a real failure instead of restarting a corpse.
+      reject(new Error(err.code === 'EADDRINUSE' ? 'EADDRINUSE' : err.message));
+    };
+
+    server.on('error', onError);
+    server.on('listening', () => {
+      server.removeListener('error', onError);
+      server.on('error', (err) => {
+        console.error(`[hydra] Server error: ${err.message}`);
+      });
+      const shown = host === '0.0.0.0' ? 'localhost' : host;
+      console.log(`[hydra] Server running at http://${shown}:${actualPort}/`);
+      resolve({ server, port: actualPort });
+    });
+
+    server.listen(actualPort, host);
   });
 }
 
-export async function runPreview(cwd = process.cwd()) {
+export async function runPreview(cwd = process.cwd(), opts = {}) {
   const config = readConfig(cwd);
   const outDir = path.resolve(cwd, config.outputDir || 'dist');
-  const port = config.server?.port || 5173;
+  const port = opts.port || config.server?.port || 5173;
   const host = config.server?.host || '0.0.0.0';
   const indexPath = path.join(outDir, 'index.html');
 
@@ -1179,10 +1236,13 @@ export async function runPreview(cwd = process.cwd()) {
   await serveDirectory(outDir, port, host, {
     base: normalizeBase(config.base),
     proxy: config.server?.proxy,
+    version: opts.version,
+    sha: opts.sha,
+    configPath: path.join(cwd, 'hydraconfig.json'),
   });
 }
 
-export async function runDev(cwd = process.cwd()) {
+export async function runDev(cwd = process.cwd(), opts = {}) {
   // Libraries branch on this at bundle time — `process.env.NODE_ENV !==
   // 'production'` is what turns on React's dev warnings and every `act()`
   // guard — and `hydra dev` is the command that promises them.
@@ -1192,13 +1252,19 @@ export async function runDev(cwd = process.cwd()) {
   await runBuild(cwd, { dev: true });
   const config = readConfig(cwd);
   const outDir = path.resolve(cwd, config.outputDir || 'dist');
-  const port = config.server?.port || 5173;
+  const port = opts.port || config.server?.port || 5173;
   const host = config.server?.host || '0.0.0.0';
 
   console.log('[hydra] Development mode active.');
   await serveDirectory(outDir, port, host, {
     base: normalizeBase(config.base),
     proxy: config.server?.proxy,
+    // A dev server is meant to be reachable; a taken port is normal and the
+    // right answer is the next one, not a dead terminal.
+    portFallback: true,
+    version: opts.version,
+    sha: opts.sha,
+    configPath: path.join(cwd, 'hydraconfig.json'),
   });
 
   // Watch src/ directory for changes
@@ -1220,12 +1286,60 @@ export async function runDev(cwd = process.cwd()) {
 }
 
 // CLI entrypoint
-const cmd = process.argv[2] || 'dev';
-const cwd = process.cwd();
+const argv = process.argv.slice(2);
+const cmd = argv[0] || 'dev';
 
-if (cmd === 'dev') {
-  runDev(cwd).catch((err) => {
-    console.error(err);
+// `--port` is the escape hatch for a taken port: editing hydraconfig.json to
+// try a second port is a poor answer when you just want a server now. The value
+// is also accepted as `--port=NNNN`.
+let portOverride;
+const portIdx = argv.findIndex((a) => a === '--port' || a.startsWith('--port='));
+if (portIdx !== -1) {
+  const raw = argv[portIdx].includes('=') ? argv[portIdx].split('=')[1] : argv[portIdx + 1];
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    console.error(`[hydra] --port needs a number between 1 and 65535, got ${raw ?? '(nothing)'}`);
+    process.exit(1);
+  }
+  portOverride = n;
+}
+
+// Which compiler is actually talking. A supervisor or a person debugging a
+// stray server needs this, and it is the one fact that goes missing when a
+// checkout is stale.
+const VERSION = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(HERE, '..', '..', 'package.json'), 'utf8')).version;
+  } catch {
+    return null;
+  }
+})();
+
+function gitSha() {
+  try {
+    return execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+      cwd: path.join(HERE, '..', '..'),
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).toString().trim();
+  } catch {
+    return null;
+  }
+}
+
+const cwd = process.cwd();
+const runOpts = { port: portOverride, version: VERSION, sha: gitSha() };
+
+// Only act when this file IS the program. Importing the runner used to start a
+// dev server as a side effect, which made the server behaviour untestable.
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (!invokedDirectly) {
+  // imported as a library: exports only
+} else if (cmd === 'dev') {
+  runDev(cwd, runOpts).catch((err) => {
+    console.error(err.message);
     process.exit(1);
   });
 } else if (cmd === 'build') {
@@ -1234,8 +1348,11 @@ if (cmd === 'dev') {
     process.exit(1);
   });
 } else if (cmd === 'preview') {
-  runPreview(cwd).catch((err) => {
-    console.error(err);
+  // A preview that cannot bind is a failed preview, exit 1. Staying alive
+  // while serving nothing is what turned a busy port into 12,485 restarts
+  // under a process manager.
+  runPreview(cwd, runOpts).catch((err) => {
+    console.error(err.message);
     process.exit(1);
   });
 } else {

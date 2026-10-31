@@ -19,9 +19,9 @@ fn usage() -> String {
         "hydra {VERSION} — Pythonic syntax for React (.hyx) & Node (.hys)\n\
          \n\
          USAGE:\n\
-         \x20 hydra dev [options]         build and serve, rebuild on change\n\
+         \x20 hydra dev [--port N]         build and serve, rebuild on change\n\
          \x20 hydra build [options]       build for production\n\
-         \x20 hydra preview [options]     preview production build\n\
+         \x20 hydra preview [--port N]     preview production build\n\
          \x20 hydra run <file.hys> [args] execute script directly in memory\n\
          \x20 hydra repl                  interactive Pythonic REPL\n\
          \x20 hydra watch [dir]           watch & recompile to watch-out/ on change\n\
