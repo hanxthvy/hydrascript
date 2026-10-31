@@ -58,9 +58,13 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
-      # Trusted publishing needs a recent npm; the bundled one may predate it.
+      # Trusted publishing needs npm CLI 11.5.1+. Pinned to 11 rather than
+      # `latest`, because npm 12 requires Node ^22.22.2 and the workflow pins
+      # Node 22: a floating npm would one day need a Node the job does not use.
       - name: Ensure a recent npm
-        run: npm install -g npm@latest
+        run: |
+          npm install -g 'npm@^11.5.1'
+          npm --version
 
       - uses: dtolnay/rust-toolchain@stable
 
