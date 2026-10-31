@@ -102,7 +102,12 @@ jobs:
           # Both suites refuse to skip in CI: a skip here is a build that verified
           # nothing, which is how this job stayed green while asserting nothing.
           CI: 'true'
-        run: node --test packages/cli/*.test.mjs
+        run: |
+          # Point the dts test at the TypeScript this job installed, instead of
+          # letting it guess and depend on whichever copy it happens to find.
+          export TSC="$(npm root -g)/typescript/lib/tsc.js"
+          echo "tsc: $TSC"
+          node --test packages/cli/*.test.mjs
 
   examples:
     name: examples (build + runtime gate)

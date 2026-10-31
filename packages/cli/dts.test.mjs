@@ -166,17 +166,6 @@ test('tsc reads the declaration: a wrong prop is an error, a right one is not', 
       "import { Widget } from './Widget.hyx'\n" +
       'export const b = <Widget label="x" size="nope" />\n' +
       'export const c = <Widget lable="x" />\n',
-    'tsconfig.json': JSON.stringify({
-      compilerOptions: {
-        target: 'ES2022',
-        module: 'ESNext',
-        moduleResolution: 'bundler',
-        jsx: 'react-jsx',
-        strict: true,
-        noEmit: true,
-        skipLibCheck: true,
-      },
-    }),
   });
 
   const gen = runTypes(dir);
