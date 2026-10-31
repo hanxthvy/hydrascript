@@ -966,6 +966,42 @@ fn test_feature_destructuring_assignment() {
 }
 
 #[test]
+fn test_feature_bracketed_destructuring_declares() {
+    // `[n, set_n] = useState(0)` is the idiom React's own docs teach for hooks,
+    // and the bracketed form parses as a LIST, not a tuple. It used to emit a
+    // bare assignment with no binding — `[n, set_n] = useState(0)` — which is a
+    // ReferenceError at runtime. Written to the emitter's `Kind::List` arm after
+    // a real React 19 project failed the runtime gate with `n is not defined`
+    // while the build reported success.
+    let out = comp("component A():\n    [n, set_n] = useState(0)\n    div: f\"{n}\"\n");
+    assert_contains(&out, &["const [n, set_n] = useState(0);"]);
+    assert_not_contains(&out, &["\n  [n, set_n] = useState(0);"]);
+}
+
+#[test]
+fn test_bracketed_destructuring_binds_every_name() {
+    // More than two, and mixed with a call, so the fix is not narrowly "two
+    // names plus a call".
+    let out = comp("component A():\n    [a, b, c] = triple()\n    div: f\"{a}{b}{c}\"\n");
+    assert_contains(&out, &["const [a, b, c] = triple();"]);
+}
+
+#[test]
+fn test_a_list_literal_assignment_is_untouched() {
+    // The fix must not turn a real list assignment into a destructuring one.
+    let out = comp("component A():\n    xs = [1, 2]\n    div: f\"{xs}\"\n");
+    assert_contains(&out, &["const xs = [1, 2];"]);
+}
+
+#[test]
+fn test_swap_stays_a_plain_assignment() {
+    // Both names already bound: a re-assignment, not a declaration, and
+    // `let [a, b] = [b, a]` over existing bindings is a SyntaxError.
+    let out = comp("component A():\n    a, b = 1, 2\n    a, b = b, a\n    div: f\"{a}{b}\"\n");
+    assert_contains(&out, &["let [a, b] = [1, 2];", "[a, b] = [b, a];"]);
+}
+
+#[test]
 fn test_feature_in_operator() {
     let src = "component A():\n    if \"admin\" in roles:\n        span: \"Admin\"\n";
     let out = comp(src);

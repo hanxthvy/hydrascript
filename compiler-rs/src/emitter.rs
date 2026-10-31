@@ -1538,8 +1538,20 @@ impl Emitter {
                 // Destructuring (`a, b = pair()`) binds names, so it declares.
                 // Member and index targets do NOT: `const x.y = 1` is a syntax
                 // error, so those always emit a plain assignment.
+                //
+                // `Kind::List` is here because the BRACKETED spelling of the same
+                // thing parses as a list literal, not a tuple:
+                // `[n, set_n] = useState(0)` is the idiom React's own docs teach
+                // for hooks. Without this it emitted `[n, set_n] = useState(0)` —
+                // no binding — which is a `ReferenceError` at runtime while the
+                // build reported success. Every element must be a name; a list
+                // containing anything else is a real list, and a real list is
+                // never a valid assignment target, so it falls through to the
+                // plain form and the emitter's output check rejects it.
                 let binds_names = match &target.kind {
-                    Kind::Tuple(items) => items.iter().all(|i| matches!(i.kind, Kind::Name(_))),
+                    Kind::Tuple(items) | Kind::List(items) => {
+                        !items.is_empty() && items.iter().all(|i| matches!(i.kind, Kind::Name(_)))
+                    }
                     Kind::Dict(_) => true,
                     _ => false,
                 };
@@ -1565,6 +1577,14 @@ impl Emitter {
                     .scopes
                     .last()
                     .map(|scope| {
+                        // ALL, not any. If every target is already bound this is a
+                        // re-assignment (the swap `a, b = b, a`), which is a plain
+                        // assignment. If only SOME are bound, the honest outcome is
+                        // a build error: `let [a, b] = ...` over one existing
+                        // binding is a SyntaxError, and the alternative — a plain
+                        // assignment — would silently leave the new name undefined
+                        // and throw at runtime instead. A loud build failure beats
+                        // a quiet runtime one.
                         targets.iter().all(|t| match &t.kind {
                             Kind::Name(id) => {
                                 scope.declared.contains(id) || scope.params.contains(id)

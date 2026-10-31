@@ -83,6 +83,12 @@ jobs:
       - name: Rust tests
         run: cd compiler-rs && cargo test
 
+      # The repo's own dependencies. Without them `entrypoint.test.mjs` cannot
+      # build a project (esbuild) and the plugin tests skip; the first real run
+      # of this workflow had 6 of 25 tests failing for exactly that reason.
+      - name: Install repo dependencies
+        run: npm ci --no-audit --no-fund
+
       - name: Node tests
         run: |
           node --test packages/cli/plugin.test.mjs \
@@ -90,7 +96,15 @@ jobs:
                      packages/cli/entrypoint.test.mjs \
                      packages/cli/dts.test.mjs
 
-      # The four example projects are the real regression suite.
+      # The four example projects are the real regression suite — the thing most
+      # likely to catch a compiler change, so a release must not skip it.
+      - name: Install example dependencies
+        run: |
+          for d in examples/*/; do
+            if [ -f "$d/package.json" ]; then
+              (cd "$d" && npm install --no-audit --no-fund)
+            fi
+          done
       - name: Examples
         run: bash scripts/hx-examples-check.sh
 
