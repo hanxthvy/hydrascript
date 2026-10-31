@@ -81,6 +81,19 @@ jobs:
       # point at. Without this the plugin tests skipped and two entrypoint tests
       # failed on `Cannot resolve package 'esbuild'` — a job whose green depended
       # on what happened to be installed.
+      # The CLI prints its version from CARGO_PKG_VERSION, so Cargo.toml is the
+      # real one; package.json is what npm publishes. 0.3.1 shipped with the CLI
+      # reporting 0.3.0 because the two had drifted, so they are checked here.
+      - name: Versions agree
+        run: |
+          set -euo pipefail
+          cargo_v=$(sed -nE 's/^version = "([^"]+)"/\1/p' compiler-rs/Cargo.toml | head -1)
+          pkg_v=$(node -p "require('./package.json').version")
+          echo "Cargo.toml=$cargo_v  package.json=$pkg_v"
+          [ "$cargo_v" = "$pkg_v" ] || {
+            echo "::error::version drift: the CLI would report $cargo_v while npm publishes $pkg_v"
+            exit 1
+          }
       - name: Install repo dependencies
         run: npm ci --no-audit --no-fund
       # `npm ci` does not expose a global binary, and the dts test looks for
