@@ -1002,6 +1002,36 @@ fn test_swap_stays_a_plain_assignment() {
 }
 
 #[test]
+fn test_dict_methods_become_runtime_calls_not_js_methods() {
+    // `d.keys()` on a plain object used to emit `d.keys()` — a JS method call —
+    // which is `d.keys is not a function` at runtime. `hydra check` stayed
+    // silent and the runtime gate only noticed when the line actually ran, so a
+    // method inside an event handler shipped broken. Found by auditing dict
+    // method calls against a real build.
+    let out = comp("component A():\n    d = {\"a\": 1}\n    n = len(d.keys())\n    div: f\"{n}\"\n");
+    assert_contains(&out, &["dict_keys(d)"]);
+    assert_not_contains(&out, &["d.keys()"]);
+}
+
+#[test]
+fn test_dict_values_and_items_are_helpers_too() {
+    let out = comp(
+        "component A():\n    d = {\"a\": 1}\n    a = len(d.values())\n    b = len(d.items())\n    div: f\"{a}{b}\"\n",
+    );
+    assert_contains(&out, &["dict_values(d)", "dict_items(d)"]);
+    // `.items()` used to become `.entries()`, which is also not a method on a
+    // plain object; and it returned pairs only by accident of the JS API.
+    assert_not_contains(&out, &["d.entries()", "d.values()"]);
+}
+
+#[test]
+fn test_dict_helpers_are_imported_from_the_runtime() {
+    let out = comp("component A():\n    d = {\"a\": 1}\n    n = len(d.keys())\n    div: f\"{n}\"\n");
+    assert_contains(&out, &["from 'hydra'"]);
+    assert_contains(&out, &["dict_keys"]);
+}
+
+#[test]
 fn test_feature_in_operator() {
     let src = "component A():\n    if \"admin\" in roles:\n        span: \"Admin\"\n";
     let out = comp(src);

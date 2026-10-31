@@ -196,9 +196,11 @@ pub fn str_method(m: &str) -> &str {
         "join" => "join",
         "append" => "push",
         "copy" => "slice",
-        "keys" => "keys",
-        "values" => "values",
-        "items" => "entries",
+        // NOTE: "keys"/"values"/"items" are NOT here on purpose. They were
+        // emitted as `.keys()` / `.values()` / `.entries()` — JS method calls —
+        // which throw on a plain object literal (`d.keys is not a function`)
+        // even though `hydra check` stayed silent. They are free-function
+        // rewrites now; see `free_func` below.
         // Dunder introspection. `type(x).__name__` is the common one; without
         // this it emitted `.__name__`, which is `undefined` on every JS value.
         "__name__" => "name",
@@ -253,6 +255,13 @@ pub fn free_func(m: &str) -> Option<&'static str> {
         "insert" => Some("list_insert"),
         "remove" => Some("list_remove"),
         "index" => Some("list_index"),
+        // Plain-object dicts have no JS methods at all. `d.keys()` used to emit
+        // `d.keys()` and throw `d.keys is not a function` at runtime — silently,
+        // because the checker did not model dict methods and the gate only sees
+        // the code a render actually runs.
+        "keys" => Some("dict_keys"),
+        "values" => Some("dict_values"),
+        "items" => Some("dict_items"),
         // set-like helpers
         "add" => Some("set_add"),
         "discard" => Some("set_discard"),

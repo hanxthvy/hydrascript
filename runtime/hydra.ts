@@ -365,6 +365,28 @@ export const dict_fromkeys = (keys: any[], value: any = null): Record<string, an
   return out
 }
 
+/**
+ * `d.keys()`, `d.values()`, `d.items()`.
+ *
+ * These were emitted as `d.keys()` — a JavaScript METHOD CALL. For a plain
+ * object literal (what `{"a": 1}` compiles to) that is `d.keys is not a
+ * function` at runtime, while `hydra check` said nothing and the runtime gate
+ * only noticed when the line happened to run. A real `Map` genuinely has these
+ * methods, so both shapes are handled rather than breaking Map users to fix
+ * object users.
+ *
+ * `dict_items` returns `[key, value]` PAIRS, which is what Python's `.items()`
+ * gives and what `for k, v in d.items():` destructures.
+ */
+export const dict_keys = (d: any): any[] =>
+  d instanceof Map ? Array.from(d.keys()) : Object.keys(d ?? {})
+
+export const dict_values = (d: any): any[] =>
+  d instanceof Map ? Array.from(d.values()) : Object.values(d ?? {})
+
+export const dict_items = (d: any): any[] =>
+  d instanceof Map ? Array.from(d.entries()) : Object.entries(d ?? {})
+
 /** `xs.extend(ys)` — in place, like Python's list.extend. */
 export const list_extend = <T,>(xs: T[], ys: Iterable<T>): T[] => {
   xs.push(...ys)
