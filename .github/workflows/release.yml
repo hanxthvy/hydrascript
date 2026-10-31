@@ -1,0 +1,108 @@
+# [xihanzu-NR]
+# Release to npm from CI, with no stored token.
+#
+# Why this instead of `npm publish` from a laptop:
+#
+#   1. npm now enforces an interactive web/2FA step for publishing. A token with
+#      "bypass 2FA" set is supposed to skip it, but the registry refuses one
+#      anyway (verified: the same token answers `GET /-/whoami` with 200 and is
+#      rejected with 403 on a publish-shaped PUT). Trusted publishing does not go
+#      through that path at all.
+#   2. OIDC means no long-lived credential anywhere. There is nothing to leak in
+#      a chat, a shell history, or a dotfile, and nothing to rotate.
+#   3. The package gets `--provenance`, so a consumer can verify the tarball was
+#      built from this commit by this workflow.
+#
+# ONE-TIME SETUP (the user does this, once, on npmjs.com):
+#   Package `hydrascript` -> Settings -> Trusted Publisher -> GitHub Actions:
+#     Organization/user : hanxthvy
+#     Repository        : hydrascript
+#     Workflow filename : release.yml
+#     Environment       : (leave empty)
+#   Until that is configured the publish step will be refused; that is expected.
+#
+# Then: Actions -> release -> Run workflow. Or push a tag `v0.3.0`.
+
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'npm dist-tag to publish under'
+        required: true
+        default: latest
+      dry_run:
+        description: 'Pack and validate only, do not upload'
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  # Required for trusted publishing: this is what mints the OIDC token npm
+  # exchanges for a short-lived publish credential.
+  id-token: write
+
+jobs:
+  publish:
+    name: build, verify, publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      # Trusted publishing needs a recent npm; the bundled one may predate it.
+      - name: Ensure a recent npm
+        run: npm install -g npm@latest
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The tarball ships prebuilt binaries, so they must be built here and must
+      # be the ones the tests below exercised.
+      - name: Build the compiler
+        run: |
+          set -euo pipefail
+          cd compiler-rs
+          cargo build --release --locked
+          mkdir -p ../bin
+          cp target/release/hydra ../bin/hydra
+          cp target/release/libhydra.so ../bin/hydra.node
+          chmod +x ../bin/hydra
+
+      - name: Rust tests
+        run: cd compiler-rs && cargo test
+
+      - name: Node tests
+        run: |
+          node --test packages/cli/plugin.test.mjs \
+                     packages/cli/server.test.mjs \
+                     packages/cli/entrypoint.test.mjs \
+                     packages/cli/dts.test.mjs
+
+      # The four example projects are the real regression suite.
+      - name: Examples
+        run: bash scripts/hx-examples-check.sh
+
+      # The last gate before something irreversible: pack, install into a clean
+      # project, scaffold an app and build it with the installed binary.
+      - name: Pack, install, build
+        run: bash scripts/pack-install-check.sh
+
+      - name: Publish
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag || 'latest' }}"
+          echo "publishing $(node -p "require('./package.json').name + '@' + require('./package.json').version") as dist-tag '$TAG'"
+          npm publish --provenance --access public --tag "$TAG"
+
+      - name: Dry run (no upload)
+        if: ${{ inputs.dry_run }}
+        run: npm publish --dry-run --access public
