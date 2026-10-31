@@ -1,5 +1,6 @@
 // [xihanzu-NR]
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import https from 'node:https';
@@ -228,6 +229,24 @@ export function readConfig(cwd) {
     }
   }
   return config;
+}
+
+/**
+ * Best-effort local IPv4, only ever used to PRINT where a server is reachable.
+ * When the bind is 0.0.0.0 the honest answer is "the machine's address", and
+ * `localhost` is a lie the developer cannot act on.
+ */
+function localIPv4() {
+  try {
+    for (const list of Object.values(os.networkInterfaces())) {
+      for (const i of list || []) {
+        if (i.family === 'IPv4' && !i.internal) return i.address;
+      }
+    }
+  } catch {
+    /* printing must never be the thing that breaks the server */
+  }
+  return null;
 }
 
 /**
@@ -1142,7 +1161,7 @@ function proxyRequest(req, res, target, rawPath, rawUrl) {
   req.pipe(proxyReq);
 }
 
-export async function serveDirectory(dir, port = 5173, host = '0.0.0.0', opts = {}) {
+export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts = {}) {
   const base = normalizeBase(opts.base || '/');
   const proxy = opts.proxy && typeof opts.proxy === 'object' ? opts.proxy : {};
   const indexPath = path.join(dir, 'index.html');
@@ -1182,19 +1201,25 @@ export async function serveDirectory(dir, port = 5173, host = '0.0.0.0', opts = 
     // Every process on a box has one of these, and "something is on 5173"
     // otherwise has no answer. Cheap enough to answer on every request, and
     // something a supervisor can health-check without guessing from the port.
+    //
+    // OFF by default, and it never carries absolute paths. The server binds
+    // 0.0.0.0 unless configured otherwise, so this answered ANY host on the
+    // network with the absolute path of the project directory and its config
+    // file — a map of the developer's disk, on an unauthenticated port. A
+    // health check only needs to know the process is up; the project layout is
+    // for the person sitting at the machine, who can read it off the terminal.
     if (reqPath === '/__hydra/version' || reqPath === '/__hydra/healthz') {
-      const body = JSON.stringify({
+      const base = {
         name: 'hydra',
-        version: opts.version || null,
-        sha: opts.sha || null,
-        port: actualPort,
-        host,
-        root: rootDir,
-        config: opts.configPath || null,
+        status: 'ok',
         uptime_s: Math.round((Date.now() - startedAt) / 1000),
-      });
+      };
+      const detail =
+        opts.metadata === true
+          ? { ...base, version: opts.version || null, sha: opts.sha || null, port: actualPort, host }
+          : base;
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(body);
+      res.end(JSON.stringify(detail));
       return;
     }
 
@@ -1280,8 +1305,13 @@ export async function serveDirectory(dir, port = 5173, host = '0.0.0.0', opts = 
       server.on('error', (err) => {
         console.error(`[hydra] Server error: ${err.message}`);
       });
-      const shown = host === '0.0.0.0' ? 'localhost' : host;
-      console.log(`[hydra] Server running at http://${shown}:${actualPort}/`);
+      // Say WHICH interface. Printing `localhost` for a 0.0.0.0 bind is how a
+      // server stayed reachable from the network with nobody aware of it.
+      const reach =
+        host === '0.0.0.0' || host === '::'
+          ? `http://${localIPv4() ?? 'localhost'}:${actualPort}/  (reachable from your network)`
+          : `http://${host}:${actualPort}/`;
+      console.log(`[hydra] Server running at ${reach}`);
       resolve({ server, port: actualPort });
     });
 
@@ -1293,7 +1323,7 @@ export async function runPreview(cwd = process.cwd(), opts = {}) {
   const config = readConfig(cwd);
   const outDir = path.resolve(cwd, config.outputDir || 'dist');
   const port = opts.port || config.server?.port || 5173;
-  const host = config.server?.host || '0.0.0.0';
+  const host = opts.host || config.server?.host || '127.0.0.1';
   const indexPath = path.join(outDir, 'index.html');
 
   if (!fs.existsSync(outDir) || !fs.existsSync(indexPath)) {
@@ -1322,7 +1352,13 @@ export async function runDev(cwd = process.cwd(), opts = {}) {
   const config = readConfig(cwd);
   const outDir = path.resolve(cwd, config.outputDir || 'dist');
   const port = opts.port || config.server?.port || 5173;
-  const host = config.server?.host || '0.0.0.0';
+  // Loopback by default. `hydra dev` is a local development command and it was
+  // binding every interface, so on any machine without a host firewall — a
+  // laptop on cafe wifi — the project directory was served to the whole network,
+  // with the metadata endpoint answering the absolute path to anyone who asked.
+  // Reachability is a deliberate choice: `--host 0.0.0.0`, or `server.host` in
+  // hydraconfig.json, and the startup line says which one is in effect.
+  const host = opts.host || config.server?.host || '127.0.0.1';
 
   console.log('[hydra] Development mode active.');
   await serveDirectory(outDir, port, host, {
@@ -1373,6 +1409,15 @@ if (portIdx !== -1) {
   portOverride = n;
 }
 
+// Same shape for `--host`, so the default below can actually be overridden from
+// the command line when the dev server is meant to be reachable from a phone or
+// a container. `--host 0.0.0.0` restores the old behaviour, explicitly.
+let hostOverride;
+const hostIdx = argv.findIndex((a) => a === '--host' || a.startsWith('--host='));
+if (hostIdx !== -1) {
+  hostOverride = argv[hostIdx].includes('=') ? argv[hostIdx].split('=')[1] : argv[hostIdx + 1];
+}
+
 // Which compiler is actually talking. A supervisor or a person debugging a
 // stray server needs this, and it is the one fact that goes missing when a
 // checkout is stale.
@@ -1396,7 +1441,7 @@ function gitSha() {
 }
 
 const cwd = process.cwd();
-const runOpts = { port: portOverride, version: VERSION, sha: gitSha() };
+const runOpts = { port: portOverride, host: hostOverride, version: VERSION, sha: gitSha() };
 
 // Only act when this file IS the program. Importing the runner used to start a
 // dev server as a side effect, which made the server behaviour untestable.

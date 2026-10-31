@@ -82,7 +82,7 @@ test('dev walks to the next free port and serves there', async () => {
   });
 });
 
-test('/__hydra/version reports what is actually running', async () => {
+test('/__hydra/version does not leak the project layout by default', async () => {
   const dir = makeDir();
   const { server, port } = await serveDirectory(dir, 5321, '127.0.0.1', {
     version: '9.9.9-test',
@@ -93,12 +93,36 @@ test('/__hydra/version reports what is actually running', async () => {
     const res = await get(port, '/__hydra/version');
     assert.equal(res.status, 200);
     const info = JSON.parse(res.body);
+    // A health check needs "up", nothing else. The server binds every interface
+    // unless told otherwise, so absolute paths here answered any host on the
+    // network with a map of the developer's disk.
+    assert.equal(info.status, 'ok');
+    assert.ok(typeof info.uptime_s === 'number');
+    assert.equal(info.root, undefined);
+    assert.equal(info.config, undefined);
+    assert.equal(info.version, undefined);
+    assert.ok(!res.body.includes('/tmp'), 'response leaked an absolute path');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('/__hydra/version reports details only when explicitly asked', async () => {
+  const dir = makeDir();
+  const { server, port } = await serveDirectory(dir, 5322, '127.0.0.1', {
+    version: '9.9.9-test',
+    sha: 'deadbee',
+    metadata: true,
+  });
+  try {
+    const info = JSON.parse((await get(port, '/__hydra/version')).body);
     assert.equal(info.version, '9.9.9-test');
     assert.equal(info.sha, 'deadbee');
     assert.equal(info.port, port);
     assert.equal(info.host, '127.0.0.1');
-    assert.equal(info.config, '/tmp/x/hydraconfig.json');
-    assert.ok(typeof info.uptime_s === 'number');
+    // Even opted in, the filesystem layout stays out.
+    assert.equal(info.root, undefined);
+    assert.equal(info.config, undefined);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
