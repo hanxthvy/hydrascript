@@ -18,7 +18,11 @@
 
 set -uo pipefail
 
-HYDRA_REPO="${HYDRA_REPO:-/root/projects/hydra}"
+# Derived from this script's own location, NOT hardcoded: a hardcoded path made
+# the script exit 2 with "FATAL: hydra binary not found" on any machine that is
+# not the author's — including CI, where it is the job that matters most.
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HYDRA_REPO="${HYDRA_REPO:-$SELF_DIR}"
 HYDRA_BIN="${HYDRA_BIN:-$HYDRA_REPO/bin/hydra}"
 HYDRA_RUNNER="${HYDRA_RUNNER:-$HYDRA_REPO/packages/cli/runner.mjs}"
 EXAMPLES_DIR="${EXAMPLES_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/examples}"

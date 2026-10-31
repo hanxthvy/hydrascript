@@ -24,10 +24,14 @@ export const ENTRY_CANDIDATES = [
 ];
 
 function resolvePkg(name, cwd) {
+  // HERE is the installed package, `../..` the repo root. The author's absolute
+  // checkout path used to sit in this list as a third fallback, which meant a
+  // dependency could resolve from a directory that has nothing to do with the
+  // project being built — and it made every install on another machine depend on
+  // a path that does not exist there.
   const bases = [
     HERE,
     path.join(HERE, '../..'),
-    '/root/projects/hydra',
     cwd,
   ];
   for (const base of bases) {
