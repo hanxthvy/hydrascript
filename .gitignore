@@ -28,3 +28,7 @@ target/
 
 # Packed tarballs from `npm pack` / the pack-install check.
 *.tgz
+
+# editor extension build artifacts
+*.vsix
+editors/**/out/
