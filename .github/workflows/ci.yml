@@ -118,6 +118,14 @@ jobs:
           name: hydra-binaries
           path: bin/
       - run: chmod +x bin/hydra
+      # The examples declare React but NOT the bundler: esbuild, PostCSS and
+      # Tailwind come from the repo root, which is itself the `hydrascript`
+      # package. A user's project gets them as dependencies of the package they
+      # install; the examples here get them from this install. Without it every
+      # build failed with "Cannot resolve package 'esbuild'", which is how this
+      # job failed the first two times it ran.
+      - name: Install repo dependencies
+        run: npm ci --no-audit --no-fund
       - name: Install example dependencies
         run: |
           for d in examples/*/; do
