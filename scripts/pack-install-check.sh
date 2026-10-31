@@ -78,10 +78,14 @@ else
   exit 1
 fi
 
-VER="$(./node_modules/.bin/hydra --version 2>&1 | head -1)"
+# The expected version comes from the package.json that is being packed, not a
+# literal: this check hardcoded "0.3.0" once and then failed the moment the
+# version moved, which is the check measuring itself instead of the product.
+EXPECT="$(node -p "require('$REPO/package.json').version")"
+VER="$(./node_modules/.bin/hydra --version 2>&1 | head -1 | tr -d '\r')"
 case "$VER" in
-  "hydra 0.3.0"*) ok "bin works: $VER" ;;
-  *)              bad "bin does not report a version: $VER" ;;
+  "hydra $EXPECT"*) ok "bin reports $VER (matches package.json $EXPECT)" ;;
+  *)                bad "bin reports '$VER' but package.json says $EXPECT" ;;
 esac
 
 say "== scaffold and build a real app =="
