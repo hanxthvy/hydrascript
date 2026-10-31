@@ -43,7 +43,13 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 /// `runtime/hydra.ts` exports (the compiler injects `import ... from 'hydra'`
 /// for those on demand, so using one bare is correct and needs no import).
 pub fn is_known_name(name: &str) -> bool {
-    is_browser_global(name) || is_runtime_helper(name)
+    // `slot` is the compiler's OWN construct: inside a component it compiles to
+    // React's `children`, so it is as legal as a browser global and was never a
+    // Python builtin. It does not belong in PYTHON_BUILTINS — that list is
+    // checked two-way by `python_builtins_are_all_honoured`, which correctly
+    // refused it — and leaving it unknown broke every app `hydra init` produces,
+    // because the scaffolded Card.hyx renders a slot.
+    name == "slot" || is_browser_global(name) || is_runtime_helper(name)
 }
 
 /// Helpers the runtime exports. Kept in sync with `runtime/hydra.ts` by the
@@ -282,8 +288,12 @@ impl Checker {
                     }
                 }
                 Kind::For { target, body, .. } => {
-                    // The loop variable is assigned by the loop itself.
-                    self.hoisted.insert(target.clone());
+                    // The loop variables are assigned by the loop itself. The
+                    // parser stores unpacking as ONE string, "[i, v]", so the
+                    // brackets and spaces have to come off or neither name binds
+                    // and `for i, v in enumerate(xs)` reports both as unbound
+                    // (it appeared in the scaffolded About page).
+                    bind_loop_target(target, &mut self.hoisted);
                     self.collect_hoisted(body);
                 }
                 Kind::While { body, .. } => self.collect_hoisted(body),
@@ -561,14 +571,14 @@ impl Checker {
             }
             Kind::For { target, iter, body } => {
                 self.walk(iter);
-                self.bind(target);
+                bind_loop_target_string(target, self);
                 let mut assigned = HashSet::new();
                 collect_assigns_recursive(body, &mut assigned);
                 for name in assigned {
                     self.bind(&name);
                 }
                 self.push_scope();
-                self.bind(target);
+                bind_loop_target_string(target, self);
                 self.bind_local_defs(body);
                 self.walk_body(body);
                 self.pop_scope();
@@ -1000,6 +1010,30 @@ fn collect_assign_targets(target: &Node, out: &mut HashSet<String>) {
     }
 }
 
+/// Split a `for` target into the names it binds.
+///
+/// The parser joins an unpacking target with brackets — `for i, v in xs` becomes
+/// the single string `"[i, v]"` — so binding the string verbatim binds a name
+/// nothing can reference, and the real names `i` and `v` read as unbound.
+fn bind_loop_target(target: &str, out: &mut HashSet<String>) {
+    let t = target.trim().trim_start_matches('[').trim_end_matches(']');
+    for part in t.split(',') {
+        let p = part.trim();
+        if !p.is_empty() {
+            out.insert(p.to_string());
+        }
+    }
+}
+
+/// `bind_loop_target` for a `&mut Checker`, which is what the walker has.
+fn bind_loop_target_string(target: &str, checker: &mut Checker) {
+    let mut names = HashSet::new();
+    bind_loop_target(target, &mut names);
+    for n in names {
+        checker.bind(&n);
+    }
+}
+
 /// Every name assigned ANYWHERE inside a block, at any nesting depth.
 ///
 /// Separate from `collect_assign_targets`, which unwraps one assignment target.
@@ -1028,7 +1062,7 @@ fn collect_assigns_recursive(body: &[Node], out: &mut HashSet<String>) {
                 }
             }
             Kind::For { target, body, .. } => {
-                out.insert(target.clone());
+                bind_loop_target(target, out);
                 collect_assigns_recursive(body, out);
             }
             Kind::While { body, .. } => collect_assigns_recursive(body, out),
@@ -1363,6 +1397,31 @@ mod tests {
         // that made a build able to ship a crash.
         let m = msgs("component A():\n    v = any([1])\n    div: f\"{v}\"\n");
         assert!(m.iter().any(|s| s.contains("any")), "{m:?}");
+    }
+
+    #[test]
+    fn unpacking_loop_target_binds_each_name() {
+        // `for i, v in enumerate(xs)` becomes ONE target string, "[i, v]", in the
+        // AST. Binding that verbatim bound a name nothing could reference, so
+        // both i and v read as unbound — a false positive that broke the
+        // scaffolded About page the moment the build started running this check.
+        let m = msgs("component A(xs):\n    div:\n        for i, v in enumerate(xs):\n            span(key=i): f\"{v}\"\n");
+        assert_eq!(m.len(), 0, "{m:?}");
+    }
+
+    #[test]
+    fn single_loop_target_still_binds() {
+        let m = msgs("component A(xs):\n    div:\n        for x in xs:\n            span: f\"{x}\"\n");
+        assert_eq!(m.len(), 0, "{m:?}");
+    }
+
+    #[test]
+    fn slot_is_a_keyword_not_an_unbound_name() {
+        // `slot` compiles to React's `children`; it is the compiler's own
+        // construct, as legal as `self`/`cls`. Reporting it broke every app the
+        // scaffold produces, because Card.hyx uses it.
+        let m = msgs("component Card(t):\n    div:\n        slot\n");
+        assert_eq!(m.len(), 0, "{m:?}");
     }
 
     #[test]
