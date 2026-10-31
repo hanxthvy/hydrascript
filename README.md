@@ -16,7 +16,7 @@ HydraScript compiles indentation-based `.hyx` files to React TSX and `.hys` file
 to plain JavaScript. The compiler is a Rust binary; a small Node runner wraps
 esbuild, PostCSS and Tailwind to produce a site.
 
-Status: **0.3.0, pre-1.0.** The language works and is tested; it is not
+Status: **0.3.5, pre-1.0.** The language works and is tested; it is not
 battle-tested at scale, and the file-based router and language server described
 in older documents do not exist yet. Treat this as usable-if-you-like-it, not
 production-hardened.
@@ -55,6 +55,8 @@ stop daring to upgrade, not because of missing features.
 - [Testing](#testing)
 - [Known limitations](#known-limitations)
 - [License](#license)
+- [Benchmarks, and what they do not claim](docs/BENCHMARKS.md)
+- [Developing HydraScript](docs/DEVELOPING.md)
 
 ---
 
@@ -120,49 +122,20 @@ nor worse for everything else. This is the actual shape of the trade:
 The last row is measured on one component in the repo, not a corpus — see the
 next section for exactly what is and is not claimed.
 
-**A claim this README used to make and no longer does:** that HydraScript fixes
-the "falsy zero leak" (`count && <Badge/>` rendering `0`). It does not. The
-compiler emits `count && (<span>…)` exactly like TSX does, so `0` renders. Use
-`if count:` if you want the guard.
+One correction worth stating because it surprises people: `count && <Badge/>`
+renders `0`, not nothing. The compiler emits `count && (<span>…)` exactly like
+TSX does. Use `if count:` when you want the guard.
 
 ---
 
 ## What is measured, and how
 
-Every number below comes from `node benchmarks/measure.mjs`, run on the machine
-that built this repo (2 vCPU, Linux x86_64, Node v22). Run it yourself before
-believing any of it.
-
-| Claim | Measured value | How |
-|---|---|---|
-| `hydra --check` latency | ~1.8–2.1 ms median | 20 runs, process spawn included |
-| `hydra <file>` latency | ~1.9–2.0 ms median | 20 runs, process spawn included |
-| In-process compile (`hydra.node`) | ~0.063–0.067 ms median | 2000 warm iterations, no spawn |
-| Test suite | 308 tests, all passing | `cargo test` (215 unit + 93 integration) |
-| CLI binary | ~1.1 MB | `bin/hydra`, stripped |
-| N-API addon | ~800 KB | `bin/hydra.node` |
-| Runtime cost of the `hydra` import | ~200 bytes | Built an identical app with and without it |
-| Token count, one component | 130 vs 188 (−30.9%) | `benchmarks/tokens.py`, `cl100k_base` |
-| SSG output, small page | 3.6 KB HTML | `examples/blog` with `ssg: true` |
-| Dev rebuild (`hydra dev` save) | 508–756 ms vs 1252 ms before | `benchmarks/build-ab.mjs --dev`, 3 edits each |
-| Production build (portfolio) | unchanged, ~2.3–2.6 s | Same script, 4 runs each |
-
-**What this README does not claim, and why:**
-
-- No "Nx faster than `tsc`" figures. Comparing against another toolchain
-  requires running that toolchain on the same machine with the same input; the
-  old numbers here (1,610×, 24×, 3.3×) were neither reproducible nor
-  apples-to-apples, so they are gone.
-- No "zero extra kilobytes". The runtime is small (~200 bytes for a component
-  that uses it) but not zero, and react + react-dom dominate any real bundle.
-- **No claim that the production build got faster.** It did not: repeated A/B
-  runs land inside each other's spread (~2.3–2.6 s). What got faster is the
-  `hydra dev` rebuild loop, because that is the path that runs hundreds of
-  times a day. The production path was already dominated by esbuild's own
-  minify+bundle work, which no option here changes.
-- No AI/LLM token-efficiency study. The old "12.6% fewer tokens across 5
-  production components" had no script, no corpus, and no commit behind it. One
-  component is measured instead, and the number is labelled as one component.
+The full table, the script that produces it, and an explicit list of what is
+**not** claimed live in [docs/BENCHMARKS.md](docs/BENCHMARKS.md). The short
+version: the numbers are real, reproducible by `node benchmarks/measure.mjs`, and
+labelled with what they cover. There are no "Nx faster than tsc" figures here,
+because those require running the other toolchain on the same machine with the
+same input, and the ones this README used to print were neither.
 
 ---
 
@@ -330,7 +303,7 @@ These need no import:
 | `isinstance(x, int)` | `isinstance(x, Number)` |
 | `type(x).__name__` | `x.constructor.name` |
 | `enumerate` / `range` / `zip` | runtime helpers, auto-imported |
-| `any(xs)` / `all(xs)` | runtime helpers |
+| `xs.some(lambda x: x > 2)` | `xs.some((x) => x > 2)` |
 | `print(x)` | `console.log(x)` |
 | `assert cond, "msg"` | `assert_(cond, "msg")` — throws |
 | `raise ValueError("x")` | `raise_(new ValueError("x"))` |
@@ -425,7 +398,7 @@ A single optional `hydraconfig.json` in the project root:
   "base": "/",
   "server": {
     "port": 5173,
-    "host": "0.0.0.0",
+    "host": "127.0.0.1",
     "proxy": { "/api": "http://127.0.0.1:8000" }
   },
   "compiler": {
@@ -479,7 +452,8 @@ hydra dev | build | preview  the meta-framework commands
 ```
 
 Run `hydra doctor` first when a build misbehaves — it reports node, npm, bun,
-config discovery and source counts.
+config discovery and source counts. `hydra watch` writes to `watch-out/`,
+mirroring `src/`, never next to the sources it reads.
 
 ### Using HydraScript from TypeScript
 
@@ -554,7 +528,8 @@ cp target/release/hydra ../bin/hydra
 cp target/release/libhydra.so ../bin/hydra.node
 ```
 
-Requirements: Node 18+, Rust 1.75+ (edition 2021) to build the compiler.
+Requirements: Node 22+ (`engines` enforces it; the runner uses the global
+`WebSocket`), Rust 1.75+ (edition 2021) to build the compiler.
 `npm install` brings esbuild, PostCSS, Tailwind and Autoprefixer, which the
 runner loads from the project's own `node_modules`.
 
@@ -568,13 +543,10 @@ out to the `hydra` binary for diagnostics; there is no separate language server.
 
 ---
 
-`hydra watch` writes its output to `watch-out/`, mirroring `src/` — never
-next to the sources it reads.
-
 ## Testing
 
 ```bash
-cd compiler-rs && cargo test          # 308 tests: 215 unit + 93 integration
+cd compiler-rs && cargo test          # 377 tests: 266 unit + 111 integration
 node benchmarks/measure.mjs           # the numbers quoted above
 bash scripts/hx-examples-check.sh     # builds every example/ project
 ```
@@ -588,27 +560,16 @@ a bundler regression shows up as a build failure.
 
 ## Profiling a build
 
-    HYDRA_PROFILE=1 hydra build
+`HYDRA_PROFILE=1 hydra build` prints a per-phase breakdown. What the phases mean,
+the two options that exist because of what the profile showed, and how to work on
+the runtime gate are in
+[docs/DEVELOPING.md](docs/DEVELOPING.md).
 
-Prints a per-phase breakdown to stderr. Kept in the shipped runner because
-"where did the build time go" is the first question after any bundler change,
-and a profiler that lives in a scratch script gets rewritten every time. On the
-portfolio it reports roughly: client bundle 60%, bundled deps 20%, pre-render
-20% (the pre-render's esbuild pass overlaps the client one, so it shows as
-near-zero when the machine has a spare core).
-
-Two project options exist because of what the profile showed:
-
-- `"build": { "sourcemap": false }` — sourcemaps are the single most expensive
-  option in the client build. On by default; off is a real saving for a project
-  that debugs from the deployed source.
-- `HYDRA_NO_SSG=1` — skip pre-rendering for one build. `hydra dev` already
-  skips it, because a pre-rendered shell is for crawlers and nobody watching
-  the dev loop is one.
+---
 
 ## Known limitations
 
-Honest list, current as of 0.3.0:
+Honest list, current as of 0.3.5:
 
 - **f-string format specs are translated, not dropped.** `f"{x:.2f}"` compiles to
   `Number(x).toFixed(2)`, `f"{n:,.0f}"` groups with `toLocaleString`, and `%`,
@@ -622,8 +583,12 @@ Honest list, current as of 0.3.0:
 - Keyword arguments work for functions defined in the same file; imported
   functions must be called positionally (the compiler cannot see their
   signature).
-- Prebuilt binary is Linux x86_64 only.
-- npm publishes nothing yet — installs come from the GitHub URL.
+- Prebuilt binary is Linux x86_64 only, so macOS/Windows/ARM builds from source.
+- Some Python builtins have no JS equivalent and are **not** provided: `any`,
+  `all`, `map`, `filter`, `getattr`, `setattr`, `hasattr`, `repr`. A build now
+  fails on them rather than shipping a `ReferenceError` (see
+  [MIGRATING.md](MIGRATING.md)); `xs.some(...)` / `xs.every(...)` /
+  `xs.map(...)` are the equivalents.
 - File-based routing and `hydra-lsp` are planned, not present. Older documents
   in this repo's history described them as if they existed; they do not.
 

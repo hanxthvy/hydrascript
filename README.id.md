@@ -16,7 +16,7 @@ HydraScript mengompilasi berkas `.hyx` berbasis indentasi menjadi React TSX, dan
 berkas `.hys` menjadi JavaScript biasa. Compiler-nya biner Rust; runner Node
 kecil membungkus esbuild, PostCSS dan Tailwind untuk menghasilkan situs.
 
-Status: **0.3.0, pra-1.0.** Bahasanya bekerja dan diuji; belum teruji di skala
+Status: **0.3.5, pra-1.0.** Bahasanya bekerja dan diuji; belum teruji di skala
 besar, dan file-based router serta language server yang disebut dokumen lama
 belum ada. Anggap ini "layak dipakai kalau kamu suka", bukan tahan produksi.
 
@@ -56,6 +56,8 @@ berani naik versi.
 - [Pengujian](#pengujian)
 - [Keterbatasan yang diketahui](#keterbatasan-yang-diketahui)
 - [Lisensi](#lisensi)
+- [Benchmark, dan apa yang tidak diklaim](docs/BENCHMARKS.md)
+- [Mengembangkan HydraScript](docs/DEVELOPING.md)
 
 ---
 
@@ -121,50 +123,20 @@ lebih baik maupun lebih buruk untuk sisanya. Ini bentuk nyata dari tukarannya:
 Baris terakhir diukur pada satu komponen di repo ini, bukan korpus — lihat
 bagian berikutnya untuk tahu persis apa yang diklaim dan tidak.
 
-**Klaim yang dulu ada di README ini dan sekarang dihapus:** bahwa HydraScript
-memperbaiki "falsy zero leak" (`count && <Badge/>` mencetak `0`). Tidak. Compiler
-menghasilkan `count && (<span>…)` persis seperti TSX, jadi `0` tetap tampil.
-Pakai `if count:` kalau mau penjagaan itu.
+Satu koreksi yang layak disebut karena sering mengejutkan: `count && <Badge/>`
+mencetak `0`, bukan tidak ada apa-apa. Compiler menghasilkan
+`count && (<span>…)` persis seperti TSX. Pakai `if count:` kalau mau penjagaan.
 
 ---
 
 ## Apa yang diukur, dan bagaimana
 
-Semua angka di bawah berasal dari `node benchmarks/measure.mjs`, dijalankan di
-mesin yang membangun repo ini (2 vCPU, Linux x86_64, Node v22). Jalankan sendiri
-sebelum memercayai salah satunya.
-
-| Klaim | Nilai terukur | Caranya |
-|---|---|---|
-| Latensi `hydra --check` | median ~1,8–2,1 ms | 20 kali, termasuk spawn proses |
-| Latensi `hydra <file>` | median ~1,9–2,0 ms | 20 kali, termasuk spawn proses |
-| Kompilasi in-process (`hydra.node`) | median ~0,063–0,067 ms | 2000 iterasi panas, tanpa spawn |
-| Tes | 308 tes, semua lolos | `cargo test` (215 unit + 93 integrasi) |
-| Biner CLI | ~1,1 MB | `bin/hydra`, sudah di-strip |
-| Addon N-API | ~800 KB | `bin/hydra.node` |
-| Biaya runtime impor `hydra` | ~200 byte | Bikin app identik dengan dan tanpa impor |
-| Keluaran SSG, halaman kecil | 3,6 KB HTML | `examples/blog` dengan `ssg: true` |
-| Rebuild dev (`hydra dev` saat save) | 508–756 ms, sebelumnya 1252 ms | `benchmarks/build-ab.mjs --dev`, 3 edit masing-masing |
-| Build produksi (portofolio) | tidak berubah, ~2,3–2,6 s | Skrip sama, 4 run masing-masing |
-
-**Yang tidak diklaim README ini, dan kenapa:**
-
-- Tidak ada angka "Nx lebih cepat dari `tsc`". Membandingkan dengan toolchain
-  lain menuntut menjalankan toolchain itu di mesin yang sama dengan input yang
-  sama; angka lama di sini (1.610×, 24×, 3,3×) tidak bisa direproduksi dan tidak
-  setara, jadi dihapus.
-- Tidak ada "nol kilobyte tambahan". Runtime-nya kecil (~200 byte untuk komponen
-  yang memakainya) tapi bukan nol, dan react + react-dom mendominasi bundel
-  nyata mana pun.
-- **Tidak ada klaim bahwa build produksi jadi lebih cepat.** Tidak: A/B
-  berulang hasilnya di dalam rentang satu sama lain (~2,3–2,6 s). Yang jadi
-  lebih cepat adalah loop rebuild `hydra dev`, karena itu jalur yang berjalan
-  ratusan kali sehari. Jalur produksi sudah didominasi kerja minify+bundle
-  esbuild sendiri, yang tidak diubah opsi apa pun di sini.
-- Tidak ada studi efisiensi token AI/LLM. Angka lama "12,6% lebih sedikit token
-  di 5 komponen produksi" tidak punya skrip, korpus, maupun commit di
-  belakangnya. Sekarang satu komponen yang diukur, dan angkanya disebut sebagai
-  satu komponen.
+Tabel lengkapnya, skrip yang menghasilkannya, dan daftar eksplisit apa yang
+**tidak** diklaim ada di [docs/BENCHMARKS.md](docs/BENCHMARKS.md). Versi
+singkatnya: angkanya nyata, bisa direproduksi lewat `node benchmarks/measure.mjs`,
+dan disebutkan cakupannya. Tidak ada angka "Nx lebih cepat dari tsc" di sini,
+karena itu menuntut menjalankan toolchain lain di mesin yang sama dengan input
+yang sama, dan angka yang dulu dipampang README ini memang bukan begitu.
 
 ---
 
@@ -332,7 +304,7 @@ Ini tidak perlu impor:
 | `isinstance(x, int)` | `isinstance(x, Number)` |
 | `type(x).__name__` | `x.constructor.name` |
 | `enumerate` / `range` / `zip` | helper runtime, diimpor otomatis |
-| `any(xs)` / `all(xs)` | helper runtime |
+| `xs.some(lambda x: x > 2)` | `xs.some((x) => x > 2)` |
 | `print(x)` | `console.log(x)` |
 | `assert cond, "msg"` | `assert_(cond, "msg")` — melempar |
 | `raise ValueError("x")` | `raise_(new ValueError("x"))` |
@@ -427,7 +399,7 @@ Satu `hydraconfig.json` opsional di akar proyek:
   "base": "/",
   "server": {
     "port": 5173,
-    "host": "0.0.0.0",
+    "host": "127.0.0.1",
     "proxy": { "/api": "http://127.0.0.1:8000" }
   },
   "compiler": {
@@ -481,7 +453,8 @@ hydra dev | build | preview  perintah meta-framework
 ```
 
 Jalankan `hydra doctor` dulu kalau build bermasalah — dia melaporkan node, npm,
-bun, penemuan config dan jumlah sumber.
+bun, penemuan config dan jumlah sumber. `hydra watch` menulis ke `watch-out/`,
+mencerminkan `src/`, tidak pernah di sebelah sumber yang dibacanya.
 
 ---
 
@@ -548,7 +521,8 @@ cp target/release/hydra ../bin/hydra
 cp target/release/libhydra.so ../bin/hydra.node
 ```
 
-Kebutuhan: Node 18+, Rust 1.75+ (edisi 2021) untuk membangun compiler.
+Kebutuhan: Node 22+ (`engines` menegakkannya; runner memakai `WebSocket`
+global), Rust 1.75+ (edisi 2021) untuk membangun compiler.
 `npm install` membawa esbuild, PostCSS, Tailwind dan Autoprefixer, yang dimuat
 runner dari `node_modules` proyek itu sendiri.
 
@@ -562,13 +536,10 @@ memanggil biner `hydra` untuk diagnostik; tidak ada language server terpisah.
 
 ---
 
-`hydra watch` menulis hasilnya ke `watch-out/`, mencerminkan `src/` — tidak
-pernah di sebelah sumber yang dibacanya.
-
 ## Pengujian
 
 ```bash
-cd compiler-rs && cargo test          # 308 tes: 215 unit + 93 integrasi
+cd compiler-rs && cargo test          # 377 tes: 266 unit + 111 integrasi
 node benchmarks/measure.mjs           # angka yang dikutip di atas
 bash scripts/hx-examples-check.sh     # build semua proyek examples/
 ```
@@ -582,27 +553,15 @@ tailwind-merge, date-fns) supaya regresi bundler muncul sebagai kegagalan build.
 
 ## Profiling build
 
-    HYDRA_PROFILE=1 hydra build
+`HYDRA_PROFILE=1 hydra build` mencetak rincian per fase. Arti tiap fase, dua opsi
+yang ada karena temuan profil itu, dan cara mengerjakan runtime gate ada di
+[docs/DEVELOPING.md](docs/DEVELOPING.md).
 
-Mencetak rincian per fase ke stderr. Sengaja ikut dikirim di runner karena
-"waktu build habis di mana" adalah pertanyaan pertama setelah perubahan apa pun
-pada bundler, dan profiler yang hidup di skrip sementara akan ditulis ulang
-tiap kali. Di portofolio kira-kira: bundle klien 60%, pemuatan dependensi 20%,
-pra-render 20% (build pra-render tumpang tindih dengan bundle klien, jadi
-tampak mendekati nol saat mesin punya core senggang).
-
-Dua opsi proyek ada karena apa yang ditunjukkan profil:
-
-- `"build": { "sourcemap": false }` — sourcemap adalah opsi paling mahal di
-  build klien. Default menyala; mematikannya menghemat nyata untuk proyek yang
-  men-debug dari sumber yang di-deploy.
-- `HYDRA_NO_SSG=1` — lewati pra-render untuk satu build. `hydra dev` sudah
-  melewatinya, karena shell pra-render itu untuk crawler dan tidak ada yang
-  memantau dev loop yang seorang crawler.
+---
 
 ## Keterbatasan yang diketahui
 
-Daftar jujur, per 0.3.0:
+Daftar jujur, per 0.3.5:
 
 - **Format spec f-string diterjemahkan, bukan dibuang.** `f"{x:.2f}"` jadi
   `Number(x).toFixed(2)`, `f"{n:,.0f}"` mengelompokkan ribuan lewat
@@ -616,8 +575,13 @@ Daftar jujur, per 0.3.0:
 - Argumen kata kunci bekerja untuk fungsi yang didefinisikan di berkas yang sama;
   fungsi impor harus dipanggil secara posisional (compiler tidak bisa melihat
   signature-nya).
-- Biner prabangun hanya Linux x86_64.
-- npm belum menerbitkan apa pun — instalasi lewat URL GitHub.
+- Biner prabangun hanya Linux x86_64, jadi macOS/Windows/ARM membangun dari
+  sumber.
+- Sebagian builtin Python tidak punya padanan JS dan **tidak** disediakan: `any`,
+  `all`, `map`, `filter`, `getattr`, `setattr`, `hasattr`, `repr`. Build sekarang
+  gagal pada nama-nama itu alih-alih mengirim `ReferenceError` (lihat
+  [MIGRATING.md](MIGRATING.md)); padanannya `xs.some(...)` / `xs.every(...)` /
+  `xs.map(...)`.
 - File-based routing dan `hydra-lsp` masih rencana, belum ada. Dokumen lama di
   riwayat repo ini menggambarkannya seolah sudah ada; tidak.
 

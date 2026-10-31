@@ -293,7 +293,7 @@ const HYDRACONFIG_TEMPLATE: &str = r#"{
   },
   "server": {
     "port": 5173,
-    "host": "0.0.0.0"
+    "host": "127.0.0.1"
   },
   "compiler": {
     "target": "react-19",
@@ -1207,7 +1207,14 @@ export component Badge(label: str):
         let config = fs::read_to_string(target.join("hydraconfig.json")).unwrap();
         assert!(config.contains("\"name\": \"demo-app\""));
         assert!(config.contains("\"port\": 5173"));
-        assert!(config.contains("\"host\": \"0.0.0.0\""));
+        // Loopback, and this one matters. The scaffold used to write 0.0.0.0,
+        // which put every freshly generated project's dev server on all
+        // interfaces (and, on a machine with a public IP, on the internet). The
+        // runner defaults to 127.0.0.1; the scaffold must not undo that by
+        // writing a config that overrides the default. Verified before changing:
+        // this assertion failed on the old value, which is why it is pinned here.
+        assert!(config.contains("\"host\": \"127.0.0.1\""));
+        assert!(!config.contains("0.0.0.0"), "the dev server must not bind all interfaces by default");
         assert!(config.contains("\"outputDir\": \"./dist\""));
         assert!(config.contains("\"base\": \"/\""));
         assert!(config.contains("\"ssg\": true"));
