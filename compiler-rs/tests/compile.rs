@@ -1205,3 +1205,68 @@ fn test_feature_comprehension_parenthesised_tuple_target() {
     let out = comp(src);
     assert_contains(&out, &["items.map(([k, v]) => v)"]);
 }
+
+// ------------------------------------------------------------------ f-strings
+// The format spec used to be dropped silently: `f"{amount:.2f}"` compiled to
+// `${amount}`, so money rendered as `1500` where the author wrote `1500.00`.
+// These tests pin the translation, and pin that what cannot be translated is a
+// compile error rather than a quiet wrong string.
+
+#[test]
+fn test_fstring_precision_is_translated() {
+    let src = "component A(amount: float):\n    div: f\"{amount:.2f}\"\n";
+    assert_contains(&comp(src), &["${Number(amount).toFixed(2)}"]);
+}
+
+#[test]
+fn test_fstring_grouping_and_precision_together() {
+    let src = "component A(amount: float):\n    div: f\"Rp {amount:,.0f}\"\n";
+    let out = comp(src);
+    assert_contains(
+        &out,
+        &["toLocaleString('en-US'", "minimumFractionDigits: 0"],
+    );
+}
+
+#[test]
+fn test_fstring_precision_survives_a_long_expression() {
+    let src = "component A(p: float):\n    div: f\"{Math.max(0.0, 1 - p / 0.34):.3f}\"\n";
+    assert_contains(&comp(src), &[".toFixed(3)"]);
+}
+
+#[test]
+fn test_fstring_spec_after_a_dict_index() {
+    // The `:` here is inside `['a']`, so it must not be read as the separator.
+    let src = "component A(d: dict):\n    div: f\"{d['a']:>5}\"\n";
+    assert_contains(&comp(src), &["padStart(5"]);
+}
+
+#[test]
+fn test_fstring_conversion_becomes_string() {
+    let src = "component A(x: int):\n    div: f\"{x!r}\"\n";
+    assert_contains(&comp(src), &["${String(x)}"]);
+}
+
+#[test]
+fn test_fstring_unsupported_spec_is_an_error_not_a_silent_drop() {
+    let src = "component A(x: int):\n    div: f\"{x:08.3e}\"\n";
+    let err = comp_err(src);
+    let text = err.pretty();
+    assert!(
+        text.contains("unsupported format spec"),
+        "expected a spec error, got: {text}"
+    );
+}
+
+#[test]
+fn test_fstring_percent_type() {
+    let src = "component A(ratio: float):\n    div: f\"{ratio:.1%}\"\n";
+    assert_contains(&comp(src), &["* 100).toFixed(1)", "+ '%'"]);
+}
+
+#[test]
+fn test_fstring_spaces_inside_braces_are_allowed() {
+    // Python allows `{ x }`; this used to fail with "unexpected Indent".
+    let src = "component A(x: int):\n    div: f\"{ x }\"\n";
+    assert_contains(&comp(src), &["`${x}`"]);
+}

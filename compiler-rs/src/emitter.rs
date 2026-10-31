@@ -593,9 +593,34 @@ impl Emitter {
                                 out.push(c);
                             }
                         }
-                        FPart::Expr(e) => {
+                        FPart::Expr { value, conv, spec } => {
+                            let mut e = self.js(value)?;
+                            // `!r` / `!s` / `!a` ask for a string form. JS has no
+                            // repr; refusing them would break code that only
+                            // wanted plain interpolation, so they mean String().
+                            if conv.is_some() {
+                                e = format!("String({})", e);
+                            }
+                            // A format spec is TRANSLATED or refused, never
+                            // dropped: silently rendering `1500` for `.2f` is
+                            // wrong output on money, not a missing feature.
+                            if let Some(spec) = spec {
+                                e = crate::fstr::translate(spec, &e).map_err(|why| {
+                                    CompileError::new(
+                                        format!("unsupported format spec `:{}`", spec),
+                                        n.line,
+                                        n.col,
+                                        Vec::new(),
+                                    )
+                                    .with_hint(format!(
+                                        "{} — write the formatting as JS instead, e.g. `({}).toFixed(2)`",
+                                        why,
+                                        self.js(value).unwrap_or_default()
+                                    ))
+                                })?;
+                            }
                             out.push_str("${");
-                            out.push_str(&self.js(e)?);
+                            out.push_str(&e);
                             out.push('}');
                         }
                     }

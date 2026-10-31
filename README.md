@@ -13,7 +13,7 @@ HydraScript compiles indentation-based `.hyx` files to React TSX and `.hys` file
 to plain JavaScript. The compiler is a Rust binary; a small Node runner wraps
 esbuild, PostCSS and Tailwind to produce a site.
 
-Status: **0.1.0, pre-1.0.** The language works and is tested; it is not
+Status: **0.3.0, pre-1.0.** The language works and is tested; it is not
 battle-tested at scale, and the file-based router and language server described
 in older documents do not exist yet. Treat this as usable-if-you-like-it, not
 production-hardened.
@@ -540,11 +540,15 @@ Two project options exist because of what the profile showed:
 
 ## Known limitations
 
-Honest list, current as of 0.1.0:
+Honest list, current as of 0.3.0:
 
-- **f-string format specs are dropped.** `f"{x:.2f}"` compiles to
-  `` `${x}` `` — the `.2f` is silently lost. Call `x.toFixed(2)` instead. A
-  diagnostic for this is not implemented yet.
+- **f-string format specs are translated, not dropped.** `f"{x:.2f}"` compiles to
+  `Number(x).toFixed(2)`, `f"{n:,.0f}"` groups with `toLocaleString`, and `%`,
+  width, fill/align, `+`, `0` and `d`/`i`/`s` are all handled. A spec outside
+  that subset is a **compile error naming the spec**, never a silent drop.
+  `!r` / `!s` / `!a` mean `String(x)`. One caveat: `toLocaleString` rounds a
+  `.0f` tie away from zero where Python rounds to even, so `1500.5` prints
+  `1,501` rather than `1,500`.
 - No `getattr(x, "y", default)`, no multiple inheritance, no `super().method()`
   with keyword arguments.
 - Keyword arguments work for functions defined in the same file; imported

@@ -282,7 +282,14 @@ pub struct CaseArm {
 #[derive(Debug, Clone)]
 pub enum FPart {
     Lit(String),
-    Expr(Node),
+    /// One `{...}` placeholder. `spec` is the raw format-spec text and `conv` the
+    /// conversion char (`!r` / `!s` / `!a`); both are kept as written so the
+    /// emitter can translate them and the message can quote them.
+    Expr {
+        value: Node,
+        conv: Option<String>,
+        spec: Option<String>,
+    },
 }
 
 /// One `except Cls as name:` arm.

@@ -9,6 +9,7 @@ pub mod cli;
 pub mod emitter;
 pub mod error;
 pub mod fmt;
+pub mod fstr;
 pub mod hx_target;
 pub mod lexer;
 pub mod napi;

@@ -103,9 +103,24 @@ impl JsEmitter {
                                 out.push(c);
                             }
                         }
-                        FPart::Expr(e) => {
+                        FPart::Expr { value, conv, spec } => {
+                            let mut e = self.js(value)?;
+                            if conv.is_some() {
+                                e = format!("String({})", e);
+                            }
+                            if let Some(spec) = spec {
+                                e = crate::fstr::translate(spec, &e).map_err(|why| {
+                                    let msg = format!("unsupported format spec `:{}`", spec);
+                                    let hint = format!(
+                                        "{} — write the formatting as JS instead, e.g. `({}).toFixed(2)`",
+                                        why,
+                                        self.js(value).unwrap_or_default()
+                                    );
+                                    CompileError::new(msg, 0, 0, Vec::new()).with_hint(hint)
+                                })?;
+                            }
                             out.push_str("${");
-                            out.push_str(&self.js(e)?);
+                            out.push_str(&e);
                             out.push('}');
                         }
                     }

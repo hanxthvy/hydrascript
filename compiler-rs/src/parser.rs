@@ -975,11 +975,59 @@ impl Parser {
         Ok(out)
     }
 
-    /// Split an f-string token into literal runs and parsed expressions.
+    /// Split `value`, `conversion` and `format spec` out of one f-string
+    /// placeholder body, in Python's grammar order: `{value!conv:spec}`.
     ///
-    /// The expression inside `{...}` is run through the real parser, so a
-    /// Python ternary, a comprehension or a method call inside an f-string
-    /// compiles correctly instead of being copied verbatim into the JS.
+    /// A `:` only counts as the spec separator at bracket depth zero and outside
+    /// any string, so `{d['a']:>5}`, `{x if y else z}` and `{f(a, b):.2f}` all
+    /// split where a reader expects. Everything that decides a split is ASCII
+    /// (`:`, `!`, `=`, brackets, quotes) and a UTF-8 continuation byte is never
+    /// ASCII, so scanning bytes and slicing the `&str` cannot cut a char.
+    fn split_placeholder(raw: &str) -> (&str, Option<char>, &str) {
+        let b = raw.as_bytes();
+        let mut depth: i32 = 0;
+        let mut quote: Option<u8> = None;
+        let mut i = 0;
+        while i < b.len() {
+            let c = b[i];
+            if let Some(q) = quote {
+                if c == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if c == q {
+                    quote = None;
+                }
+            } else {
+                match c {
+                    b'"' | b'\'' => quote = Some(c),
+                    b'(' | b'[' | b'{' => depth += 1,
+                    b')' | b']' | b'}' => depth -= 1,
+                    b'!' if depth == 0 => {
+                        // `!=` is an operator, not a conversion.
+                        if b.get(i + 1) == Some(&b'=') {
+                            i += 2;
+                            continue;
+                        }
+                        let conv = b.get(i + 1).copied().map(|c| c as char);
+                        let spec = if b.get(i + 2) == Some(&b':') {
+                            &raw[(i + 3).min(raw.len())..]
+                        } else {
+                            ""
+                        };
+                        return (&raw[..i], conv, spec);
+                    }
+                    b':' if depth == 0 => {
+                        return (&raw[..i], None, &raw[(i + 1).min(raw.len())..]);
+                    }
+                    _ => {}
+                }
+            }
+            i += 1;
+        }
+        (raw, None, "")
+    }
+
     fn parse_fstring(&self, tok: &Token) -> PResult<Vec<crate::ast::FPart>> {
         use crate::ast::FPart;
         let raw = &tok.value;
@@ -1055,13 +1103,32 @@ impl Parser {
                         parts.push(FPart::Lit(std::mem::take(&mut lit)));
                     }
                     let expr_src: String = chars[start..j].iter().collect();
+                    // Python allows a format spec and a conversion after the
+                    // expression: `{x:.2f}`, `{x!r}`, `{x!r:>8}`. Splitting
+                    // happens here, on the raw text, so a `:` inside a dict
+                    // literal or a lambda inside `{}` is not mistaken for one.
+                    let (value_src, conv, spec_src) = Self::split_placeholder(&expr_src);
+                    let value_trimmed = value_src.trim().to_string();
+                    if value_trimmed.is_empty() {
+                        return Err(CompileError::new(
+                            "empty expression in f-string",
+                            tok.line,
+                            tok.col,
+                            self.src.clone(),
+                        )
+                        .with_hint("put a value between the braces, or double them for a literal brace"));
+                    }
                     let sub_lines: Vec<String> =
-                        expr_src.split('\n').map(|s| s.to_string()).collect();
-                    let sub_toks = crate::lexer::lex(&expr_src)?;
+                        value_trimmed.split('\n').map(|s| s.to_string()).collect();
+                    let sub_toks = crate::lexer::lex(&value_trimmed)?;
                     let mut sub = Parser::new(sub_toks, sub_lines);
                     sub.depth = self.depth;
                     let e = sub.expr()?;
-                    parts.push(FPart::Expr(e));
+                    parts.push(FPart::Expr {
+                        value: e,
+                        conv: conv.map(|c| c.to_string()),
+                        spec: (!spec_src.is_empty()).then(|| spec_src.to_string()),
+                    });
                     i = j + 1;
                 }
                 c => {
@@ -2934,7 +3001,7 @@ mod tests {
             Kind::FString(parts) => {
                 assert_eq!(parts.len(), 2);
                 assert!(matches!(parts[0], FPart::Lit(ref s) if s == "hi "));
-                assert!(matches!(parts[1], FPart::Expr(_)));
+                assert!(matches!(parts[1], FPart::Expr { .. }));
             }
             other => panic!("got {:?}", other),
         }
@@ -2946,7 +3013,7 @@ mod tests {
         let e = first_expr("component A():\n    div: f\"{'a' if x else 'b'}\"\n");
         match e.kind {
             Kind::FString(parts) => match &parts[0] {
-                FPart::Expr(n) => {
+                FPart::Expr { value: n, .. } => {
                     assert!(matches!(n.kind, Kind::Ternary { .. }), "got {:?}", n.kind)
                 }
                 other => panic!("got {:?}", other),

@@ -13,7 +13,7 @@ HydraScript mengompilasi berkas `.hyx` berbasis indentasi menjadi React TSX, dan
 berkas `.hys` menjadi JavaScript biasa. Compiler-nya biner Rust; runner Node
 kecil membungkus esbuild, PostCSS dan Tailwind untuk menghasilkan situs.
 
-Status: **0.1.0, pra-1.0.** Bahasanya bekerja dan diuji; belum teruji di skala
+Status: **0.3.0, pra-1.0.** Bahasanya bekerja dan diuji; belum teruji di skala
 besar, dan file-based router serta language server yang disebut dokumen lama
 belum ada. Anggap ini "layak dipakai kalau kamu suka", bukan tahan produksi.
 
@@ -540,10 +540,15 @@ Dua opsi proyek ada karena apa yang ditunjukkan profil:
 
 ## Keterbatasan yang diketahui
 
-Daftar jujur, per 0.1.0:
+Daftar jujur, per 0.3.0:
 
-- **Format spec f-string dibuang.** `f"{x:.2f}"` dikompilasi jadi `` `${x}` `` —
-  `.2f` hilang diam-diam. Pakai `x.toFixed(2)`. Diagnostiknya belum ada.
+- **Format spec f-string diterjemahkan, bukan dibuang.** `f"{x:.2f}"` jadi
+  `Number(x).toFixed(2)`, `f"{n:,.0f}"` mengelompokkan ribuan lewat
+  `toLocaleString`, dan `%`, lebar, fill/align, `+`, `0` serta `d`/`i`/`s` semua
+  ditangani. Spec di luar subset itu jadi **error kompilasi yang menyebut
+  specnya**, bukan hilang diam-diam. `!r` / `!s` / `!a` berarti `String(x)`.
+  Satu catatan: `toLocaleString` membulatkan tie `.0f` menjauh dari nol,
+  sedangkan Python membulatkan ke genap, jadi `1500.5` mencetak `1,501`.
 - Tidak ada `getattr(x, "y", default)`, tidak ada multiple inheritance, tidak ada
   `super().method()` dengan argumen kata kunci.
 - Argumen kata kunci bekerja untuk fungsi yang didefinisikan di berkas yang sama;
