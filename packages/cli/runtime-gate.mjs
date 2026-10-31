@@ -47,6 +47,33 @@ const SETTLE_MS = Number(process.env.HYDRA_GATE_SETTLE_MS || 900);
 /** Whole-gate budget. A hung browser must not hang the build. */
 const GATE_TIMEOUT_MS = Number(process.env.HYDRA_GATE_TIMEOUT_MS || 25000);
 
+/**
+ * Chrome flags for the gate. Exported so a test can assert them: two of these are
+ * load-bearing, not cosmetic.
+ *
+ * `--disable-webgl` in particular. On a machine with no GPU — every CI runner,
+ * the machine this was written on — `--disable-gpu` alone leaves Chrome falling
+ * back to SwiftShader, and a page with a WebGL render loop (ogl, three) starves
+ * the renderer's main thread until `Runtime.evaluate` misses its slot and dies on
+ * the CDP timeout. Measured on the portfolio: 10,001ms with WebGL on, 3ms off.
+ * The empty-shell check never ran, silently, and the build took 15s instead of 4.
+ */
+export const GATE_CHROME_FLAGS = [
+  '--headless=new',
+  '--remote-debugging-port=0',
+  '--no-first-run',
+  '--no-default-browser-check',
+  '--disable-gpu',
+  '--disable-webgl',
+  '--disable-3d-apis',
+  '--no-sandbox',
+  '--disable-dev-shm-usage',
+  '--disable-extensions',
+  '--mute-audio',
+  '--window-size=1280,900',
+  'about:blank',
+];
+
 function which(bin) {
   const dirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
   for (const d of dirs) {
@@ -137,13 +164,19 @@ class Cdp {
     const id = ++this.id;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      this.ws.send(JSON.stringify({ id, method, params }));
-      setTimeout(() => {
+      // The timeout must not keep the process alive. Node will not exit while a
+      // timer is pending, and these are never cleared on success, so a gate that
+      // finished in 2.5s still held the event loop until the 10s timer fired —
+      // measured: `gate total: 2523ms`, `wall 12593ms`. `unref()` keeps the
+      // timeout working but lets the process end as soon as the work is done.
+      const timer = setTimeout(() => {
         if (this.pending.has(id)) {
           this.pending.delete(id);
           reject(new Error(`cdp timeout: ${method}`));
         }
       }, 10000);
+      timer.unref?.();
+      this.ws.send(JSON.stringify({ id, method, params }));
     });
   }
 }
@@ -208,20 +241,9 @@ export async function runRuntimeGate({ distDir, serve }) {
 
     child = spawn(
       browser,
-      [
-        '--headless=new',
-        '--remote-debugging-port=0',
-        `--user-data-dir=${profile}`,
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--disable-gpu',
-        '--no-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-extensions',
-        '--mute-audio',
-        '--window-size=1280,900',
-        'about:blank',
-      ],
+      // The profile comes first so the array stays readable; the rest is the
+      // exported constant so nothing can silently drift from what it asserts.
+      [`--user-data-dir=${profile}`, ...GATE_CHROME_FLAGS],
       { stdio: ['ignore', 'ignore', 'pipe'] },
     );
 
@@ -325,8 +347,11 @@ export async function runRuntimeGate({ distDir, serve }) {
           `${info.rootId} rendered nothing (#${info.rootId} has no children and the body has no text)`,
         );
       }
-    } catch {
-      /* evaluate failing is not itself a finding */
+    } catch (e) {
+      // A failed probe is not a finding, but swallowing it silently is how a
+      // 10-second stall stayed invisible: the check that was supposed to notice
+      // an empty page simply never ran. Say so.
+      warnings.push(`empty-shell check could not run: ${e.message}`);
     }
 
     ws.close();

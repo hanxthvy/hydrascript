@@ -207,6 +207,22 @@ test('a build still succeeds when the code is clean', async (t) => {
   }
 });
 
+test('the runtime gate disables WebGL (a 10s stall otherwise)', async () => {
+  // Regression guard, and the reason is worth stating: a page with a WebGL render
+  // loop (ogl/three) starves the renderer's main thread on a GPU-less box when
+  // WebGL is left on, so `Runtime.evaluate` misses its slot and dies on the CDP
+  // timeout. Measured on the real portfolio: 10,001ms with WebGL, 3ms without.
+  // The empty-shell check silently never ran. Asserted from the source, because
+  // the failure is a missing flag and no behaviour test would catch a re-add.
+  const { GATE_CHROME_FLAGS } = await import('./runtime-gate.mjs');
+  assert.ok(
+    GATE_CHROME_FLAGS.includes('--disable-webgl'),
+    'runtime-gate must pass --disable-webgl or a WebGL page stalls the gate',
+  );
+  assert.ok(GATE_CHROME_FLAGS.includes('--disable-3d-apis'));
+  assert.ok(GATE_CHROME_FLAGS.includes('--headless=new'));
+});
+
 test('serveDirectory is importable without starting anything', () => {
   // Importing the runner must not open a socket; the test above imports it too,
   // and this pins the invariant so a future top-level side effect is caught.
