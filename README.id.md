@@ -16,7 +16,7 @@ HydraScript mengompilasi berkas `.hyx` berbasis indentasi menjadi React TSX, dan
 berkas `.hys` menjadi JavaScript biasa. Compiler-nya biner Rust; runner Node
 kecil membungkus esbuild, PostCSS dan Tailwind untuk menghasilkan situs.
 
-Status: **0.3.6, pra-1.0.** Bahasanya bekerja dan diuji; belum teruji di skala
+Status: **0.4.0, pra-1.0.** Bahasanya bekerja dan diuji; belum teruji di skala
 besar, dan file-based router serta language server yang disebut dokumen lama
 belum ada. Anggap ini "layak dipakai kalau kamu suka", bukan tahan produksi.
 
@@ -60,6 +60,7 @@ berani naik versi.
 - [Mengembangkan HydraScript](docs/DEVELOPING.md)
 - [SPEC.md](SPEC.md) — kontrak bahasa: apa yang dijamin, dan apa yang tidak
 - [MIGRATING.md](MIGRATING.md) — perubahan yang mematahkan, dan jalur keluarnya
+- [CHANGELOG.md](CHANGELOG.md) — isi tiap rilis, dan kenapa nomornya naik
 
 ---
 

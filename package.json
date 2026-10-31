@@ -1,6 +1,6 @@
 {
   "name": "hydrascript",
-  "version": "0.3.6",
+  "version": "0.4.0",
   "description": "Pythonic Syntax for React & Modern Web Applications \u2014 Standalone native Rust compiler with zero runtime overhead",
   "type": "module",
   "bin": {
@@ -61,7 +61,8 @@
     "README.id.md",
     "docs/",
     "SPEC.md",
-    "MIGRATING.md"
+    "MIGRATING.md",
+    "CHANGELOG.md"
   ],
   "publishConfig": {
     "access": "public"

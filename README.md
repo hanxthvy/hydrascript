@@ -16,7 +16,7 @@ HydraScript compiles indentation-based `.hyx` files to React TSX and `.hys` file
 to plain JavaScript. The compiler is a Rust binary; a small Node runner wraps
 esbuild, PostCSS and Tailwind to produce a site.
 
-Status: **0.3.6, pre-1.0.** The language works and is tested; it is not
+Status: **0.4.0, pre-1.0.** The language works and is tested; it is not
 battle-tested at scale, and the file-based router and language server described
 in older documents do not exist yet. Treat this as usable-if-you-like-it, not
 production-hardened.
@@ -59,6 +59,7 @@ stop daring to upgrade, not because of missing features.
 - [Developing HydraScript](docs/DEVELOPING.md)
 - [SPEC.md](SPEC.md) — the language contract: what is guaranteed, and what is not
 - [MIGRATING.md](MIGRATING.md) — breaking changes, and the path out of each one
+- [CHANGELOG.md](CHANGELOG.md) — what each release shipped, and why the number moved
 
 ---
 

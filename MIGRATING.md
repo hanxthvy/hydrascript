@@ -11,7 +11,12 @@ precisely when it cannot. "Some things changed" is not an entry.
 
 ---
 
-## 0.3.0 -> unreleased
+## 0.3.x -> 0.4.0
+
+The database and list sections below shipped in 0.3.4; the number only caught up
+in 0.4.0, because a change that can fail a build is a minor bump and 0.3.4 was
+published as a patch. If you are on 0.3.0 through 0.3.3, everything here applies
+to you.
 
 ### A build can now refuse to build, when a name has no runtime
 
