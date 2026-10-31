@@ -120,16 +120,48 @@ test('the vite plugin ignores files it does not own', async () => {
   assert.equal(out, null);
 });
 
-test('the vite plugin surfaces a compile error as an error, not as output', async () => {
+test('the vite plugin surfaces a compile error instead of emitting broken code', async () => {
   const dir = tmpdir('hydra-vite-err-');
   try {
     const file = path.join(dir, 'Broken.hyx');
     const source = 'component Broken(:\n    div: "x"\n';
     fs.writeFileSync(file, source);
-    const plugin = hydraVitePlugin();
-    const out = await plugin.transform(source, file);
+
+    // Real Vite provides `this.error`, which aborts the transform by throwing.
+    // Both paths are asserted: inside a Vite context the error must surface as
+    // a thrown/plugin error, and outside one it must come back as a result
+    // rather than a TypeError from inside the plugin.
+    const ctx = {
+      error(msg) {
+        throw new Error(msg);
+      },
+      info() {},
+      warn() {},
+    };
+    await assert.rejects(
+      async () => hydraVitePlugin().transform.call(ctx, source, file),
+      (e) => e.message.length > 0,
+    );
+
+    const out = await hydraVitePlugin().transform(source, file);
     assert.ok(out.error, `expected an error, got: ${JSON.stringify(out)}`);
     assert.ok(out.error.message.length > 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the vite plugin works with no plugin context at all', async (t) => {
+  const esbuild = loadEsbuild();
+  if (!esbuild) return t.skip('esbuild not installed');
+  const dir = tmpdir('hydra-vite-noctx-');
+  try {
+    const file = path.join(dir, 'App.hyx');
+    const source = 'component App():\n    div: "ok"\n';
+    fs.writeFileSync(file, source);
+    const out = await hydraVitePlugin().transform(source, file);
+    assert.equal(out.error, undefined, JSON.stringify(out));
+    assert.ok(out.code.includes('div') || out.code.includes('jsx'), out.code);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

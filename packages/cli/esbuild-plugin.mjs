@@ -162,79 +162,9 @@ export function hydraEsbuildPlugin(opts = {}) {
   };
 }
 
-/**
- * Vite plugin.
- *
- * ```js
- * import react from '@vitejs/plugin-react';
- * import { hydraVitePlugin } from 'hydrascript/vite';
- * export default { plugins: [hydraVitePlugin(), react()] };
- * ```
- *
- * `enforce: 'pre'` matters: the compile must see the `.hyx` source before any
- * other plugin tries to interpret it. React fast refresh is not included here;
- * @vitejs/plugin-react provides it for the JSX that comes out.
- */
-export function hydraVitePlugin(opts = {}) {
-  const { compile } = createHydraCompiler(opts);
-  // Vite decides how to parse a module from its EXTENSION, and `.hyx` is not in
-  // its list of JS/JSX extensions. Returning TSX from `transform` therefore gets
-  // handed straight to Rollup's parser, which fails on the first `<div>` with a
-  // PARSE_ERROR. So the JSX has to be stripped here, and the module comes out as
-  // plain JS — which is also how single-file-component plugins do it.
-  let esbuildPromise = null;
-  async function getEsbuild() {
-    if (!esbuildPromise) {
-      esbuildPromise = (async () => {
-        try {
-          const mod = await import(selfRequire.resolve('esbuild'));
-          return mod.default ?? mod;
-        } catch {
-          return null;
-        }
-      })();
-    }
-    return esbuildPromise;
-  }
-
-  return {
-    name: 'hydra',
-    enforce: 'pre',
-    async transform(code, id) {
-      const file = id.split('?')[0];
-      const isComponent = COMPONENT_EXT.test(file);
-      if (!isComponent && !SCRIPT_EXT.test(file)) return null;
-      const res = compile(file, code);
-      if (res.error) {
-        // Vite wants the error to carry the position so the overlay points at
-        // the right line; `hydra` errors already read `file:line:col: ...`.
-        return { code: '', map: null, error: { message: res.error } };
-      }
-      const compiled = rewriteDynamicImports(res.code);
-      if (!isComponent) return { code: compiled, map: null };
-
-      const esbuild = await getEsbuild();
-      if (!esbuild) {
-        // Without esbuild the JSX cannot be lowered, and returning it anyway
-        // would produce a PARSE_ERROR that points at Vite instead of at the
-        // real cause.
-        return {
-          code: '',
-          map: null,
-          error: {
-            message:
-              'hydra: esbuild is required to use .hyx with Vite (it lowers the JSX, which Vite does not do for a non-.tsx id). Install esbuild.',
-          },
-        };
-      }
-      const out = await esbuild.transform(compiled, {
-        loader: 'tsx',
-        jsx: 'automatic',
-        // Keep line numbers stable so the overlay and stack traces stay useful.
-        minify: false,
-        sourcemap: false,
-      });
-      return { code: out.code, map: null };
-    },
-  };
-}
+// The Vite plugin lives in `vite-plugin/` (package `vite-plugin-hydrascript`)
+// rather than here, because it is published separately and has its own
+// package.json, peer dependency and binary. One implementation, not two:
+// the earlier split of responsibility is what let `.hsx` work with Vite while
+// `.hyx` did not.
+export { hydrascript as hydraVitePlugin } from '../../vite-plugin/index.js';

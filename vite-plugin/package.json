@@ -14,6 +14,9 @@
   "peerDependencies": {
     "vite": ">=5"
   },
+  "dependencies": {
+    "esbuild": "^0.25.0"
+  },
   "keywords": [
     "vite",
     "vite-plugin",
