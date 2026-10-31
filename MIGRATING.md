@@ -13,6 +13,31 @@ precisely when it cannot. "Some things changed" is not an entry.
 
 ## 0.3.0 -> unreleased
 
+### A build can now refuse to build, when a name has no runtime
+
+**Behaviour change: possible build failures on code that used to compile.**
+
+`hydra build` runs the semantic checker over `src/` before bundling and stops if
+it finds a name no runtime provides (`any`, `all`, `map`, `filter`, `getattr`,
+`setattr`, `hasattr`, `repr`, `frozenset`, `dict`, `tuple`, `set`). Those always
+compiled to a call to something that does not exist; the difference is that the
+failure used to reach the browser instead of the terminal.
+
+The runtime gate cannot catch these on its own. It renders the page, so it only
+sees code a render actually executes — the same call inside an event handler, or
+on a branch that render does not take, built successfully and shipped a crash.
+
+If a build now fails:
+
+- Fix the name. `len(d)` is fine; `len(any(xs))` is not, because `any` is Python
+  and has no JavaScript equivalent here.
+- `HYDRA_NO_CHECK=1 hydra build` builds anyway. `hydra check src/` reports the
+  same findings without failing.
+
+Nothing else changes: `hydra check` without `--strict` is still advisory, and a
+warning alone never fails a build.
+
+
 ### Emitted prop types for `list` and `dict` are now valid TypeScript
 
 **Breaking for a TypeScript consumer, in a way that was already broken.**
