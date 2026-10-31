@@ -597,6 +597,12 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   phase('1. load bundler deps', _p);
 
   // 1. Discover entrypoint
+  //
+  // Four names are accepted, in this order. If more than one exists the first
+  // wins, and that used to happen in silence: a project with both `main.hyx`
+  // and `index.hyx` built from `main.hyx` while `index.hyx` sat there looking
+  // equally like the entrypoint. Say so instead — the wrong entrypoint
+  // produces a site that builds fine and shows the wrong app.
   const entryCandidates = [
     path.join(cwd, 'src/main.hyx'),
     path.join(cwd, 'src/main.hsx'),
@@ -605,7 +611,19 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   ];
   const entryPoint = entryCandidates.find((f) => fs.existsSync(f));
   if (!entryPoint) {
-    throw new Error('[hydra] Entrypoint not found: expected src/main.hyx');
+    const names = entryCandidates.map((f) => path.relative(cwd, f)).join(', ');
+    throw new Error(`[hydra] Entrypoint not found. Create one of: ${names}`);
+  }
+  const otherEntries = entryCandidates
+    .filter((f) => fs.existsSync(f) && f !== entryPoint)
+    .map((f) => path.relative(cwd, f));
+  if (otherEntries.length > 0) {
+    // Honest ambiguity, not an error: the build is deterministic, the author's
+    // intent may not be.
+    console.log(
+      `[hydra] warning: using ${path.relative(cwd, entryPoint)} as the entrypoint; ` +
+        `also found ${otherEntries.join(', ')}. Delete the unused one to silence this.`,
+    );
   }
 
   // 2. Discover the runtime
@@ -655,6 +673,9 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     config.rendering?.ssg !== false &&
     !opts.dev &&
     process.env.HYDRA_NO_SSG !== '1';
+  // Runtime gate: on by default for a production build, never during `dev`
+  // (a browser per rebuild would make the loop unusable), and skippable.
+  const gateWanted = !opts.dev && process.env.HYDRA_NO_GATE !== '1';
   const ssgEntry = ssgWanted
     ? ssgEntryCandidates.find((f) => fs.existsSync(f))
     : undefined;
@@ -978,6 +999,39 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   const ms = Date.now() - t0;
   console.log(`[hydra] Built successfully in ${ms}ms -> ${path.relative(cwd, outDir)}/`);
   phaseReport(ms);
+
+  // 6. Runtime gate. The build reporting success while the page throws is the
+  //    failure this catches, and it is invisible everywhere else: the compiler
+  //    validated what it emitted, this validates what actually runs.
+  if (gateWanted) {
+    const { runRuntimeGate } = await import('./runtime-gate.mjs');
+    const gate = await runRuntimeGate({
+      distDir: outDir,
+      serve: (dir) => serveDirectory(dir, 0, '127.0.0.1'),
+    });
+    if (gate.skipped) {
+      console.log(`[hydra] runtime gate skipped: ${gate.skipped}`);
+    } else if (gate.ok) {
+      const extra = gate.warnings.length
+        ? ` (${gate.warnings.length} console warning(s))`
+        : '';
+      console.log(`[hydra] runtime gate passed: no uncaught exceptions${extra}`);
+      for (const w of gate.warnings.slice(0, 5)) {
+        console.log(`  warning: ${w}`);
+      }
+    } else {
+      console.error(
+        `[hydra] runtime gate FAILED: the page threw ${gate.exceptions.length} exception(s)`,
+      );
+      for (const e of gate.exceptions) console.error(`  ${e}`);
+      for (const w of gate.warnings.slice(0, 5)) console.error(`  warning: ${w}`);
+      console.error(
+        '  = help: the bundle builds but does not run. To ship anyway: HYDRA_NO_GATE=1 hydra build',
+      );
+      process.exitCode = 1;
+      throw new Error('[hydra] runtime gate failed');
+    }
+  }
 }
 
 const MIME_TYPES = {

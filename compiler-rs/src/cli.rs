@@ -10,6 +10,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use crate::compile;
+use crate::check_source;
 
 fn find_hydraconfig() -> Option<PathBuf> {
     let mut current = std::env::current_dir().ok()?;
@@ -165,7 +166,16 @@ pub fn run_script(args: &[String]) -> ExitCode {
     let file_idx = args.iter().position(|a| a == &file_str).unwrap_or(0);
     let script_args = &args[file_idx + 1..];
 
-    let parent_dir = file_arg.parent().unwrap_or_else(|| Path::new("."));
+    // `Path::parent` of a bare filename ("script.hys") is `Some("")`, not
+    // `None`, and spawning a child with an empty `current_dir` fails with
+    // ENOENT — which surfaced as "neither node nor bun runtime found" even
+    // though node was installed. Normalise to "." so `hydra run script.hys`
+    // works from the directory holding the file.
+    let parent_dir: PathBuf = match file_arg.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    let spawn_dir = parent_dir.clone();
 
     let use_bun = code.contains("bun:")
         || code.contains("Bun.")
@@ -174,7 +184,7 @@ pub fn run_script(args: &[String]) -> ExitCode {
 
     let spawn_bun = || {
         std::process::Command::new("bun")
-            .current_dir(parent_dir)
+            .current_dir(spawn_dir.clone())
             .arg("-")
             .args(script_args)
             .stdin(std::process::Stdio::piped())
@@ -185,7 +195,7 @@ pub fn run_script(args: &[String]) -> ExitCode {
 
     let spawn_node = || {
         std::process::Command::new("node")
-            .current_dir(parent_dir)
+            .current_dir(spawn_dir.clone())
             .arg("--input-type=module")
             .arg("-")
             .args(script_args)
@@ -546,6 +556,7 @@ pub fn repl() -> ExitCode {
 fn check(args: &[String]) -> ExitCode {
     let files = targets(args);
     let mut errors = 0usize;
+    let mut warnings = 0usize;
     for path in &files {
         let Ok(src) = fs::read_to_string(path) else {
             continue;
@@ -556,12 +567,34 @@ fn check(args: &[String]) -> ExitCode {
         if let Err(e) = compile(&src, &name) {
             eprintln!("{}", e.pretty());
             errors += 1;
+            continue;
+        }
+        // Semantic findings, on the same command: `hydra check` is the one
+        // place a reader expects "is this file sane?" to be answered.
+        match check_source(&src) {
+            Ok(ws) => {
+                for w in &ws {
+                    eprintln!("{}", w.render(&path.to_string_lossy()));
+                }
+                warnings += ws.len();
+            }
+            Err(e) => eprintln!("{}", e.pretty()),
         }
     }
     if errors > 0 {
         eprintln!("\n{} error(s) found", errors);
         return ExitCode::from(1);
     }
-    println!("\x1b[32mclean\x1b[0m: {} file(s) checked", files.len());
+    if warnings > 0 {
+        // Warnings never change the exit code: a build with warnings still
+        // produces the right bundle, and CI should not red on a style finding.
+        println!(
+            "\x1b[32mclean\x1b[0m: {} file(s) checked, \x1b[33m{} warning(s)\x1b[0m",
+            files.len(),
+            warnings
+        );
+    } else {
+        println!("\x1b[32mclean\x1b[0m: {} file(s) checked", files.len());
+    }
     ExitCode::SUCCESS
 }

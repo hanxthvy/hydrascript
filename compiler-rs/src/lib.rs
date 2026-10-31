@@ -5,6 +5,7 @@
 //! can call the compiler in-process instead of shelling out to the binary.
 
 pub mod ast;
+pub mod check;
 pub mod cli;
 pub mod emitter;
 pub mod error;
@@ -18,7 +19,31 @@ pub mod scaffold;
 pub mod tools;
 pub mod validate;
 
+pub use check::Warning;
 pub use error::CompileError;
+
+/// Parse a source and run the semantic checks, without emitting.
+///
+/// Parsing twice (once here, once for the emit) is deliberate: it keeps
+/// `compile_for` — which every target, the CLI, the napi binding and the tests
+/// go through — untouched, so a warning can never change what the compiler
+/// produces. Warnings are advisory by construction.
+pub fn check_source(src: &str) -> Result<Vec<Warning>, CompileError> {
+    let lines: Vec<String> = src.split('\n').map(|s| s.to_string()).collect();
+    let toks = lexer::lex(src)?;
+    let module = parser::Parser::new(toks, lines).module()?;
+    Ok(check::check(&module))
+}
+
+/// `compile`, plus the semantic warnings for the same source.
+pub fn compile_checked(
+    src: &str,
+    filename: &str,
+) -> Result<(String, String, Vec<Warning>), CompileError> {
+    let (code, map) = compile(src, filename)?;
+    let warnings = check_source(src)?;
+    Ok((code, map, warnings))
+}
 
 /// Which output language to emit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

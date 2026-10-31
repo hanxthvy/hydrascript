@@ -282,7 +282,7 @@ fn scan(dir: &Path) -> RepoStats {
 // ---------------------------------------------------------------------------
 
 const HYDRACONFIG_TEMPLATE: &str = r#"{
-  "$schema": "https://hydrascript.dev/schema.json",
+  "$schema": "https://raw.githubusercontent.com/hanxthvy/hydrascript/main/schema.json",
   "name": "__NAME__",
   "version": "0.1.0",
   "root": "./src",

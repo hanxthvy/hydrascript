@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/hanxthvy/hydrascript/main/schema.json",
+  "title": "HydraScript project configuration",
+  "description": "Schema for hydraconfig.json. Keys the current runner ignores are still listed, and their description says so, so an editor never promises behaviour the tool does not have.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Points at this file. Editors use it for completion and validation."
+    },
+    "name": { "type": "string", "description": "Project name, used in scaffolding output." },
+    "version": { "type": "string", "description": "Project version string." },
+    "base": {
+      "type": "string",
+      "description": "Asset URL prefix. \"sub\", \"/sub\" and \"/sub/\" are equivalent. An absolute URL (a CDN) is kept verbatim."
+    },
+    "outputDir": {
+      "type": "string",
+      "default": "./dist",
+      "description": "Directory the build writes to, relative to the project root."
+    },
+    "mode": {
+      "enum": ["development", "production"],
+      "description": "Overrides the build mode. Usually left to hydra dev / hydra build."
+    },
+    "tailwind": {
+      "type": "object",
+      "description": "Merged into the Tailwind configuration. `content` is extended with index.html and src/**, not replaced."
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Development and preview server settings.",
+      "properties": {
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 5173,
+          "description": "Port to serve on. `--port N` on dev/preview overrides it."
+        },
+        "host": {
+          "type": "string",
+          "default": "0.0.0.0",
+          "description": "Bind address."
+        },
+        "proxy": {
+          "type": "object",
+          "description": "Path-prefix to backend mapping, matched like Vite's server.proxy. A backend that is down returns 502, not a crash.",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "compiler": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Compiler options.",
+      "properties": {
+        "jsxInJs": {
+          "type": "boolean",
+          "default": true,
+          "description": "Treat .js files as JSX. Set false if a .js file in your project contains something esbuild would misread as JSX."
+        },
+        "target": {
+          "type": "string",
+          "description": "NOT USED YET. Accepted and validated, but the current runner always compiles for react-18 and does not switch on this value."
+        },
+        "strict": {
+          "type": "boolean",
+          "description": "NOT USED YET. Accepted and validated, but no compile-time semantic checks exist yet, so setting this changes nothing. Do not rely on it to catch mistakes."
+        }
+      }
+    },
+    "rendering": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Output rendering.",
+      "properties": {
+        "ssg": {
+          "type": "boolean",
+          "default": false,
+          "description": "Pre-render the HTML at build time by running the app server-side and injecting the result into dist/index.html. Never runs during hydra dev. Set HYDRA_NO_SSG=1 to skip it for one build."
+        }
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sourcemap": {
+          "type": "boolean",
+          "default": true,
+          "description": "Emit source maps for the client bundle."
+        }
+      }
+    },
+    "root": {
+      "type": "string",
+      "description": "NOT USED YET. Accepted and validated, but the runner always reads sources from ./src."
+    },
+    "entries": {
+      "type": "object",
+      "description": "NOT USED YET. Accepted and validated, but the entrypoint is always the first of src/main.hyx, src/main.hsx, src/index.hyx, src/index.hsx that exists.",
+      "additionalProperties": { "type": "string" }
+    },
+    "styling": {
+      "type": "object",
+      "description": "NOT USED YET. Accepted and validated, but this key is never read; Tailwind is configured through the top-level `tailwind` key.",
+      "additionalProperties": true
+    }
+  }
+}

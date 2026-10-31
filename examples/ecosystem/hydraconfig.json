@@ -1,5 +1,5 @@
 {
-  "$schema": "https://hydrascript.dev/schema.json",
+  "$schema": "https://raw.githubusercontent.com/hanxthvy/hydrascript/main/schema.json",
   "name": "ecosystem",
   "version": "0.1.0",
   "root": "./src",

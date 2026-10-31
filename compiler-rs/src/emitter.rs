@@ -560,17 +560,20 @@ impl Emitter {
                 if JS_BUILTIN_GLOBALS.contains(&name.as_str()) {
                     return false;
                 }
-                match &obj.kind {
-                    Kind::Name(id) => {
-                        if JS_BUILTIN_GLOBALS.contains(&id.as_str()) {
-                            return false;
-                        }
-                        id.chars().next().map_or(false, |c| c.is_uppercase())
-                            || name.chars().next().map_or(false, |c| c.is_uppercase())
-                            || id == "motion"
-                    }
-                    _ => name.chars().next().map_or(false, |c| c.is_uppercase()),
-                }
+                // A dotted head is an element when the MEMBER looks like a
+                // component: `Tabs.List`, `motion.div`. Member case is the
+                // right discriminator because it is the same rule the bare form
+                // uses (`stroke_text` never became a component either).
+                //
+                // Deciding this on the OBJECT being uppercase was wrong and
+                // silent: `SignupSchema.safeParse({...})` was emitted as the JSX
+                // element `<SignupSchema.safeParse>{...}</SignupSchema.safeParse>`,
+                // which drops the receiver, so `safeParse` ran with
+                // `this === undefined` and threw at runtime while the build
+                // reported success.
+                matches!(&obj.kind, Kind::Name(_) | Kind::Attr { .. })
+                    && (name.chars().next().is_some_and(|c| c.is_uppercase())
+                        || HTML_TAGS.contains(&name.as_str()))
             }
             _ => false,
         }

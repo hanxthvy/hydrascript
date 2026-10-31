@@ -1270,3 +1270,34 @@ fn test_fstring_spaces_inside_braces_are_allowed() {
     let src = "component A(x: int):\n    div: f\"{ x }\"\n";
     assert_contains(&comp(src), &["`${x}`"]);
 }
+
+// A dotted call is an element only for `motion.<tag>`. Treating any uppercase
+// object as an element dropped the receiver: `SignupSchema.safeParse({...})`
+// was emitted as a JSX element, so `safeParse` ran with `this === undefined`
+// and threw at runtime while the build reported success.
+#[test]
+fn test_dotted_call_keeps_its_receiver() {
+    let src = "from \"zod\" import z\nS = z.safeParse({\"a\": 1})\ncomponent A():\n    div: \"x\"\n";
+    let out = comp(src);
+    assert_contains(&out, &["z.safeParse("]);
+    assert!(
+        !out.contains("<z.safeParse"),
+        "receiver was turned into a JSX element:\n{out}"
+    );
+}
+
+#[test]
+fn test_motion_element_still_compiles_as_an_element() {
+    let src = "component A():\n    motion.div(animate={\"x\": 1}):\n        span: \"child\"\n";
+    let out = comp(src);
+    assert_contains(&out, &["<motion.div"]);
+    assert_contains(&out, &["</motion.div>"]);
+}
+
+#[test]
+fn test_method_call_on_an_uppercase_object_is_a_call() {
+    let src = "component A():\n    def go():\n        Math.max(1, 2)\n        console.log(\"x\")\n    div: \"y\"\n";
+    let out = comp(src);
+    assert_contains(&out, &["Math.max(1, 2)"]);
+    assert_contains(&out, &["console.log(\"x\")"]);
+}

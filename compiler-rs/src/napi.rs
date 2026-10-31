@@ -4,7 +4,13 @@
 //! Enables in-process compilation — no subprocess spawn, no IPC — for Node.js
 //! tools (bundlers, editors, the runner).
 
-use crate::compile;
+use crate::compile_checked;
+
+/// Node export: `compile(source, filename): { code?, map?, error?, warnings? }`
+///
+/// `warnings` is the rendered semantic findings, one per line, empty when there
+/// are none. A single string rather than an array so the binding needs no new
+/// Node-API calls; the caller splits it.
 
 type NapiEnv = *mut std::ffi::c_void;
 type NapiValue = *mut std::ffi::c_void;
@@ -73,6 +79,7 @@ unsafe fn make_string(env: NapiEnv, s: &str) -> NapiValue {
 }
 
 /// Node export: `compile(source: string, filename: string): { code?: string, map?: string, error?: string }`
+/// Node export: `compile(source: string, filename: string): { code?: string, map?: string, error?: string, warnings?: string }`
 pub unsafe extern "C" fn node_compile(env: NapiEnv, info: NapiCallbackInfo) -> NapiValue {
     let mut argc = 2;
     let mut argv: [NapiValue; 2] = [std::ptr::null_mut(), std::ptr::null_mut()];
@@ -97,12 +104,24 @@ pub unsafe extern "C" fn node_compile(env: NapiEnv, info: NapiCallbackInfo) -> N
     let source = get_string(env, argv[0]);
     let filename = get_string(env, argv[1]);
 
-    match compile(&source, &filename) {
-        Ok((code, map)) => {
+    match compile_checked(&source, &filename) {
+        Ok((code, map, warnings)) => {
             let code_val = make_string(env, &code);
             let map_val = make_string(env, &map);
             napi_set_named_property(env, res_obj, b"code\0".as_ptr() as *const _, code_val);
             napi_set_named_property(env, res_obj, b"map\0".as_ptr() as *const _, map_val);
+            let rendered = warnings
+                .iter()
+                .map(|w| w.render(&filename))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let warn_val = make_string(env, &rendered);
+            napi_set_named_property(
+                env,
+                res_obj,
+                b"warnings\0".as_ptr() as *const _,
+                warn_val,
+            );
         }
         Err(err) => {
             let err_val = make_string(env, &err.pretty());

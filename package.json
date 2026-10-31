@@ -8,7 +8,9 @@
   },
   "exports": {
     ".": "./packages/cli/runner.mjs",
-    "./runner": "./packages/cli/runner.mjs"
+    "./runner": "./packages/cli/runner.mjs",
+    "./esbuild": "./packages/cli/esbuild-plugin.mjs",
+    "./vite": "./packages/cli/esbuild-plugin.mjs"
   },
   "repository": {
     "type": "git",
