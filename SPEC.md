@@ -107,6 +107,13 @@ is, not as it might become.
   emitted JS.
 - **Guaranteed.** List, dict and set comprehensions, with tuple targets, compile
   to the corresponding `map`/`reduce`/`Set` form.
+- **Guaranteed.** A destructuring assignment declares: `a, b = pair()` and
+  `[a, b] = pair()` are the same construct in two spellings and both emit
+  `const [a, b] = pair();` (or `let` where the names are mutable). This matters
+  because `[n, set_n] = useState(0)` is the bracketed form React's own docs teach
+  for hooks.
+- **Guaranteed.** `a, b = b, a` where both names already exist is a plain
+  assignment, not a redeclaration, so a swap works.
 - **Guaranteed.** `//` is floor division and emits `Math.floor(a / b)`.
 - **Guaranteed.** A bare use of a Python builtin is only legal when the compiler
   honours it, which means one of: it is lowered to JavaScript (`len`, `print`,
