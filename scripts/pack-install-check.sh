@@ -16,6 +16,12 @@
 
 set -uo pipefail
 
+# `npm publish --dry-run` exports npm_config_dry_run=true, and every child npm
+# call inherits it — so `npm pack` produced no tarball and `npm install` installed
+# nothing, making this whole check pass vacuously while asserting nothing. Clear
+# it for the duration; this script must do real work regardless of who calls it.
+unset npm_config_dry_run npm_config_dry_run_ 2>/dev/null || true
+
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d)"
 FAILED=0
