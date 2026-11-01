@@ -458,6 +458,12 @@ pub struct Scope {
     /// declared by the time the body runs, so re-declaring one (`let [a, b] = ...`
     /// inside a function that takes `a, b`) is a SyntaxError.
     pub params: HashSet<String>,
+    /// Whether each name needs `let` rather than `const`. A `let` is required when
+    /// the name is assigned more than once, is the target of `+=`, or is written
+    /// from inside a nested function. This is the ONE thing the `.hys` emitter
+    /// (hx_target.rs) needs from the scope; the other fields below exist for the
+    /// `.hyx` emitter's tree/component handling.
+    pub mutable: HashSet<String>,
     pub assign_counts: HashMap<String, usize>,
     pub aug_assigned: HashSet<String>,
     /// Names assigned from inside a nested function in this body.
@@ -509,6 +515,15 @@ impl Scope {
         // excluding them keeps a module-level `maskCount = 0` mutable when a component
         // callback does `maskCount += 1`.
         collect_closure_writes(nodes, &mut self.nested_assigned);
+
+        // `.hys` needs one thing from this scan: which names need `let`. Fill it
+        // here so hx_target.rs does not have to duplicate the scan.
+        for n in self.assigned_anywhere.iter() {
+            let banyak = self.assign_counts.get(n).copied().unwrap_or(0) > 1;
+            if banyak || self.aug_assigned.contains(n) || self.nested_assigned.contains(n) {
+                self.mutable.insert(n.clone());
+            }
+        }
     }
 
     /// Record one assignment target (a plain name, or every name inside a
