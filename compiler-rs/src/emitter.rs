@@ -773,6 +773,16 @@ pub struct Emitter {
     /// Python, `Foo(1)` constructs an instance.
     pub class_names: std::cell::RefCell<std::collections::HashSet<String>>,
     pub head_lines: Vec<String>,
+    /// Function names declared by a top-level `export def` in a `.hyx`.
+    ///
+    /// `export function` is hoisted JavaScript, so the declaration may sit after its
+    /// own body text. That is what makes it possible to define one module-level
+    /// `def` in terms of another regardless of order: the body of the exported
+    /// function is emitted where the `export def` appears, but any `def` it calls is
+    /// queued on `head_lines` and written above. Without this, the `Kind::Export`
+    /// arm emitted nothing whatsoever for a `.hyx` — the statement vanished and the
+    /// build reported success.
+    pub exported_decls: std::cell::RefCell<Vec<(String, String)>>,
     pub scopes: Vec<Scope>,
     /// Monotonic counter behind `fresh_var`.
     pub tmp_counter: u32,
@@ -817,6 +827,7 @@ impl Emitter {
             walrus_names: std::cell::RefCell::new(HashSet::new()),
             class_names: std::cell::RefCell::new(std::collections::HashSet::new()),
             head_lines: Vec::new(),
+            exported_decls: std::cell::RefCell::new(Vec::new()),
             scopes: Vec::new(),
             tmp_counter: 0,
             base_dir: None,
@@ -2196,6 +2207,45 @@ impl Emitter {
                 }
                 self.depth -= 1;
                 self.w("}");
+            }
+            // `export def` in a `.hyx`. This arm did not exist, so the statement
+            // fell into the catch-all `_ => {}` and VANISHED — the function was not
+            // emitted at all, the build reported success, and the only symptom was a
+            // missing name at run time. `.hyx` is compiled by this emitter; the
+            // `Kind::Export` arm in `hx_target.rs` serves `.hys` and never ran here.
+            Kind::Export(inner) => {
+                match &inner.kind {
+                    Kind::Def { name, params, body } | Kind::AsyncDef { name, params, body } => {
+                        let ps = self.format_params(params)?;
+                        let kw = if matches!(&inner.kind, Kind::AsyncDef { .. }) {
+                            "async "
+                        } else {
+                            ""
+                        };
+                        self.w(&format!("export const {} = {}({}) => {{", name, kw, ps));
+                        self.depth += 1;
+                        let mut scope = Scope::scan(body);
+                        for p in params {
+                            let bare = p.name.trim_start_matches("...").to_string();
+                            scope.params.insert(bare);
+                            scope.declared.insert(p.name.trim_start_matches("...").to_string());
+                        }
+                        self.push_scope(scope);
+                        self.hoist_nested_assignments();
+                        for stmt in body {
+                            self.stmt(stmt)?;
+                        }
+                        self.scopes.pop();
+                        self.depth -= 1;
+                        self.w("};");
+                    }
+                    // `export class X:` and `export const x = ...` keep their own
+                    // arms; delegate so the prefix is not lost.
+                    _ => {
+                        let inner_src = self.js(inner)?;
+                        self.w(&format!("export {}", inner_src));
+                    }
+                }
             }
             // `@deco` on a `def`: define first, then apply — Python's order.
             Kind::DecoratedDef { decorators, inner } => {

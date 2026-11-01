@@ -50,6 +50,15 @@ pub struct JsEmitter {
     /// Python, `Foo(1)` constructs an instance.
     pub class_names: std::cell::RefCell<std::collections::HashSet<String>>,
     pub head_lines: Vec<String>,
+    /// Saat tidak kosong, `w()` menulis ke sini, bukan ke `lines`. Dipakai untuk
+    /// merakit badan sebuah `export def` lebih dulu supaya bisa diletakkan di
+    /// `head_lines` (deklarasi `export function` diangkat JavaScript, jadi badan
+    /// boleh berada di atas pemanggil-pemanggilnya).
+    pub buffer: Option<Vec<String>>,
+    /// Nama fungsi yang sudah diantrekan ke head_lines, supaya tidak dobel.
+    pub queued_decls: std::collections::HashSet<String>,
+    /// `export def` yang menunggu ditulis ke head_lines: (nama, teks).
+    pub exported_decls: Vec<(String, String)>,
     pub scopes: Vec<Scope>,
 }
 
@@ -66,6 +75,9 @@ impl JsEmitter {
             walrus_names: std::cell::RefCell::new(std::collections::HashSet::new()),
             class_names: std::cell::RefCell::new(std::collections::HashSet::new()),
             head_lines: Vec::new(),
+            buffer: None,
+            queued_decls: std::collections::HashSet::new(),
+            exported_decls: Vec::new(),
             scopes: Vec::new(),
         }
     }
@@ -139,6 +151,10 @@ impl JsEmitter {
             format!("{}{}", self.pad(), s)
         };
         let count = line.matches('\n').count() + 1;
+        if let Some(buf) = self.buffer.as_mut() {
+            buf.push(line);
+            return;
+        }
         self.lines.push(line);
         for _ in 0..count {
             self.linemap.push(self.cur_src);
@@ -1182,16 +1198,34 @@ impl JsEmitter {
             }
             Kind::Export(inner) => {
                 // `export def` -> `export function`
+                //
+                // `export function` is hoisted, so the declaration can be written
+                // into `head_lines` (above the rest of the module) while its body
+                // text is emitted here. That inversion is what lets one exported
+                // `def` call another defined later in the file.
                 match &inner.kind {
                     Kind::Def { name, params, body } => {
                         let ps: Result<Vec<String>, CompileError> =
                             params.iter().map(|p| self.param(p)).collect();
-                        self.w(&format!(
-                    "export function {}{}({}) {{",
-                    if body_has_yield(body) { "*" } else { "" },
-                    name,
-                    ps?.join(", ")
-                ));
+                        if self.queued_decls.contains(name.as_str()) {
+                            // Sudah diantre: jangan tulis dua kali.
+                            return Ok(());
+                        }
+                        self.queued_decls.insert(name.clone());
+                        // Rakit badan ke buffer, lalu pindahkan seluruhnya ke
+                        // head_lines. Urutan ini penting: badan `export def` sering
+                        // memanggil fungsi lain di modul yang sama, dan fungsi itu
+                        // belum ditulis saat baris ini diproses.
+                        let mut buf: Vec<String> = Vec::new();
+                        buf.push(format!(
+                            "export function {}{}({}) {{",
+                            if body_has_yield(body) { "*" } else { "" },
+                            name,
+                            ps?.join(", ")
+                        ));
+                        let simpan = self.lines.clone();
+                        let simpan_map = self.linemap.clone();
+                        self.lines.clear();
                         self.depth += 1;
                         let mut scope = Scope::scan(body);
                         for p in params {
@@ -1206,6 +1240,11 @@ impl JsEmitter {
                         self.scopes.pop();
                         self.depth -= 1;
                         self.w("}");
+                        let mut isi = std::mem::take(&mut self.lines);
+                        self.lines = simpan;
+                        self.linemap = simpan_map;
+                        buf.append(&mut isi);
+                        self.exported_decls.push((name.clone(), buf.join("\n")));
                     }
                     Kind::AsyncDef { name, params, body } => {
                         let ps: Result<Vec<String>, CompileError> =
@@ -1530,6 +1569,14 @@ impl JsEmitter {
         head.extend(sorted);
         head.push(String::new());
 
+        // Sisipkan `export function` yang diantre. Deklarasi fungsi diangkat
+        // JavaScript, jadi urutannya tidak masalah, dan menaruhnya di atas membuat
+        // satu def bisa memanggil def lain yang ditulis belakangan.
+        let queued = self.exported_decls.clone();
+        for (_, text) in queued.iter() {
+            head.push(text.clone());
+            head.push(String::new());
+        }
         self.head_lines = head.clone();
         Ok(format!("{}\n{}", head.join("\n"), self.lines.join("\n")))
     }
