@@ -39,6 +39,12 @@ Measured before: 65 of 218 rendered. This release moves it past 92.
   used them — a `const`, hence unusable. They are now written above the body.
 - A helper whose level belongs to a nested body was drained at file scope instead,
   which put its declaration below its own call site.
+- `z.object({...})` compiled to the JSX element `<z.object>{...}</z.object>`. The
+  receiver was dropped, so `SignupSchema` was a React element and `safeParse` was
+  undefined at runtime. `object` is both a real HTML element and a very common member
+  name; it now goes through `MEMBER_METHOD_NAMES`, the same list `map`, `filter` and
+  `select` already use, so the bare form stays an element and the member form is a
+  call. Found by `scripts/hx-examples-check.sh` in CI — no unit test covered it.
 
 ### Changed
 - `vite-plugin/package.json` reported `0.1.0` while the root package reported `0.4.0`;

@@ -170,6 +170,13 @@ pub static MEMBER_METHOD_NAMES: &[&str] = &[
     // excluding them turned every one of those into "a tree block must start with
     // an element or component".
     "map", "filter", "rect", "select", "progress", "text",
+    // `object` collides the same way `map` does: `<object>` is a real HTML element,
+    // while `z.object({...})` is a call on a lowercase receiver. The bare form stays
+    // an element (this list is only consulted for a DOTTED head), so both work.
+    // Missing it compiled `z.object({...})` as `<z.object>{...}</z.object>`, which
+    // drops the receiver — `SignupSchema` became a JSX element, so `safeParse` was
+    // undefined at runtime. Caught by the examples check, not by a test.
+    "object",
     // Array/string/object methods. Not HTML tags, so they change nothing today;
     // listed to keep the intent explicit.
     "length", "push", "pop", "slice", "splice", "concat", "join", "split", "trim",
