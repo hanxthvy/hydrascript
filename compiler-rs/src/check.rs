@@ -722,6 +722,10 @@ impl Checker {
                 self.walk(value);
                 self.bind(name);
             }
+            // A tagged template's tag is a real expression; the literal part has no
+            // children. Skipping the tag reported `useMotionTemplate` as a name used
+            // but never bound.
+            Kind::TaggedTemplate { tag, .. } => self.walk(tag),
             Kind::FString(parts) => {
                 for p in parts {
                     if let FPart::Expr { value, .. } = p {

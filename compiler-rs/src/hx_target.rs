@@ -317,6 +317,7 @@ impl JsEmitter {
             // A template literal is passed through untouched: its contents are
             // already JavaScript, and re-escaping would change the output.
             Kind::TemplateLiteral(raw) => Ok(raw.clone()),
+            Kind::TaggedTemplate { tag, raw } => Ok(format!("{}{}", self.js(tag)?, raw)),
             Kind::Await(v) => Ok(format!("await {}", self.js(v)?)),
             Kind::Slice {
                 obj,

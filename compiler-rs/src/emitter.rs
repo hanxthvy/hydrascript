@@ -9,6 +9,9 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::{Kind, Node, Param};
 use crate::error::CompileError;
 
+// Element names. A name here is rendered as a tag; anything else is an
+// expression, so a lowercase tag that is missing becomes a call and the
+// subtree fails. SVG filter primitives are included for that reason.
 pub static HTML_TAGS: &[&str] = &[
     "div",
     "span",
@@ -59,7 +62,6 @@ pub static HTML_TAGS: &[&str] = &[
     "svg",
     "iframe",
     "dialog",
-    // SVG elements
     "path",
     "g",
     "circle",
@@ -81,7 +83,6 @@ pub static HTML_TAGS: &[&str] = &[
     "radialGradient",
     "stop",
     "foreignObject",
-    // HTML5 elements
     "details",
     "summary",
     "picture",
@@ -103,9 +104,80 @@ pub static HTML_TAGS: &[&str] = &[
     "kbd",
     "blockquote",
     "address",
+    "animateMotion",
+    "animateTransform",
+    "mpath",
+    "altGlyph",
+    "glyph",
+    "textPath",
+    "feGaussianBlur",
+    "feOffset",
+    "feBlend",
+    "feColorMatrix",
+    "feComponentTransfer",
+    "feComposite",
+    "feConvolveMatrix",
+    "feDiffuseLighting",
+    "feDisplacementMap",
+    "feDropShadow",
+    "feFlood",
+    "feFuncA",
+    "feFuncB",
+    "feFuncG",
+    "feFuncR",
+    "feImage",
+    "feMerge",
+    "feMergeNode",
+    "feMorphology",
+    "feSpecularLighting",
+    "feTile",
+    "feTurbulence",
+    // SVG filter element. A method call is a member expression (`xs.filter(fn)`),
+    // which the element check never sees, so the bare name is unambiguous here.
+    "filter",
+    // Ordinary HTML that the original list omitted. `<i>` alone accounts for several
+    // components: the tag is not an element, so the whole subtree failed to compile.
+    "i", "b", "u", "s", "q", "cite", "abbr", "del", "ins", "sub", "sup", "var",
+    "samp", "data", "datalist", "output", "noscript", "map", "area", "embed",
+    "object", "param", "base", "link", "meta", "html", "head", "body", "style",
+    "script", "col", "wbr", "bdi", "bdo", "ruby", "rt", "rp", "dfn", "kbd", "samp",
+    // react-three-fiber element names. A lowercase tag that is not on this list is
+    // read as an expression, so `<group>` failed the same way an unknown HTML tag did.
+    "group", "primitive", "directionalLight", "ambientLight", "pointLight",
+    "spotLight", "hemisphereLight", "perspectiveCamera", "orthographicCamera",
+    "meshStandardMaterial", "meshPhysicalMaterial", "meshBasicMaterial",
+    "meshLambertMaterial", "meshPhongMaterial", "meshMatcapMaterial",
+    "shadowMaterial", "bufferGeometry", "boxGeometry", "planeGeometry",
 ];
 
 // [xihanzu-NR]
+/// Element names that are also ordinary JS methods, so a dotted head like
+/// `base.map(...)` must NOT be read as the JSX element `<base.map>`.
+///
+/// `map` and `filter` are real HTML tags (`<map>`, `<filter>`), and the dotted
+/// branch of `is_element` accepts any HTML tag as a member name, so a call to
+/// `array.map(...)` was emitted as an element: `<base.map>{...}</base.map>`. That
+/// drops the receiver, and the array call never happens — a runtime failure with a
+/// green build ("Cannot access 'et' before initialization" downstream).
+pub static MEMBER_METHOD_NAMES: &[&str] = &[
+    // HTML/SVG tag names that are also everyday JS methods, confirmed by the
+    // corpus: `<map>`, `<filter>`, `<rect>`, `<text>`, `<select>`, `<progress>`.
+    // A dotted head with one of these names is a call on the receiver, never the
+    // JSX element `<base.map>`.
+    //
+    // Anything that is a real member ELEMENT must stay out: `motion.button`,
+    // `motion.input` and `motion.div` are how the animation components render, and
+    // excluding them turned every one of those into "a tree block must start with
+    // an element or component".
+    "map", "filter", "rect", "select", "progress", "text",
+    // Array/string/object methods. Not HTML tags, so they change nothing today;
+    // listed to keep the intent explicit.
+    "length", "push", "pop", "slice", "splice", "concat", "join", "split", "trim",
+    "forEach", "reduce", "reduceRight", "find", "findIndex", "some", "every",
+    "sort", "reverse", "flat", "flatMap", "keys", "values", "entries", "has",
+    "add", "delete", "get", "set", "toString", "valueOf", "includes",
+];
+
 pub static JS_BUILTIN_GLOBALS: &[&str] = &[
     "Math",
     "Date",
@@ -271,6 +343,108 @@ pub fn free_func(m: &str) -> Option<&'static str> {
 
 
 // [xihanzu-NR]
+/// Every name assigned anywhere inside `nodes`, including nested functions.
+///
+/// Used to tell a closure's captures from its own bindings: a name the body assigns is
+/// either local to it or captured from an enclosing scope, and only the enclosing
+/// scope can decide which — so the set is handed up and filtered there.
+fn collect_assigned(nodes: &[Node], out: &mut HashSet<String>) {
+    for s in nodes {
+        match &s.kind {
+            Kind::Assign { target, .. } => {
+                if let Kind::Name(id) = &target.kind {
+                    out.insert(id.clone());
+                }
+            }
+            Kind::AugAssign { target, .. } => {
+                if let Kind::Name(id) = &target.kind {
+                    out.insert(id.clone());
+                }
+            }
+            Kind::TupleAssign { targets, .. } | Kind::ChainedAssign { targets, .. } => {
+                for t in targets {
+                    if let Kind::Name(id) = &t.kind {
+                        out.insert(id.clone());
+                    }
+                }
+            }
+            Kind::If { body, orelse, .. } => {
+                collect_assigned(body, out);
+                if let Some(o) = orelse {
+                    collect_assigned(o, out);
+                }
+            }
+            Kind::For { body, .. } | Kind::While { body, .. } => collect_assigned(body, out),
+            Kind::Try { body, handlers, orelse, finally } => {
+                collect_assigned(body, out);
+                for h in handlers {
+                    collect_assigned(&h.body, out);
+                }
+                if let Some(o) = orelse {
+                    collect_assigned(o, out);
+                }
+                if let Some(f) = finally {
+                    collect_assigned(f, out);
+                }
+            }
+            Kind::Match { cases, .. } => {
+                for c in cases {
+                    collect_assigned(&c.body, out);
+                }
+            }
+            Kind::Def { body, .. } | Kind::AsyncDef { body, .. } => collect_assigned(body, out),
+            _ => {}
+        }
+    }
+}
+
+/// Every name written by a function nested inside `nodes`, but none written by
+/// `nodes`' own statements.
+///
+/// This is the closure-capture test: a name in here that the enclosing scope also
+/// declares (or takes as a parameter) has to stay mutable, or the emitted `const`
+/// makes the closure's write a build error. Names the enclosing body assigns itself
+/// are deliberately absent — those are ordinary locals.
+fn collect_closure_writes(nodes: &[Node], out: &mut HashSet<String>) {
+    for s in nodes {
+        match &s.kind {
+            // A component IS a nested function: its body runs later, so a name it
+            // writes from an inner callback is a closure capture of the enclosing
+            // (module) scope. Missing this arm left a module-level `maskCount = 0`
+            // emitted as `const` while a component's callback did `maskCount += 1`
+            // ("Cannot assign to maskCount because it is a constant").
+            Kind::Def { body, .. } | Kind::AsyncDef { body, .. } | Kind::Component { body, .. } => {
+                collect_assigned(body, out);
+            }
+            Kind::If { body, orelse, .. } => {
+                collect_closure_writes(body, out);
+                if let Some(o) = orelse {
+                    collect_closure_writes(o, out);
+                }
+            }
+            Kind::For { body, .. } | Kind::While { body, .. } => collect_closure_writes(body, out),
+            Kind::Try { body, handlers, orelse, finally } => {
+                collect_closure_writes(body, out);
+                for h in handlers {
+                    collect_closure_writes(&h.body, out);
+                }
+                if let Some(o) = orelse {
+                    collect_closure_writes(o, out);
+                }
+                if let Some(f) = finally {
+                    collect_closure_writes(f, out);
+                }
+            }
+            Kind::Match { cases, .. } => {
+                for c in cases {
+                    collect_closure_writes(&c.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 #[derive(Default, Debug, Clone)]
 pub struct Scope {
     /// Names introduced by the function signature itself. They are already
@@ -279,6 +453,14 @@ pub struct Scope {
     pub params: HashSet<String>,
     pub assign_counts: HashMap<String, usize>,
     pub aug_assigned: HashSet<String>,
+    /// Names assigned from inside a nested function in this body.
+    ///
+    /// A closure that writes to an enclosing binding (`clock += dt` inside an effect)
+    /// forces that binding to stay mutable, or the emitted `const clock = 0;` is a
+    /// "Cannot assign to a constant" build error. Collected separately from
+    /// `assign_counts` because the write does not happen in THIS scope's statement
+    /// list.
+    pub nested_assigned: HashSet<String>,
     pub declared: HashSet<String>,
     /// Depth at which each name is first assigned: 0 for a direct statement of
     /// the function body, 1+ for anything inside `if:` / `for:` / `try:`.
@@ -295,6 +477,14 @@ pub struct Scope {
     pub first_assign_depth: HashMap<String, usize>,
     /// Every name assigned anywhere in this scope (excluding nested functions).
     pub assigned_anywhere: HashSet<String>,
+    /// Every name already bound by the scopes on the stack when this one was
+    /// pushed — params, declarations and assignments of every enclosing scope.
+    ///
+    /// Filled by `push_scope`. It answers one question at a plain assignment: is
+    /// this a NEW binding, or a write to something an enclosing scope already
+    /// owns? Getting that wrong emitted a shadowing `const` and put the real
+    /// variable in the temporal dead zone.
+    pub outer_bound: HashSet<String>,
 }
 
 impl Scope {
@@ -306,6 +496,12 @@ impl Scope {
 
     fn scan_nodes(&mut self, nodes: &[Node]) {
         self.scan_at(nodes, 0);
+        // Names this body's statements write, but only from inside a nested function:
+        // a closure capture. Including the body's OWN assignments here made every
+        // `x = 1` look captured and promoted it to `let` (the `const` tests caught it);
+        // excluding them keeps a module-level `maskCount = 0` mutable when a component
+        // callback does `maskCount += 1`.
+        collect_closure_writes(nodes, &mut self.nested_assigned);
     }
 
     /// Record one assignment target (a plain name, or every name inside a
@@ -365,8 +561,14 @@ impl Scope {
                         self.record_target(target, depth);
                     }
                 }
-                // A nested function is its own scope; do not inherit its names.
-                Kind::Def { .. } | Kind::AsyncDef { .. } => {}
+                // A nested function is its own scope for its own bindings, but a
+                // write to a name from the enclosing scope is a closure capture, and
+                // the enclosing binding has to stay mutable.
+                Kind::Def { body, .. } | Kind::AsyncDef { body, .. } => {
+                    let mut freed = HashSet::new();
+                    collect_assigned(body, &mut freed);
+                    self.nested_assigned.extend(freed);
+                }
                 Kind::If { body, orelse, .. } => {
                     self.scan_at(body, depth + 1);
                     if let Some(ore) = orelse {
@@ -410,7 +612,29 @@ impl Scope {
     }
 
     pub fn is_mutable(&self, id: &str) -> bool {
-        self.assign_counts.get(id).copied().unwrap_or(0) > 1 || self.aug_assigned.contains(id)
+        if self.assign_counts.get(id).copied().unwrap_or(0) > 1 || self.aug_assigned.contains(id) {
+            return true;
+        }
+        // A binding this scope declares and a nested function writes to must be `let`.
+        self.nested_assigned.contains(id)
+            && (self.params.contains(id) || self.assign_counts.contains_key(id))
+    }
+
+    /// Does any scope ENCLOSING the innermost one already bind this name?
+    ///
+    /// If it does, an assignment in the innermost scope is a write to that outer
+    /// binding, not a new declaration. Emitting `const x = ...` there created a
+    /// shadowing binding: the outer variable kept its old value, the inner one sat
+    /// in the temporal dead zone, and the next read threw
+    /// `Cannot access 'x' before initialization`. That single mistake accounted for
+    /// the largest class of blank cards in the React Bits port — an effect would
+    /// call `start()` and `start` would assign the effect-local `raf` instead of the
+    /// one the animation loop reads.
+    ///
+    /// The enclosing scopes are the ones below the top of the stack; the innermost
+    /// scope is excluded because a name it binds is this statement's own binding.
+    pub fn bound_in_enclosing(&self, id: &str) -> bool {
+        self.outer_bound.contains(id)
     }
 }
 
@@ -422,6 +646,10 @@ impl Scope {
         let mut v: Vec<String> = self
             .assigned_anywhere
             .iter()
+            // A name the signature already binds is declared by the parameter list;
+            // hoisting it again emitted `function f(el) { let el; ... }`, a
+            // "symbol has already been declared" build error.
+            .filter(|n| !self.params.contains(*n))
             .filter(|n| self.first_assign_depth.get(*n).copied().unwrap_or(0) > 0)
             .cloned()
             .collect();
@@ -512,9 +740,37 @@ pub struct Emitter {
     pub class_names: std::cell::RefCell<std::collections::HashSet<String>>,
     pub head_lines: Vec<String>,
     pub scopes: Vec<Scope>,
+    /// Monotonic counter behind `fresh_var`.
+    pub tmp_counter: u32,
 }
 
 impl Emitter {
+    /// Push a scope onto the stack, recording every name the enclosing scopes bind.
+    ///
+    /// Doing it at push time keeps a plain assignment O(1): the emitter needs to know
+    /// whether `raf = ...` inside a callback creates a binding or writes the `let raf`
+    /// declared by the component body, and scanning the whole stack per statement
+    /// would be both slower and easier to get wrong.
+    /// Does the innermost scope's enclosing chain already bind this name?
+    /// Forwarded to `Scope` so the assignment path stays readable.
+    fn bound_in_enclosing(&self, id: &str) -> bool {
+        self.scopes
+            .last()
+            .map(|s| s.bound_in_enclosing(id))
+            .unwrap_or(false)
+    }
+
+    fn push_scope(&mut self, mut scope: Scope) {
+        let mut bound = HashSet::new();
+        for s in &self.scopes {
+            bound.extend(s.params.iter().cloned());
+            bound.extend(s.declared.iter().cloned());
+            bound.extend(s.assigned_anywhere.iter().cloned());
+        }
+        scope.outer_bound = bound;
+        self.scopes.push(scope);
+    }
+
     pub fn new() -> Self {
         Self {
             lines: Vec::new(),
@@ -528,6 +784,7 @@ impl Emitter {
             class_names: std::cell::RefCell::new(std::collections::HashSet::new()),
             head_lines: Vec::new(),
             scopes: Vec::new(),
+            tmp_counter: 0,
             base_dir: None,
         }
     }
@@ -539,8 +796,46 @@ impl Emitter {
         self
     }
 
+    /// The name after `new`.
+    ///
+    /// `js()` routes a capitalised callee to the JSX element path, so `new THREE.Box3()`
+    /// used to print as `new <THREE.Box3 />` — a `new` with nothing to construct. After
+    /// `new` the target is always a constructor, so the dotted chain is printed as the
+    /// member expression it is.
+    fn ctor_name(&self, n: &Node) -> Result<String, CompileError> {
+        match &n.kind {
+            Kind::Attr { obj, name } => Ok(format!("{}.{}", self.ctor_name(obj)?, str_method(name))),
+            // A call inside a constructor chain: `new THREE.Box3().setFromObject(o)`.
+            // The intervening call must be printed here too, because its own callee is
+            // a capitalised member that `js()` would take for a JSX element.
+            Kind::Call { func, args, kwargs } => {
+                let f = self.ctor_name(func)?;
+                let mut all: Vec<String> = Vec::new();
+                for a in args {
+                    all.push(self.js(a)?);
+                }
+                if !kwargs.is_empty() {
+                    let mut props: Vec<String> = Vec::new();
+                    for (k, v) in kwargs {
+                        props.push(format!("{}: {}", prop_map(k), self.js(v)?));
+                    }
+                    all.push(format!("{{ {} }}", props.join(", ")));
+                }
+                Ok(format!("{}({})", f, all.join(", ")))
+            }
+            _ => self.js(n),
+        }
+    }
+
     fn pad(&self) -> String {
         "  ".repeat(self.depth)
+    }
+
+    /// A name no source binding can collide with. Used for the temporary a
+    /// `try/else` needs; the counter is per-emitter so two blocks never share one.
+    fn fresh_var(&mut self, hint: &str) -> String {
+        self.tmp_counter += 1;
+        format!("__{}{}", hint, self.tmp_counter)
     }
 
     pub fn w(&mut self, s: &str) {
@@ -580,6 +875,9 @@ impl Emitter {
                 // which drops the receiver, so `safeParse` ran with
                 // `this === undefined` and threw at runtime while the build
                 // reported success.
+                if MEMBER_METHOD_NAMES.contains(&name.as_str()) {
+                    return false;
+                }
                 matches!(&obj.kind, Kind::Name(_) | Kind::Attr { .. })
                     && (name.chars().next().is_some_and(|c| c.is_uppercase())
                         || HTML_TAGS.contains(&name.as_str()))
@@ -1221,9 +1519,47 @@ impl Emitter {
             // A template literal is passed through untouched: its contents are
             // already JavaScript, and re-escaping would change the output.
             Kind::TemplateLiteral(raw) => Ok(raw.clone()),
+            // A tagged template keeps its tag glued to the literal. The raw token
+            // already carries the backticks and any `${...}` inside it.
+            Kind::TaggedTemplate { tag, raw } => Ok(format!("{}{}", self.js(tag)?, raw)),
             Kind::Super => Ok("super".to_string()),
             Kind::Await(v) => Ok(format!("await {}", self.js(v)?)),
-            Kind::New(inner) => Ok(format!("new {}", self.js(inner)?)),
+            // `new Foo(args)` where Foo is a class declared in this file: the Call
+            // arm above already prefixes `new` for class names, so wrapping again
+            // emitted the invalid `new new Foo(args)`.
+            //
+            // The inner call is built here rather than through `js()` because `js()`
+            // routes a capitalised callee (`THREE.Scene()`) to the JSX path, and
+            // `new <THREE.Scene />` has nothing to construct. After `new` the target
+            // is a constructor, never an element, so the call form is forced.
+            Kind::New(inner) => {
+                if let Kind::Call { func, args, kwargs } = &inner.kind {
+                    if let Kind::Name(id) = &func.kind {
+                        if self.class_names.borrow().contains(id) {
+                            let bits: Result<Vec<_>, _> =
+                                args.iter().map(|a| self.js(a)).collect();
+                            let mut all = bits?;
+                            for (k, v) in kwargs {
+                                all.push(format!("{}: {}", prop_map(k), self.js(v)?));
+                            }
+                            return Ok(format!("new {}({})", id, all.join(", ")));
+                        }
+                    }
+                    let mut all: Vec<String> = Vec::new();
+                    for a in args {
+                        all.push(self.js(a)?);
+                    }
+                    if !kwargs.is_empty() {
+                        let mut props: Vec<String> = Vec::new();
+                        for (k, v) in kwargs {
+                            props.push(format!("{}: {}", prop_map(k), self.js(v)?));
+                        }
+                        all.push(format!("{{ {} }}", props.join(", ")));
+                    }
+                    return Ok(format!("new {}({})", self.ctor_name(func)?, all.join(", ")));
+                }
+                Ok(format!("new {}", self.js(inner)?))
+            }
             Kind::OptCall { func, args, kwargs } => {
                 let f = self.js(func)?;
                 let mut all: Vec<String> = Vec::new();
@@ -1395,6 +1731,71 @@ impl Emitter {
         ))
     }
 
+    /// True when a branch produces no output at all.
+    ///
+    /// `{cond ? <A/> : null}` is the common React shape, and an empty `else:` in the
+    /// source lowers to the same thing. Neither is an expression to wrap in parens.
+    fn renders_nothing(&self, body: &[Node]) -> bool {
+        let real: Vec<_> = body
+            .iter()
+            .filter(|s| !matches!(s.kind, Kind::Pass))
+            .collect();
+        if real.is_empty() {
+            return true;
+        }
+        if real.len() != 1 {
+            return false;
+        }
+        match &real[0].kind {
+            Kind::Null => true,
+            Kind::ExprStmt(e) => match &e.kind {
+                Kind::Null => true,
+                Kind::Name(n) => n == "None" || n == "null",
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// True when `t` is exactly one `{...}` container, not several concatenated.
+    ///
+    /// The brace depth must reach zero only at the very end, otherwise `{a}\n{b}`
+    /// would have its outer characters stripped and the result is not an expression.
+    /// Wrap a fragment as a parenthesised expression, unless it already IS one.
+    ///
+    /// `frag` returns `{cond ? (..) : null}` for a single `if:` body — an expression
+    /// container, not markup. Wrapping that in parens produced `({ {..} })`, which is
+    /// not valid JavaScript ("Expected '{' but found '}'" / "Expected identifier but
+    /// found '('"), and the same shape appears in `&&`, ternaries and `map`.
+    fn as_expr(frag: &str) -> String {
+        let t = frag.trim();
+        if Self::is_one_container(t) {
+            t[1..t.len() - 1].trim().to_string()
+        } else {
+            t.to_string()
+        }
+    }
+
+    fn is_one_container(t: &str) -> bool {
+        if !t.starts_with('{') || !t.ends_with('}') || t.len() < 2 {
+            return false;
+        }
+        let mut depth = 0usize;
+        for (i, c) in t.char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 && i != t.len() - 1 {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+        }
+        depth == 0
+    }
+
     fn child(&self, s: &Node, ind: usize) -> Result<String, CompileError> {
         match &s.kind {
             // `slot` is where the parent's children are rendered — React's
@@ -1415,7 +1816,7 @@ impl Emitter {
             },
             Kind::If { test, body, orelse } => {
                 let cond = self.js(test)?;
-                let b = self.frag(body, ind)?;
+                let b = Self::as_expr(&self.frag(body, ind)?);
                 if let Some(ore) = orelse {
                     if ore.len() == 1 && matches!(&ore[0].kind, Kind::If { .. }) {
                         // Elif: unwrap the nested braces so we don't emit {cond ? (...) : {elif ? ...}}.
@@ -1423,15 +1824,41 @@ impl Emitter {
                         let stripped = inner.trim().trim_start_matches('{').trim_end_matches('}');
                         return Ok(format!("{{{cond} ? ({b}) : ({stripped})}}"));
                     }
-                    let o = self.frag(ore, ind)?;
+                    // An `else` that renders nothing — `{cond ? <A/> : null}` — has to
+                    // become the value React renders as nothing. Passing it through
+                    // emitted `({null})`, which is not an expression: esbuild stopped
+                    // with "Expected ':' but found '}'".
+                    if self.renders_nothing(ore) {
+                        return Ok(format!("{{{cond} ? ({b}) : null}}"));
+                    }
+                    let o = Self::as_expr(&self.frag(ore, ind)?);
                     return Ok(format!("{{{cond} ? ({b}) : ({o})}}"));
                 }
                 Ok(format!("{{{cond} && ({b})}}"))
             }
             Kind::For { target, iter, body } => {
                 let it = self.js(iter)?;
-                let b = self.frag(body, ind)?;
-                Ok(format!("{{{it}.map(({target}) => ({b}))}}"))
+                // The body is an expression, so a container comes off: `{cond && <A/>}`
+                // must become `cond && <A/>` or the arrow gets a BLOCK body and maps
+                // everything to undefined.
+                let b = Self::as_expr(&self.frag(body, ind)?);
+                // A multi-target loop is spelled `for item, i in items:` and means
+                // "(element, index)" — the same meaning the statement form has, where
+                // it becomes `[item, i]`. Written verbatim into an arrow parameter that
+                // produced `.map(([item, i]) => ...)`, which JS reads as *destructuring
+                // a pair out of a scalar*, so every element that is not an array threw
+                // "object is not iterable" (or, for a 2-char string, silently mapped
+                // characters). An arrow can take two parameters, so the brackets come
+                // off: `.map((item, i) => ...)`.
+                let param = {
+                    let t = target.trim();
+                    if t.starts_with('[') && t.ends_with(']') {
+                        t[1..t.len() - 1].to_string()
+                    } else {
+                        t.to_string()
+                    }
+                };
+                Ok(format!("{{{it}.map(({param}) => ({b}))}}"))
             }
             Kind::Match { subject, cases } => {
                 let s_val = self.js(subject)?;
@@ -1526,22 +1953,30 @@ impl Emitter {
                 // produced `const node.style.transform = ...`, which is a
                 // syntax error that nevertheless used to build "successfully".
                 if let Kind::Name(id) = &target.kind {
-                    if let Some(scope) = self.scopes.last_mut() {
-                        // Mutable names get `let` at their first assignment so
-                        // later writes are legal; everything else is `const`.
-                        let declare = if scope.is_mutable(id) { "let" } else { "const" };
-                        // `declared` already holds hoisted names, so a name that
-                        // was declared at the top of the function falls through
-                        // to a plain assignment here instead of being declared
-                        // a second time.
-                        if scope.declared.insert(id.clone()) {
-                            self.w(&format!("{} {} = {};", declare, lhs, rhs));
-                        } else {
-                            self.w(&format!("{} = {};", lhs, rhs));
-                        }
+                    let id = id.clone();
+                    // Decide `let` vs `const` and whether this is the binding's
+                    // first appearance, then drop the borrow before asking about
+                    // the enclosing scopes.
+                    let Some((declare, first)) = self.scopes.last_mut().map(|scope| {
+                        let declare = if scope.is_mutable(&id) { "let" } else { "const" };
+                        let first = scope.declared.insert(id.clone());
+                        (declare, first)
+                    }) else {
+                        self.w(&format!("const {} = {};", lhs, rhs));
                         return Ok(());
+                    };
+                    // A name an enclosing scope already binds is a closure capture:
+                    // assigning it writes that binding. Emitting `const raf = ...`
+                    // here SHADOWED the outer `let raf`, leaving the outer variable
+                    // at its initial value and putting the new one in the temporal
+                    // dead zone — `Cannot access 'raf' before initialization` the
+                    // moment the callback ran. Every component whose effect assigns
+                    // an outer `let` from a callback died this way.
+                    if !first || self.bound_in_enclosing(&id) {
+                        self.w(&format!("{} = {};", lhs, rhs));
+                    } else {
+                        self.w(&format!("{} {} = {};", declare, lhs, rhs));
                     }
-                    self.w(&format!("const {} = {};", lhs, rhs));
                     return Ok(());
                 }
                 // Destructuring (`a, b = pair()`) binds names, so it declares.
@@ -1716,7 +2151,7 @@ impl Emitter {
                             scope.params.insert(bare.clone());
                             scope.declared.insert(bare);
                         }
-                        self.scopes.push(scope);
+                        self.push_scope(scope);
                         for stmt in mbody {
                             self.stmt(stmt)?;
                         }
@@ -1789,9 +2224,14 @@ impl Emitter {
                 let pad = self.pad();
                 self.w(&format!("return (\n  {}{}\n{});", pad, jsx, pad));
             }
-            Kind::Def { name, params, body } => {
+            Kind::Def { name, params, body } | Kind::AsyncDef { name, params, body } => {
                 let ps = self.format_params(params)?;
-                self.w(&format!("const {} = ({}) => {{", name, ps));
+                // `async def` at module or block level has to emit `async function`.
+                // Without the keyword the body's `await` is illegal, and before this
+                // arm existed the whole statement was dropped by the catch-all `_ => {}`
+                // — a build that reported success and a ReferenceError at run time.
+                let kw = if matches!(s.kind, Kind::AsyncDef { .. }) { "async " } else { "" };
+                self.w(&format!("const {} = {}({}) => {{", name, kw, ps));
                 self.depth += 1;
                 let mut scope = Scope::scan(body);
                 for p in params {
@@ -1799,7 +2239,7 @@ impl Emitter {
                     scope.params.insert(bare);
                     scope.declared.insert(p.name.trim_start_matches("...").to_string());
                 }
-                self.scopes.push(scope);
+                self.push_scope(scope);
                 self.hoist_nested_assignments();
                 for stmt in body {
                     self.stmt(stmt)?;
@@ -1836,6 +2276,115 @@ impl Emitter {
                 }
                 self.depth -= 1;
                 self.w("}");
+            }
+            // `try` had no arm here at all, so every `try:` block fell into the
+            // catch-all below and was DROPPED — silently, with the build reporting
+            // success while the body never reached the output. Emit a real
+            // try/catch(/finally); Python's optional `else` runs only when no
+            // exception was raised, which a flag reproduces faithfully.
+            Kind::Try { body, handlers, orelse, finally } => {
+                let needs_else = orelse.is_some();
+                let mut flag = String::new();
+                if needs_else {
+                    flag = self.fresh_var("ok");
+                    self.w(&format!("let {} = false;", flag));
+                }
+                self.w("try {");
+                self.depth += 1;
+                for stmt in body {
+                    self.stmt(stmt)?;
+                }
+                if needs_else {
+                    self.w(&format!("{} = true;", flag));
+                }
+                self.depth -= 1;
+                if handlers.is_empty() {
+                    self.w("} catch {}");
+                } else {
+                    self.w("} catch (__e) {");
+                    self.depth += 1;
+                    self.w("let __matched = false;");
+                    let mut first = true;
+                    for h in handlers {
+                        // `except Exception:` / `except BaseException:` is Python's
+                        // catch-everything handler — the same role as a bare
+                        // `except:`. Emitting it as an instanceof test would name a
+                        // class the JS runtime does not have and throw at the very
+                        // moment the handler was supposed to catch something.
+                        let is_catch_all = matches!(
+                            h.class.as_deref(),
+                            None | Some("Exception") | Some("BaseException")
+                        );
+                        match &h.class {
+                            Some(cls) if !is_catch_all => {
+                                let cond = format!("__e instanceof {}", cls);
+                                if first {
+                                    self.w(&format!("if (!!({})) {{", cond));
+                                } else {
+                                    self.w(&format!("else if (!!({})) {{", cond));
+                                }
+                                self.depth += 1;
+                                self.w("__matched = true;");
+                                if let Some(nm) = &h.name {
+                                    self.w(&format!("const {} = __e;", nm));
+                                }
+                                for stmt in &h.body {
+                                    self.stmt(stmt)?;
+                                }
+                                self.depth -= 1;
+                                self.w("}");
+                            }
+                            // A bare `except:` (or its `Exception` spelling) is the
+                            // fallback: it runs only if nothing above matched.
+                            _ => {
+                                self.w("if (!__matched) {");
+                                self.depth += 1;
+                                self.w("__matched = true;");
+                                if let Some(nm) = &h.name {
+                                    self.w(&format!("const {} = __e;", nm));
+                                }
+                                for stmt in &h.body {
+                                    self.stmt(stmt)?;
+                                }
+                                self.depth -= 1;
+                                self.w("}");
+                            }
+                        }
+                        first = false;
+                    }
+                    // Re-throw anything no handler claimed, the way Python does.
+                    // A catch-all handler (`except:` / `except Exception:`) claims
+                    // everything, so the re-throw is only emitted when none exists.
+                    let has_catch_all = handlers.iter().any(|h| {
+                        matches!(
+                            h.class.as_deref(),
+                            None | Some("Exception") | Some("BaseException")
+                        )
+                    });
+                    if !has_catch_all {
+                        self.w("if (!__matched) throw __e;");
+                    }
+                    self.depth -= 1;
+                    self.w("}");
+                }
+                if let Some(fin) = finally {
+                    self.w("finally {");
+                    self.depth += 1;
+                    for stmt in fin {
+                        self.stmt(stmt)?;
+                    }
+                    self.depth -= 1;
+                    self.w("}");
+                }
+                if let Some(ore) = orelse {
+                    self.w(&format!("if ({}) {{", flag));
+                    self.depth += 1;
+                    for stmt in ore {
+                        self.stmt(stmt)?;
+                    }
+                    self.depth -= 1;
+                    self.w("}");
+                }
             }
             Kind::Match { subject, cases } => {
                 let s_val = self.js(subject)?;
@@ -1984,9 +2533,26 @@ impl Emitter {
             // `children` must appear in the DESTRUCTURING PATTERN, not only in
             // the type annotation: a type alone does not bind a variable, and
             // the body reads `children` directly.
+            //
+            // It goes BEFORE a rest element, never after: `{ ...props, children }`
+            // is a syntax error in the bundle ("Unexpected "," after rest
+            // pattern") because a rest must be last, and `**props` is exactly how a
+            // component receives the whole props object.
+            let with_children = match ps.find("...") {
+                Some(at) => {
+                    let head = &ps[..at];
+                    let tail = &ps[at..];
+                    if head.trim_end().ends_with(',') {
+                        format!("{} children, {}", head, tail)
+                    } else {
+                        format!("children, {}", ps)
+                    }
+                }
+                None => format!("{}, children", ps),
+            };
             format!(
-                "{{ {}, children }}: {}Props & {{ children?: React.ReactNode }}",
-                ps, name
+                "{{ {} }}: {}Props & {{ children?: React.ReactNode }}",
+                with_children, name
             )
         } else {
             format!("{{ {} }}: {}Props", ps, name)
@@ -2000,7 +2566,7 @@ impl Emitter {
             scope.params.insert(bare.clone());
             scope.declared.insert(bare);
         }
-        self.scopes.push(scope);
+        self.push_scope(scope);
         self.hoist_nested_assignments();
 
         let tree_count = body
@@ -2127,7 +2693,7 @@ impl Emitter {
 
         // ponytail: single top-level scope; nested function scopes already push their own
         let top_scope = Scope::scan(body);
-        self.scopes.push(top_scope);
+        self.push_scope(top_scope);
 
         for s in body {
             match &s.kind {

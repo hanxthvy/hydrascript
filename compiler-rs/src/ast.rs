@@ -215,6 +215,14 @@ pub enum Kind {
     Yield(Option<Box<Node>>),
     /// `` `text ${expr}` `` — a JavaScript template literal, passed through.
     TemplateLiteral(String),
+    /// `` tag`text ${expr}` `` — a tagged template. `motion` and `styled` both
+    /// require this form; without it the tag and the literal were emitted as two
+    /// separate statements (`return useMotionTemplate;` then a bare string), which
+    /// is valid JS and silently wrong.
+    TaggedTemplate {
+        tag: Box<Node>,
+        raw: String,
+    },
     /// `xs[start:stop]` — Python slicing, no JS equivalent.
     Slice {
         obj: Box<Node>,

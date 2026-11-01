@@ -1820,6 +1820,21 @@ impl Parser {
         loop {
             match self.cur().ty {
                 TokType::LParen => n = self.call(n)?,
+                // `` tag`text` `` — a tagged template. The token after an expression
+                // belongs to it, and leaving it out split the call in two statements.
+                TokType::Template => {
+                    let t = self.cur().clone();
+                    self.i += 1;
+                    let (line, col) = (n.line, n.col);
+                    n = Node::new(
+                        Kind::TaggedTemplate {
+                            tag: Box::new(n),
+                            raw: t.value,
+                        },
+                        line,
+                        col,
+                    );
+                }
                 TokType::Dot => {
                     self.i += 1;
                     let name = self.ident_or_kw()?;

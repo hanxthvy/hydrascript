@@ -643,6 +643,9 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   const outDir = path.resolve(cwd, config.outputDir || 'dist');
   const assetsDir = path.join(outDir, 'assets');
   const base = normalizeBase(config.base);
+  // URL prefix that corresponds to `assetsDir`. `publicPath` needs this rather
+  // than `base`; see the esbuild options below.
+  const assetsPublicPath = base + 'assets/';
   fs.mkdirSync(assetsDir, { recursive: true });
 
   let _p = phaseStart();
@@ -821,7 +824,14 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     // Absolute URLs for emitted assets and chunks, rooted at the deployment
     // base. Relative URLs break the moment a component is rendered from a
     // nested route like `/dashboard/settings`.
-    publicPath: base,
+    //
+    // The root is the URL of `assetsDir`, NOT of `base`: esbuild resolves a
+    // chunk's URL against `publicPath`, and this call writes into
+    // `<outDir>/assets`. With `publicPath: base` a chunk referenced from the
+    // entry came out as `/chunks/x-<hash>.js` — one directory short of where it
+    // was written (`assets/chunks/…`) — so the browser got a 404 on the entry's
+    // first import and nothing mounted, while the build itself reported success.
+    publicPath: assetsPublicPath,
     metafile: true,
     plugins: [createHydraEsbuildPlugin()],
     // The runtime file lives in this package, but it imports 'react' and

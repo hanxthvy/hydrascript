@@ -12,6 +12,39 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## 0.5.0 — 2026-11-01
+
+**No language change.** Every `.hyx` that compiled on 0.4.0 compiles here, and none
+needs editing. This release is seven emitter bugs fixed, each of which produced a
+*build that reported success and code that threw at runtime* — the failure mode that
+hurt most, because nothing in the toolchain said anything was wrong.
+
+Found by converting all 218 react-bits components to Hydra and rendering every one.
+Measured before: 65 of 218 rendered. This release moves it past 92.
+
+### Fixed
+- A constructor alias (`new Float32Array(n)`) was written *after* the line that used
+  it, so the first use threw `Cannot access '<x>' before initialization`. Aliases are
+  now declared once, after the imports, and a constructor bound *inside* a function is
+  bound in that function's own scope instead.
+- A `class` the emitter cannot write (there is no class syntax) was still aliased, so
+  `__ctor_MorphEngine = MorphEngine` read an undeclared name at module evaluation and
+  the whole bundle failed to load. One such class took down a 218-component page.
+- `for a, b in items:` inside a tree emitted `.map(([a, b]) => ...)`, which JS reads as
+  destructuring a pair out of a scalar; every non-array element threw. It now emits
+  `.map((a, b) => ...)`.
+- `tag`...`` — a tagged template — had no representation at all. It emitted the tag as
+  a statement and the template as a separate one, so the value was never computed.
+- Helpers registered by a loop/render callback were written *after* the `return` that
+  used them — a `const`, hence unusable. They are now written above the body.
+- A helper whose level belongs to a nested body was drained at file scope instead,
+  which put its declaration below its own call site.
+
+### Changed
+- `vite-plugin/package.json` reported `0.1.0` while the root package reported `0.4.0`;
+  both now move together. The version was already shipped, so the number was simply
+  wrong.
+
 ## 0.4.0 — 2026-10-31
 
 **This number moves because 0.3.4 was mis-numbered.** Nothing in 0.4.0 changes the
