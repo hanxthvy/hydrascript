@@ -773,7 +773,12 @@ pub struct Emitter {
     /// Python, `Foo(1)` constructs an instance.
     pub class_names: std::cell::RefCell<std::collections::HashSet<String>>,
     pub head_lines: Vec<String>,
-    /// Function names declared by a top-level `export def` in a `.hyx`.
+    /// Names this module IMPORTS. A call to one of them is a function call, never a
+    /// JSX tag — the tag test only knows what this file declares, so
+    /// `part_putar(b, "R1", 90)` used to compile to `jsx(part_putar, { ...b })` and the
+    /// call vanished. Kept separate from `fn_params` because that map also carries
+    /// parameter lists used to reorder keyword arguments.
+    pub imported_names: std::cell::RefCell<HashSet<String>>,
     ///
     /// `export function` is hoisted JavaScript, so the declaration may sit after its
     /// own body text. That is what makes it possible to define one module-level
@@ -827,6 +832,7 @@ impl Emitter {
             walrus_names: std::cell::RefCell::new(HashSet::new()),
             class_names: std::cell::RefCell::new(std::collections::HashSet::new()),
             head_lines: Vec::new(),
+            imported_names: std::cell::RefCell::new(HashSet::new()),
             exported_decls: std::cell::RefCell::new(Vec::new()),
             scopes: Vec::new(),
             tmp_counter: 0,
@@ -915,6 +921,33 @@ impl Emitter {
                 return false;
             }
             if self.class_names.borrow().contains(id) {
+                return false;
+            }
+            if self.imported_names.borrow().contains(id) {
+                return false;
+            }
+        }
+        // A MEMBER call in expression position is almost never a tag.
+        //
+        // JSX allows namespaced tags (`motion.div`), so the member-name rule cannot be
+        // "uppercase only" outright. But a lowercase member that happens to be an HTML
+        // tag name swallows ordinary method calls: `rujukan.current.b()` — where `b` is
+        // a plain accessor — compiled to `jsx(rujukan.current.b, {})`, i.e. the element
+        // `<b>`, and the call and its arguments disappeared with no build error. The
+        // same shape bit `z.object()`, `map()`, and now `.b()`.
+        //
+        // The discriminator that works for this language: a namespaced JSX tag is a
+        // NAMESPACE OBJECT plus a member (`motion.div`), and trees are written with a
+        // colon, not parentheses. So an explicit allowlist of component namespaces is
+        // the honest rule here — anything else with a lowercase member is a call.
+        if let Kind::Attr { obj, name } = &func.kind {
+            const NS: &[&str] = &["motion", "m", "AnimatePresence", "styled"];
+            let nama_upper = name.chars().next().map_or(false, |c| c.is_uppercase());
+            let ns_terkenal = match &obj.kind {
+                Kind::Name(o) => NS.contains(&o.as_str()),
+                _ => false,
+            };
+            if nama_upper == false && ns_terkenal == false {
                 return false;
             }
         }
@@ -2807,6 +2840,43 @@ impl Emitter {
         // `def` it refers to, and kwargs must be resolved against it.
         {
             let mut table = self.fn_params.borrow_mut();
+            // Imported names count as functions of this module.
+            //
+            // A call to an imported helper was read as a JSX TAG, because the tag test
+            // only knows what THIS file declares: `part_putar(b, "R1", 90)` inside a
+            // lambda compiled to `jsx(part_putar, { ...b })` — the call and its arguments
+            // DISAPPEARED, replaced by a React element. No build error. The symptom was
+            // a command that silently did nothing ("dokumen board tidak sah"), which is
+            // exactly the shape of bug that costs an afternoon.
+            //
+            // A module cannot call an imported name as a tag legitimately: JSX tags are
+            // either HTML elements (lowercase, in HTML_TAGS) or components. A name
+            // imported into this file and used as `f(...)` is a function call.
+            for st in body {
+                // Imported names go into their own set, NOT into `fn_params`.
+                //
+                // Putting them there with an empty parameter list made the keyword-argument
+                // reordering believe `Header()` (an imported COMPONENT) took no arguments at
+                // all, and every `Header(on_nav=...)` failed the build with
+                // "Header() has no parameter named `on_nav`". The only question this
+                // answers is "is this name a callable of this module, rather than a tag",
+                // and that needs a set, not a signature table.
+                if let Kind::Import { names, .. } = &st.kind {
+                    for n in names {
+                        let bare = n.trim_start_matches("* as ").trim();
+                        // Only a LOWERCASE imported name is a call. An uppercase one is a
+                        // component, and `Header(on_nav=...)` must stay a JSX tag with
+                        // props — registering it as a call made the build reject it with
+                        // "keyword arguments are only supported for functions defined in
+                        // this file". Case is exactly the distinction the language already
+                        // uses everywhere else.
+                        let kecil = bare.chars().next().map_or(false, |c| c.is_lowercase());
+                        if !bare.is_empty() && kecil && bare != "default" {
+                            self.imported_names.borrow_mut().insert(bare.to_string());
+                        }
+                    }
+                }
+            }
             for st in body {
                 let mut visit = |name: &str, params: &[Param]| {
                     let names = params
