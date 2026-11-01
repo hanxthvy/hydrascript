@@ -896,6 +896,31 @@ impl Emitter {
         }
     }
 
+    /// Like `is_element`, but a name THIS module declares is never a tag.
+    ///
+    /// `main`, `header`, `footer`, `section`, `aside`, `menu` and `output` are all
+    /// valid HTML tag names AND entirely reasonable function names. `is_element`
+    /// alone answers "is this identifier spelled like a tag", which is right for a
+    /// component reference and wrong for a call: `main()` at module level compiled
+    /// to `<main />` — the call disappeared, the app rendered nothing, and no error
+    /// was reported anywhere. Lowercase method names got a second list
+    /// (`MEMBER_METHOD_NAMES`) years ago; this is the same class of bug for a bare
+    /// name, and it is worse because a whole entry point can vanish.
+    ///
+    /// The knowledge needed is already collected: `fn_params` holds every top-level
+    /// `def`/`export def` and `class_names` every class.
+    pub fn is_element_call(&self, func: &Node) -> bool {
+        if let Kind::Name(id) = &func.kind {
+            if self.fn_params.borrow().contains_key(id) {
+                return false;
+            }
+            if self.class_names.borrow().contains(id) {
+                return false;
+            }
+        }
+        Self::is_element(func)
+    }
+
     pub fn is_element(n: &Node) -> bool {
         match &n.kind {
             Kind::Name(id) => {
@@ -1357,7 +1382,7 @@ impl Emitter {
                     }
                 }
 
-                if Self::is_element(func) {
+                if self.is_element_call(func) {
                     return self.jsx_inline(func, args, kwargs);
                 }
                 // Keyword arguments against a function defined in this file are
@@ -1735,7 +1760,7 @@ impl Emitter {
         let (tag, a) = match &head.kind {
             Kind::Name(id) => (id.clone(), String::new()),
             Kind::Attr { .. } if Self::is_element(head) => (self.js(head)?, String::new()),
-            Kind::Call { func, args, kwargs } if Self::is_element(func) => {
+            Kind::Call { func, args, kwargs } if self.is_element_call(func) => {
                 (self.js(func)?, self.attr_str(args, kwargs)?)
             }
             _ => {
@@ -1854,7 +1879,7 @@ impl Emitter {
             Kind::ExprStmt(e) => match &e.kind {
                 Kind::Str { value, is_f: false } => Ok(value[1..value.len() - 1].to_string()),
                 Kind::Num(v) => Ok(v.clone()),
-                Kind::Call { func, args, kwargs } if Self::is_element(func) => {
+                Kind::Call { func, args, kwargs } if self.is_element_call(func) => {
                     self.jsx_inline(func, args, kwargs)
                 }
                 _ => Ok(format!("{{{}}}", self.js(e)?)),
