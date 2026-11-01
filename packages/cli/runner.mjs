@@ -908,11 +908,34 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
 
   // The one output that is an entry point: its name carries a hash, so
   // index.html can only be pointed at it after the fact.
-  const entryOutKey = Object.keys(metafile.outputs).find(
+  //
+  // At most one output can BE the entry, but "first key that has an entryPoint"
+  // is not the same test. With splitting on, esbuild also marks a dynamic import
+  // that resolves to a static path (`import("./Item.hyx")` in a lazy loader) as an
+  // entryPoint, and `Object.keys` is in key order — `assets/chunks/…` sorts before
+  // `assets/index-…`. index.html then pointed at a random COMPONENT chunk instead
+  // of the app, so the page loaded a module that renders nothing: measured, a
+  // 235-chunk build whose entry script was `chunks/TextPressure-*.js`.
+  //
+  // The entry is the output whose path matches the configured `entryNames`
+  // pattern; fall back to the shallowest key, which is the one directly under
+  // `assets/`. If two of them still exist the build is ambiguous and says so
+  // rather than picking silently.
+  const chunkCandidates = Object.keys(metafile.outputs).filter(
     (k) => metafile.outputs[k].entryPoint && k.endsWith('.js'),
   );
+  const entryOutKey = chunkCandidates.find((k) => k.includes(assetsDir + path.sep))
+    ?? chunkCandidates
+      .slice()
+      .sort((a, b) => a.split(path.sep).length - b.split(path.sep).length || a.localeCompare(b))[0];
   if (!entryOutKey) {
     throw new Error('[hydra] The client build produced no JavaScript entry chunk');
+  }
+  if (chunkCandidates.length > 1) {
+    const others = chunkCandidates.filter((k) => k !== entryOutKey);
+    console.warn(
+      `[hydra] ${chunkCandidates.length} entry chunks in the metafile; index.html uses ${path.basename(entryOutKey)} and leaves ${others.length} to dynamic import (e.g. ${path.basename(others[0])})`,
+    );
   }
 
   // 5. One stylesheet out: Tailwind, then every stylesheet the module graph

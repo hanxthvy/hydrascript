@@ -1817,6 +1817,33 @@ impl Parser {
     #[inline(always)]
     fn postfix(&mut self) -> PResult<Node> {
         let mut n = self.atom()?;
+        // `super()` and `super().__init__(x)` are the two spellings of a parent
+        // constructor call, and neither is an ordinary member expression: `super` is
+        // not a value, so `super(...)` is syntax, and `super.__init__` does not exist.
+        //
+        // This is why the rewrite cannot live in `atom`. `super` is followed by `(`
+        // and NOT by `.` — the empty parentheses come first — so a check for `.` in
+        // atom never fires; it consumes `()` as an argument list, and the `.` then
+        // applies to the whole call, printing `super().__init__(props)`. Both forms
+        // are collapsed here instead, where the token stream is visible ahead.
+        if matches!(n.kind, Kind::Super) {
+            let (line, col) = (n.line, n.col);
+            if self.cur().ty == TokType::LParen {
+                let after = n;
+                n = self.call(after)?;
+                // `super()` followed by `.__init__(x)` — the Python spelling.
+                if self.cur().ty == TokType::Dot
+                    && self.peek(1).ty == TokType::Ident
+                    && self.peek(1).value == "__init__"
+                {
+                    self.i += 2;
+                    if self.cur().ty == TokType::LParen {
+                        n = self.call(Node::new(Kind::Super, line, col))?;
+                    }
+                }
+                return Ok(n);
+            }
+        }
         loop {
             match self.cur().ty {
                 TokType::LParen => n = self.call(n)?,
@@ -2013,9 +2040,28 @@ impl Parser {
         let t = self.cur().clone();
         // `super` — Python's `super().__init__(x)` becomes JS `super(x)`, and
         // a bare `super()` becomes `super`.
+        //
+        // `super()` alone is a complete call in JS, so consuming the name here (and
+        // leaving the `(x)` to the ordinary postfix loop) produced `super(x)` only
+        // because the emitter printed `super` followed by the argument list — but
+        // `super().__init__(x)`, the spelling every Python `__init__` uses, printed
+        // `super.__init__(x)`. That is not JS: it throws at construction time, and
+        // because it happens while React builds the component tree the whole app
+        // unmounts. An error boundary written this way took the entire site down
+        // instead of catching anything.
+        //
+        // `super(...)` has no member access and no receiver, so it cannot be expressed
+        // as an `Attr` — the call has to be built here, with `super` as the callee.
         if t.ty == TokType::Kw("super") {
             self.i += 1;
-            return Ok(Node::new(Kind::Super, t.line, t.col));
+            let (line, col) = (t.line, t.col);
+            let sup = Node::new(Kind::Super, line, col);
+            // `super().__init__(x)` — Python's spelling for a parent constructor call.
+            // JS wants `super(x)`: `super.__init__` is not a function, and `super(...)`
+            // cannot be reached through the ordinary member path because `super` is not
+            // a value. When the member after it is `__init__`, the member access and
+            // that name are both dropped and only the argument list is kept.
+            return Ok(sup);
         }
         // A JavaScript template literal: its contents are already JS, so the
         // whole raw token is passed through rather than re-parsed.
