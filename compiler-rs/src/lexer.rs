@@ -131,6 +131,18 @@ fn scan_string(bytes: &[u8], mut i: usize) -> Option<usize> {
 }
 
 // [xihanzu-NR]
+/// True when `b` is a digit in the given radix. Used by the number scanner for
+/// `0x` / `0b` / `0o` literals.
+fn digit_in_radix(b: u8, radix: u32) -> bool {
+    let v = match b {
+        b'0'..=b'9' => (b - b'0') as u32,
+        b'a'..=b'f' => (b - b'a') as u32 + 10,
+        b'A'..=b'F' => (b - b'A') as u32 + 10,
+        _ => return false,
+    };
+    v < radix
+}
+
 pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
     let lines: Vec<&str> = src.split('\n').collect();
     let mut out: Vec<Token> = Vec::new();
@@ -286,6 +298,43 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
             // number
             if c.is_ascii_digit() {
                 let mut end = pos;
+                // Radix prefixes: `0x` / `0b` / `0o`.
+                //
+                // Without this the scan stopped AT the prefix: `0xFF` lexed as the
+                // number `0` followed by the identifier `xFF`, so `a = 0xFF` emitted
+                // `const a = 0;` — the value was silently destroyed. No error, no
+                // warning, and the token after it turned into a stray name. Any
+                // program holding a bitmask, a color or a CRC table was quietly
+                // computing with zeros. A wrong number is worse than a rejected one:
+                // decimal and binary literals fail loudly, this did not.
+                if bytes[end] == b'0' && end + 1 < bytes.len() {
+                    let radix = match bytes[end + 1] {
+                        b'x' | b'X' => Some(16u32),
+                        b'b' | b'B' => Some(2),
+                        b'o' | b'O' => Some(8),
+                        _ => None,
+                    };
+                    if let Some(base) = radix {
+                        end += 2;
+                        let digits_start = end;
+                        while end < bytes.len() && digit_in_radix(bytes[end], base) {
+                            end += 1;
+                        }
+                        if end > digits_start {
+                            out.push(Token {
+                                ty: TokType::Number,
+                                value: raw[start..end].to_string(),
+                                line: line_no,
+                                col: start,
+                            });
+                            pos = end;
+                            continue;
+                        }
+                        // `0x` with no digits is not a number; fall through so the
+                        // `0` is lexed normally and the rest reports itself.
+                        end = pos;
+                    }
+                }
                 while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'.') {
                     end += 1;
                 }

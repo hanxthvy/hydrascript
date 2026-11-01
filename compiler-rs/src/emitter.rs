@@ -1760,7 +1760,14 @@ impl Emitter {
         let (tag, a) = match &head.kind {
             Kind::Name(id) => (id.clone(), String::new()),
             Kind::Attr { .. } if Self::is_element(head) => (self.js(head)?, String::new()),
-            Kind::Call { func, args, kwargs } if self.is_element_call(func) => {
+            // A tree HEAD is always a tag: `main(className="x"):` is the HTML element,
+            // whatever the module happens to declare elsewhere. Using
+            // `is_element_call` here was wrong and broke the very module that motivated
+            // that helper — PCBForge defines `def main()` as its entry point, so
+            // `main(className="kolom"):` was rejected with "a tree block must start with
+            // an element or component". The name-vs-tag ambiguity only exists for a CALL
+            // in expression position, which is where `is_element_call` belongs.
+            Kind::Call { func, args, kwargs } if Self::is_element(func) => {
                 (self.js(func)?, self.attr_str(args, kwargs)?)
             }
             _ => {
