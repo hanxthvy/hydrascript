@@ -657,6 +657,18 @@ impl Scope {
             // hoisting it again emitted `function f(el) { let el; ... }`, a
             // "symbol has already been declared" build error.
             .filter(|n| !self.params.contains(*n))
+            // A name an ENCLOSING scope already binds is a closure capture, not a
+            // local. Hoisting it here declared a fresh local and cut the outer
+            // binding off: `GlassIcons` has `let raf = 0` in the component body and
+            // `raf = requestAnimationFrame(tick)` inside `wake()`, and the hoist made
+            // `wake` emit `let raf; raf = requestAnimationFrame(tick)` — a local
+            // variable, so the outer `raf` stayed 0, `cancelAnimationFrame(0)` ran on
+            // every teardown, and the animation never started at all. Silent: the
+            // page rendered, nothing threw.
+            //
+            // This is the same rule the `Kind::Assign` arm already applies via
+            // `bound_in_enclosing`; the hoist was the one place that ignored it.
+            .filter(|n| !self.outer_bound.contains(*n))
             .filter(|n| self.first_assign_depth.get(*n).copied().unwrap_or(0) > 0)
             .cloned()
             .collect();
@@ -2278,6 +2290,29 @@ impl Emitter {
                 let it = self.js(iter)?;
                 self.w(&format!("for (const {} of {}) {{", target, it));
                 self.depth += 1;
+                for stmt in body {
+                    self.stmt(stmt)?;
+                }
+                self.depth -= 1;
+                self.w("}");
+            }
+            // `while` had no arm here at all — the same defect the `try` arm below
+            // describes for itself. Every `while:` fell into the catch-all and was
+            // DROPPED: the condition was never even evaluated, nothing was reported,
+            // and the build said "Built successfully".
+            //
+            // This is the bug that made the whole React Bits port look broken. The
+            // corpus counts with `while` (`GlassIcons`: `i = 0 / while i < count: /
+            // i += 1`), so every such loop vanished and components rendered empty
+            // canvases with no error at all. Measured on one component: 11 `while` in
+            // the source, 0 in the emitted JS.
+            Kind::While { test, body } => {
+                let cond = self.js(test)?;
+                self.w(&format!("while ({}) {{", cond));
+                self.depth += 1;
+                if body.is_empty() {
+                    self.w(";");
+                }
                 for stmt in body {
                     self.stmt(stmt)?;
                 }
