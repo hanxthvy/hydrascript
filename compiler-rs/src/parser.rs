@@ -1831,14 +1831,37 @@ impl Parser {
             if self.cur().ty == TokType::LParen {
                 let after = n;
                 n = self.call(after)?;
-                // `super()` followed by `.__init__(x)` — the Python spelling.
-                if self.cur().ty == TokType::Dot
-                    && self.peek(1).ty == TokType::Ident
-                    && self.peek(1).value == "__init__"
-                {
+                // `super()` followed by `.<member>(args)`.
+                //
+                // This used to accept ONLY `__init__`, so every other parent
+                // method was a parse error: `super().greet("x")` reported
+                // "unexpected Dot". The README recorded that as a limitation of
+                // KEYWORD arguments, which undersold it — nothing worked, with
+                // keywords or without. The member is carried through as
+                // `SuperMember` and the emitter decides the spelling, because
+                // that is where `__init__` has to become a bare `super(...)`.
+                if self.cur().ty == TokType::Dot && self.peek(1).ty == TokType::Ident {
+                    let member = match &self.peek(1).ty {
+                        TokType::Ident => self.peek(1).value.clone(),
+                        _ => unreachable!("guarded by the peek above"),
+                    };
                     self.i += 2;
                     if self.cur().ty == TokType::LParen {
-                        n = self.call(Node::new(Kind::Super, line, col))?;
+                        n = self.call(Node::new(
+                            Kind::SuperMember { member },
+                            line,
+                            col,
+                        ))?;
+                    } else {
+                        // `super().name` with no call: not a value in JS either,
+                        // so report it here rather than emit nonsense.
+                        return Err(CompileError::new(
+                            format!("`super().{}` is not a call", member),
+                            line,
+                            col,
+                            Vec::new(),
+                        )
+                        .with_hint("JS has no value for `super`; call a parent method: `super().name(...)`"));
                     }
                 }
                 return Ok(n);
@@ -2055,13 +2078,10 @@ impl Parser {
         if t.ty == TokType::Kw("super") {
             self.i += 1;
             let (line, col) = (t.line, t.col);
-            let sup = Node::new(Kind::Super, line, col);
-            // `super().__init__(x)` — Python's spelling for a parent constructor call.
-            // JS wants `super(x)`: `super.__init__` is not a function, and `super(...)`
-            // cannot be reached through the ordinary member path because `super` is not
-            // a value. When the member after it is `__init__`, the member access and
-            // that name are both dropped and only the argument list is kept.
-            return Ok(sup);
+            // `super()` is completed in `postfix`, where the argument list and
+            // any following member access are visible. See the note there for
+            // why this cannot be done with the ordinary member path.
+            return Ok(Node::new(Kind::Super, line, col));
         }
         // A JavaScript template literal: its contents are already JS, so the
         // whole raw token is passed through rather than re-parsed.

@@ -90,8 +90,14 @@ pub enum Kind {
         /// `@staticmethod` / `@property` / `@classmethod` decorator, if present.
         decorator: Option<String>,
     },
-    /// `super().__init__(...)` — resolves to the parent constructor.
+    /// `super()` — resolves to the parent constructor.
     Super,
+    /// `super().name(...)` — a parent METHOD call.
+    ///
+    /// Distinct from `Super` because the JS spelling differs: `__init__` becomes
+    /// a bare `super(...)`, any other name becomes `super.name(...)`. The member
+    /// is carried here so the emitter can choose without re-reading tokens.
+    SuperMember { member: String },
     /// `export def` / `export NAME = ...` — emits a JS `export`.
     Export(Box<Node>),
     /// `export default X` — a distinct JS form, not `export default` glued on.

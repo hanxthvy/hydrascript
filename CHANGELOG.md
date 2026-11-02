@@ -12,6 +12,56 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## 0.6.0 — 2026-11-02
+
+**File-based routing, and the limitations list got smaller.** Existing `.hyx` and
+`.hys` files keep compiling. Two things that used to fail now work, so this is a
+minor bump: nothing needs editing, but a project that had a workaround for either
+can drop it.
+
+### Added
+- **File-based routing.** `src/pages/about.hyx` is `/about`, `blog/[slug].hyx` is
+  `/blog/:slug`, `[...rest]` and `[[...rest]]` follow the conventions every
+  meta-framework already uses. `_layout.hyx` nests, `_404.hyx` renders when
+  nothing matches, `_error.hyx` is a per-folder error boundary, and a leading `_`
+  makes a file or folder private. `hydra routes [--json]` prints the table.
+- **Pre-rendering per route.** A build writes one HTML file per STATIC route
+  (`dist/about/index.html`) instead of one `dist/index.html` for the whole site.
+  Dynamic routes are named in the build log as left to the client, because a URL
+  with a parameter has no single page to build.
+- **The builtins that had no JS equivalent now have one.** `any`, `all`, `map`,
+  `filter`, `getattr`, `hasattr`, `setattr`, `repr`. Their differences from Python
+  are in the README rather than in the gaps between them: `any([])` is `False`,
+  `all([])` is `True`, and `getattr(x, "y")` without a default raises
+  `AttributeError` instead of returning `undefined`.
+
+### Fixed
+- **`super().method()` did not parse.** Only `super().__init__(...)` was
+  recognised; every other parent method was `error: unexpected Dot`. The README
+  recorded that as a limitation of KEYWORD arguments, which undersold it — no
+  form worked, with or without keywords.
+- **`map(fn, xs)` and `filter(fn, xs)` compiled to JSX elements.**
+  `<map>{fn}{xs}</map>` dropped the receiver and never called anything. `map` and
+  `filter` are real HTML tags, so the element rule won. Both still work as
+  elements in a tree; the bare call form is now a call.
+- **`divmod(a, b)` was emitted verbatim** and threw `ReferenceError`. A dead
+  branch was the cause: a `match` arm dispatched on `args.len() >= 2` for names
+  that are symmetric in arity, so the `== 1` arm below it was unreachable and
+  `pow(2)` / `sum(xs, start)` / `round(x, n)` were dead code no test could reach.
+- **`ord` and `chr` were implemented and unreachable**, for the same reason.
+- **`type(x)` was not on the checker's list**, so it was reported as an unbound
+  name while the emitter lowered it correctly.
+- **The runtime gate checked one page per build.** With per-route HTML it now
+  loads every `index.html` that was produced (bounded at 25, with the cap said out
+  loud), so a route-specific crash cannot pass.
+
+### Changed
+- The runtime gate's messages and warnings name the page they came from.
+- `hydra routes` joins the meta-framework commands; `bin/hydra.js` and the
+  Rust CLI both dispatch it.
+
+---
+
 ## 0.5.0 — 2026-11-01
 
 **No language change.** Every `.hyx` that compiled on 0.4.0 compiles here, and none

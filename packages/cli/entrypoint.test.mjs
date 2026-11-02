@@ -135,9 +135,14 @@ test('a project with no candidate entrypoint fails with all four names listed', 
 
 test('a build refuses to ship a name no runtime provides', async () => {
   // The runtime gate renders the page, so it only sees code a render actually
-  // runs. `if take: v = any([1])` with take=0 used to build successfully and
-  // carry `any(` into the shipped bundle, where it throws when the user
-  // triggers that path. The build must fail instead.
+  // runs. A call to a name nothing provides, on a branch the render does not
+  // take, used to build successfully and carry that call into the shipped
+  // bundle, where it throws when the user triggers that path. The build must
+  // fail instead.
+  //
+  // The probe used to be `any([1])`, which is no longer an example of anything:
+  // the runtime exports `any` now. The RULE is unchanged, so the probe moves to
+  // a name that genuinely has no implementation.
   if (!fs.existsSync(HYDRA)) return t.skip(`${HYDRA} not built`);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hydra-checkgate-'));
   try {
@@ -149,7 +154,7 @@ test('a build refuses to ship a name no runtime provides', async () => {
     fs.writeFileSync(path.join(dir, 'src', 'App.hyx'),
       'component App(take):\n' +
       '    if take:\n' +
-      '        v = any([1])\n' +
+      '        v = frobnicate([1])\n' +
       '    else:\n' +
       '        v = 1\n' +
       '    div: f"v={v}"\n');
@@ -165,7 +170,7 @@ test('a build refuses to ship a name no runtime provides', async () => {
       (e) => {
         assert.match(e.message, /semantic check failed/,
           `expected a semantic-check failure, got: ${e.message}`);
-        assert.match(e.message, /any/,
+        assert.match(e.message, /frobnicate/,
           'the error should name the offending symbol');
         return true;
       },

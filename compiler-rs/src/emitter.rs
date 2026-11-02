@@ -185,6 +185,45 @@ pub static MEMBER_METHOD_NAMES: &[&str] = &[
     "add", "delete", "get", "set", "toString", "valueOf", "includes",
 ];
 
+/// Python builtins the compiler LOWERS itself, in either target.
+///
+/// This is the emitter's own copy of the honoured set, and it is deliberately
+/// small and literal rather than derived: a name lands here only when there is
+/// a match arm that rewrites it. `check.rs` has the authoring-facing list with
+/// the conformance test that proves each name is honoured; this one exists so
+/// `is_element_call` can refuse to read `map(fn, xs)` as the JSX element
+/// `<map>{fn}{xs}</map>`, which drops the receiver and silently drops the call.
+pub static PYTHON_BUILTIN_NAMES: &[&str] = &[
+    "abs",
+    "all",
+    "any",
+    "bool",
+    "chr",
+    "divmod",
+    "enumerate",
+    "filter",
+    "float",
+    "int",
+    "isinstance",
+    "len",
+    "list",
+    "map",
+    "max",
+    "min",
+    "ord",
+    "pow",
+    "print",
+    "range",
+    "repr",
+    "reversed",
+    "round",
+    "sorted",
+    "str",
+    "sum",
+    "type",
+    "zip",
+];
+
 pub static JS_BUILTIN_GLOBALS: &[&str] = &[
     "Math",
     "Date",
@@ -926,6 +965,15 @@ impl Emitter {
             if self.imported_names.borrow().contains(id) {
                 return false;
             }
+            // A Python builtin the compiler lowers is never an element, whatever
+            // the capitalisation rule says. `map` and `filter` ARE real HTML tags
+            // (`<map>`, `<filter>`) and `Map`/`Filter` classify as components, so
+            // `map(fn, xs)` was emitted as `<map>{fn}{xs}</map>`: the receiver was
+            // dropped and the mapping never happened, with a green build. The
+            // lowerer below already knows the correct shape for these names.
+            if PYTHON_BUILTIN_NAMES.contains(&id.as_str()) {
+                return false;
+            }
         }
         // A MEMBER call in expression position is almost never a tag.
         //
@@ -1199,7 +1247,17 @@ impl Emitter {
                     if kwargs.is_empty() {
                         // Two-argument and variadic forms first: max(a, b),
                         // min(a, b), max(xs, key=...) is unsupported on purpose.
-                        if args.len() >= 2 {
+                        //
+                        // Only the names whose ONLY arity is two belong here.
+                        // `pow`, `sum` and `round` are symmetric in the number
+                        // of arguments, and dispatching them from this arm on
+                        // `args.len() >= 2` swallowed every later branch: the
+                        // `args.len() == 1` arm never ran for them, so
+                        // `pow(2)` emitted `Math.pow(2)` and the dedicated
+                        // `sum(xs, start)` / `round(x, n)` branches below were
+                        // dead code that no test could reach.
+                        let arity_two_only = matches!(id.as_str(), "max" | "min" | "isinstance");
+                        if args.len() >= 2 && arity_two_only {
                             let mut all = Vec::new();
                             for a in args {
                                 all.push(self.js(a)?);
@@ -1223,6 +1281,59 @@ impl Emitter {
                                 }
                                 _ => {}
                             }
+                        }
+                        if args.len() == 2 {
+                            let arg = self.js(&args[0])?;
+                            let arg2 = self.js(&args[1])?;
+                            match id.as_str() {
+                                // `divmod(a, b)` -> [a // b, a % b]. This arm is
+                                // what makes it work: the one-argument arm below
+                                // can never see a two-argument call, so before
+                                // this the name emitted verbatim and threw
+                                // `ReferenceError: divmod is not defined`.
+                                "divmod" => {
+                                    self.used_helpers.borrow_mut().insert("divmod".into());
+                                    return Ok(format!("divmod({}, {})", arg, arg2));
+                                }
+                                // `map(fn, xs)` -> the ARRAY is the receiver, the
+                                // callable is the argument — the opposite of
+                                // `xs.map(fn)`. Emitting `fn.map(xs)` asks a
+                                // function for a method it does not have.
+                                "map" => return Ok(format!("(fn => {}.map(fn))({})", arg2, arg)),
+                                "filter" => return Ok(format!("(fn => {}.filter(fn))({})", arg2, arg)),
+                                // `hasattr(x, "y")` and `setattr(x, "y", v)`.
+                                // These used to emit verbatim: `check.rs` saw
+                                // the name, found it on its "not provided"
+                                // list, and the build failed — the honest
+                                // outcome, but the wrong answer, because both
+                                // have an exact JS equivalent.
+                                // `getattr(x, "y")` without a default. The
+                                // runtime raises AttributeError rather than
+                                // returning undefined — that difference is what
+                                // makes the three-argument form mean anything.
+                                "getattr" => {
+                                    self.used_helpers.borrow_mut().insert("getattr".into());
+                                    return Ok(format!("getattr({}, {})", arg, arg2));
+                                }
+                                "hasattr" => {
+                                    self.used_helpers.borrow_mut().insert("hasattr".into());
+                                    return Ok(format!("hasattr({}, {})", arg, arg2));
+                                }
+                                _ => {}
+                            }
+                        }
+                        // The three-argument forms. `setattr` needs all three
+                        // arities to be considered here because the two-argument
+                        // arm above cannot see it, and a missed arity shows up as
+                        // a call to an identifier that was never emitted as an
+                        // import — a ReferenceError with a green build.
+                        if args.len() == 3 && (id == "getattr" || id == "setattr") {
+                            self.used_helpers.borrow_mut().insert(id.clone());
+                            let mut all = Vec::new();
+                            for a in args {
+                                all.push(self.js(a)?);
+                            }
+                            return Ok(format!("{}({})", id, all.join(", ")));
                         }
                         if args.len() == 1 {
                             let arg = self.js(&args[0])?;
@@ -1410,6 +1521,23 @@ impl Emitter {
                             }
                             "ord" => return Ok(format!("{}.charCodeAt(0)", arg)),
                             "chr" => return Ok(format!("String.fromCharCode({})", arg)),
+                            // Python's short-circuiting quantifiers. `any(xs)`
+                            // is not `xs.some()`: with no callable, that
+                            // throws. The runtime helpers do the real thing,
+                            // including the empty-sequence answers (any -> False,
+                            // all -> True) that a JS developer would not guess.
+                            "any" => {
+                                self.used_helpers.borrow_mut().insert("any".into());
+                                return Ok(format!("any({})", arg));
+                            }
+                            "all" => {
+                                self.used_helpers.borrow_mut().insert("all".into());
+                                return Ok(format!("all({})", arg));
+                            }
+                            "repr" => {
+                                self.used_helpers.borrow_mut().insert("repr".into());
+                                return Ok(format!("repr({})", arg));
+                            }
                             _ => {}
                         }
                     }
@@ -1626,6 +1754,17 @@ impl Emitter {
             // already carries the backticks and any `${...}` inside it.
             Kind::TaggedTemplate { tag, raw } => Ok(format!("{}{}", self.js(tag)?, raw)),
             Kind::Super => Ok("super".to_string()),
+            // A bare `super().name` is rejected by the parser, so reaching here
+            // means the node was used as a callee. `__init__` is the parent
+            // constructor and JS spells that `super(...)`; anything else is
+            // `super.name(...)`.
+            Kind::SuperMember { member } => {
+                if member == "__init__" {
+                    Ok("super".to_string())
+                } else {
+                    Ok(format!("super.{}", str_method(member)))
+                }
+            }
             Kind::Await(v) => Ok(format!("await {}", self.js(v)?)),
             // `new Foo(args)` where Foo is a class declared in this file: the Call
             // arm above already prefixes `new` for class names, so wrapping again

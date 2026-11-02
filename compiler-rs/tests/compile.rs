@@ -1367,3 +1367,47 @@ fn test_method_call_on_an_uppercase_object_is_a_call() {
     assert_contains(&out, &["Math.max(1, 2)"]);
     assert_contains(&out, &["console.log(\"x\")"]);
 }
+
+// [xihanzu-NR]
+// ---------------------------------------------------------------- super()
+
+/// `super().method()` on a parent that is not `__init__`.
+///
+/// This used to be a PARSE ERROR — "unexpected Dot" — so no form of a parent
+/// method call worked. It was recorded as a limitation of keyword arguments,
+/// which understated it: the keyword handling was never reached.
+#[test]
+fn super_method_call_emits_super_dot_name() {
+    let src = "class Base:\n    def greet(self, name):\n        return name\nclass Kid(Base):\n    def hi(self):\n        return super().greet(\"x\")\n";
+    let out = comp(src);
+    assert_contains(&out, &[r#"super.greet("x")"#]);
+    assert_not_contains(&out, &["super.__init__", "super().greet"]);
+}
+
+/// The constructor spelling keeps working: `super().__init__(x)` is a bare
+/// `super(x)` in JS, never `super.__init__(x)`.
+#[test]
+fn super_init_stays_a_bare_super_call() {
+    let src = "class Base:\n    def __init__(self, a):\n        self.a = a\nclass Kid(Base):\n    def __init__(self, a):\n        super().__init__(a)\n";
+    let out = comp(src);
+    assert_contains(&out, &["super(a);"]);
+    assert_not_contains(&out, &["super.__init__"]);
+}
+
+/// `super` is not a value in JS, so a member access without a call is an error
+/// with a hint, not silently-emitted nonsense.
+#[test]
+fn super_member_without_a_call_is_rejected() {
+    let src = "class Base:\n    def __init__(self):\n        self.a = 1\nclass Kid(Base):\n    def hi(self):\n        return super().a\n";
+    let e = comp_err(src);
+    assert!(e.msg.contains("super"), "{}", e.msg);
+}
+
+/// Python snake_case method names are spelled the same in JS, and the member
+/// path must not mangle them: `__init__` is the only special case.
+#[test]
+fn super_method_snake_case_name_is_preserved() {
+    let src = "class Base:\n    def render_text(self):\n        return \"x\"\nclass Kid(Base):\n    def hi(self):\n        return super().render_text()\n";
+    let out = comp(src);
+    assert_contains(&out, &["super.render_text()"]);
+}

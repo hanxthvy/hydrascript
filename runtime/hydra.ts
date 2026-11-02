@@ -20,6 +20,105 @@ import {
   pickPageComponent as core_pick_page,
 } from './router-core.js'
 
+/* ------------------------------------------------------- python builtins
+ *
+ * The handful of Python builtins that have no JavaScript equivalent but DO have
+ * an exact one. Each of these lives here rather than in emitted inline code for
+ * the same reason `len_of` does: the correct behaviour is a decision, and a
+ * decision written once can be tested once.
+ *
+ * `any` and `all` are Python's short-circuiting forms — `xs.some(fn)` is the
+ * equivalent for an array of booleans, but `any(xs)` on a boolean array is what
+ * a Python developer actually writes, and `Array.prototype.some` with no
+ * argument throws.
+ */
+
+/**
+ * `any(xs)` — True if any element is truthy.
+ *
+ * Short-circuits like Python. An empty sequence is False, not undefined.
+ */
+export function any(xs: any): boolean {
+  if (!xs) return false
+  if (Array.isArray(xs)) return xs.some((x) => Boolean(x))
+  if (typeof xs[Symbol.iterator] === 'function') {
+    for (const x of xs) if (x) return true
+    return false
+  }
+  return Boolean(xs)
+}
+
+/** `all(xs)` — True if every element is truthy. Empty is True, as in Python. */
+export function all(xs: any): boolean {
+  if (xs === null || xs === undefined) return false
+  if (Array.isArray(xs)) return xs.every((x) => Boolean(x))
+  if (typeof xs[Symbol.iterator] === 'function') {
+    for (const x of xs) if (!x) return false
+    return true
+  }
+  return Boolean(xs)
+}
+
+/**
+ * `getattr(obj, name, default)` — Python's attribute read with a fallback.
+ *
+ * The two-argument form raises when the name is absent; the three-argument form
+ * returns the default. Distinguishing "absent" from "present but undefined" is
+ * the whole point, so `in` is used rather than a truthiness check.
+ */
+export function getattr(obj: any, name: string, ...rest: any[]): any {
+  if (obj === null || obj === undefined) {
+    if (rest.length >= 1) return rest[0]
+    throw new TypeError(`getattr(): attribute '${name}' on ${obj}`)
+  }
+  if (name in Object(obj)) return obj[name]
+  if (rest.length >= 1) return rest[0]
+  throw new AttributeError(`'${name}'`)
+}
+
+/** `hasattr(obj, name)` — never raises, unlike a bare attribute read. */
+export function hasattr(obj: any, name: string): boolean {
+  return obj !== null && obj !== undefined && name in Object(obj)
+}
+
+/** `setattr(obj, name, value)` — returns the value, so it can be used inline. */
+export function setattr(obj: any, name: string, value: any): any {
+  if (obj === null || obj === undefined) {
+    throw new TypeError(`setattr(): cannot set '${name}' on ${obj}`)
+  }
+  obj[name] = value
+  return value
+}
+
+/**
+ * `repr(x)` — the debugging form.
+ *
+ * Not identical to Python's: a JS object has no `__repr__`, so the closest
+ * faithful thing is JSON for plain data and `String(x)` for everything else.
+ * Claiming more than that would be a lie the first time it was used on a class.
+ */
+export function repr(x: any): string {
+  if (typeof x === 'string') return JSON.stringify(x)
+  if (x === null) return 'None'
+  if (x === undefined) return 'None'
+  if (typeof x === 'object') {
+    try {
+      return JSON.stringify(x)
+    } catch {
+      return String(x)
+    }
+  }
+  return String(x)
+}
+
+/** An `AttributeError` for `getattr`/`setattr`: a real class, so `except` works. */
+export class AttributeError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'AttributeError'
+  }
+}
+
 /* ------------------------------------------------------------------ state */
 
 /**

@@ -378,6 +378,51 @@ within about 10 seconds. It does **not** push updates to the browser — there i
 no websocket, no hot-module protocol. You refresh the page. Calling that HMR
 would be wrong, so this README does not.
 
+### File-based routing
+
+`src/pages/` is the route table. The filename decides the URL, and `hydra routes`
+prints the result so that none of it is hidden.
+
+```
+src/pages/index.hyx             -> /
+src/pages/about.hyx             -> /about
+src/pages/blog/index.hyx        -> /blog
+src/pages/blog/[slug].hyx       -> /blog/:slug
+src/pages/docs/[...rest].hyx    -> /docs/*      (one segment or more)
+src/pages/files/[[...rest]].hyx -> /files/*     (also /files)
+src/pages/(marketing)/price.hyx -> /price       (group: layout scope only)
+src/pages/_partials/Hero.hyx    -> not routable
+```
+
+`_layout.hyx` wraps every route in its folder and below, `_404.hyx` renders when
+nothing matches, and `_error.hyx` is the error boundary for its folder. All three
+may appear at several levels; the nearest one wins.
+
+Two files that claim the same URL are a **build error naming both files**, not a
+race decided silently. That covers `blog/[slug].hyx` + `blog/[id].hyx` (one URL
+position, two parameter names) and `about.hyx` + `about/index.hyx` (one URL, two
+files).
+
+The directory is configurable through `"routes"` in `hydraconfig.json`, or turned
+off with `"routes": false`.
+
+### Pre-rendering, per route
+
+**A build writes one HTML file per static route**: `dist/about/index.html`, not
+one `dist/index.html` for the whole site. Dynamic routes are skipped and **named**
+in the build log, because a URL with a parameter has no single page to build:
+
+```
+[hydra] 4 route(s) from src/pages, 1 dynamic (/blog/:slug)
+[hydra] SSG: pre-rendered 3/3 static route(s) into dist/
+[hydra] SSG: 1 dynamic route(s) left as the client shell (/blog/:slug) —
+        a URL with a parameter has no single page to build
+```
+
+The runtime gate now loads **every** `index.html` the build produced, not only the
+root one: with per-route HTML, checking one page leaves every other route
+unchecked, which is exactly where a route bug lives.
+
 **On SSG:** pre-rendering is opt-in per project (`"rendering": { "ssg": true }`)
 and the example projects ship with it off, so their `dist/index.html` is a
 ~400-byte shell that renders on the client. With `ssg: true`, React's
@@ -581,19 +626,27 @@ Honest list, current as of 0.3.5:
   `!r` / `!s` / `!a` mean `String(x)`. One caveat: `toLocaleString` rounds a
   `.0f` tie away from zero where Python rounds to even, so `1500.5` prints
   `1,501` rather than `1,500`.
-- No `getattr(x, "y", default)`, no multiple inheritance, no `super().method()`
-  with keyword arguments.
+- No multiple inheritance. The compiler says so by name rather than emitting
+  something that throws at construction time (see
+  [MIGRATING.md](MIGRATING.md)).
 - Keyword arguments work for functions defined in the same file; imported
   functions must be called positionally (the compiler cannot see their
   signature).
 - Prebuilt binary is Linux x86_64 only, so macOS/Windows/ARM builds from source.
-- Some Python builtins have no JS equivalent and are **not** provided: `any`,
-  `all`, `map`, `filter`, `getattr`, `setattr`, `hasattr`, `repr`. A build now
-  fails on them rather than shipping a `ReferenceError` (see
-  [MIGRATING.md](MIGRATING.md)); `xs.some(...)` / `xs.every(...)` /
-  `xs.map(...)` are the equivalents.
-- File-based routing and `hydra-lsp` are planned, not present. Older documents
-  in this repo's history described them as if they existed; they do not.
+- The builtins with no exact JS equivalent are provided, and their differences
+  are stated rather than hidden: `any` / `all` short-circuit and answer the
+  empty-sequence cases the way Python does (`any([])` is `False`, `all([])` is
+  `True`); `getattr(x, "y")` with no default raises `AttributeError` rather than
+  returning `undefined`; `repr` is JSON for plain data and `String(x)`
+  elsewhere, because a JS object has no `__repr__`. Names with genuinely no
+  answer (`frobnicate`, a typo) still fail the build rather than shipping a
+  `ReferenceError`.
+- `hydra-lsp` is planned, not present. Older documents in this repo's history
+  described it as if it existed; it does not.
+- File-based routing exists and is documented above, but it is new: the
+  `_layout` / `_404` / `_error` conventions and pre-rendering have not been used
+  at scale, and `hydra dev` still rebuilds without pushing updates to the
+  browser.
 
 ---
 

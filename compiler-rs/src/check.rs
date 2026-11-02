@@ -741,6 +741,7 @@ impl Checker {
             | Kind::Break
             | Kind::Continue
             | Kind::Super
+            | Kind::SuperMember { .. }
             | Kind::TemplateLiteral(_)
             | Kind::RawTS(_)
             | Kind::Import { .. }
@@ -1220,6 +1221,10 @@ const PYTHON_BUILTINS: &[&str] = &[
     // JavaScript, or to a name the emitter also imports from 'hydra'.
     "abs", "bool", "len", "list", "max", "min", "pow", "print", "reversed", "round", "sorted",
     "str", "sum", "int", "float", "isinstance", "enumerate", "range", "zip",
+    // Lowered to a JS expression or to a runtime helper that exists; the
+    // conformance test below is what keeps this list honest.
+    "type", "ord", "chr", "divmod", "any", "all", "map", "filter", "getattr",
+    "hasattr", "setattr", "repr",
     // Bare names that are always legal here, not builtins.
     "self", "cls",
 ];
@@ -1398,9 +1403,30 @@ mod tests {
     #[test]
     fn a_name_no_runtime_provides_is_still_reported() {
         // The fix above must not swallow the real finding: this is the class
-        // that made a build able to ship a crash.
-        let m = msgs("component A():\n    v = any([1])\n    div: f\"{v}\"\n");
-        assert!(m.iter().any(|s| s.contains("any")), "{m:?}");
+        // that made a build able to ship a crash. `any` USED to be the example
+        // here because it had no JS equivalent; it has one now (the runtime
+        // exports it), so the probe uses a name that genuinely has no answer.
+        let m = msgs("component A():\n    v = frobnicate([1])\n    div: f\"{v}\"\n");
+        assert!(m.iter().any(|s| s.contains("frobnicate")), "{m:?}");
+    }
+
+    /// The names that left the "no runtime provides this" list. Each has an
+    /// exact lowering, and a regression here would silently turn a working
+    /// program back into a build failure, so each is pinned.
+    #[test]
+    fn builtins_that_gained_an_equivalent_are_now_silent() {
+        for src in [
+            "component A():\n    v = any([1])\n    div: f\"{v}\"\n",
+            "component A():\n    v = all([1])\n    div: f\"{v}\"\n",
+            "component A(x):\n    v = hasattr(x, \"k\")\n    div: f\"{v}\"\n",
+            "component A(x):\n    v = setattr(x, \"k\", 1)\n    div: f\"{v}\"\n",
+            "component A(x):\n    v = repr(x)\n    div: f\"{v}\"\n",
+            "component A():\n    v = chr(65)\n    div: f\"{v}\"\n",
+            "component A():\n    v = divmod(7, 2)\n    div: f\"{v}\"\n",
+        ] {
+            let m = msgs(src);
+            assert_eq!(m.len(), 0, "expected no findings for {src:?}, got {m:?}");
+        }
     }
 
     #[test]
@@ -1582,6 +1608,22 @@ mod tests {
             ("zip", "zip(xs, ys)"),
             ("self", "self"),
             ("cls", "cls"),
+            // Every builtin that has an equivalent but is not a one-to-one JS
+            // rename needs an exercised case here, because the list above is
+            // what silences the checker and the loop below is what proves the
+            // silence is earned.
+            ("type", "type(x).__name__"),
+            ("ord", "ord(\"a\")"),
+            ("chr", "chr(65)"),
+            ("divmod", "divmod(a, b)"),
+            ("any", "any(xs)"),
+            ("all", "all(xs)"),
+            ("map", "map(f, xs)"),
+            ("filter", "filter(f, xs)"),
+            ("getattr", "getattr(x, \"k\", 0)"),
+            ("hasattr", "hasattr(x, \"k\")"),
+            ("setattr", "setattr(x, \"k\", 1)"),
+            ("repr", "repr(x)"),
         ];
         // The case table and the list must agree in BOTH directions, or the
         // test silently stops covering a name.
@@ -1625,13 +1667,34 @@ mod tests {
         }
     }
 
-    /// The specific bug that motivated the rule: `getattr` looked like a
-    /// builtin, so a call to it was accepted and emitted verbatim.
+    /// The specific bug that motivated the rule: a name that looks like a
+    /// builtin was accepted and emitted verbatim, so the build succeeded and the
+    /// browser threw a ReferenceError.
+    ///
+    /// `getattr` was that name. It is not any more — it has a runtime helper —
+    /// so the test keeps the RULE and changes the probe, rather than keeping the
+    /// probe and losing the rule. `frobnicate` has no such answer.
     #[test]
-    fn getattr_is_reported_not_silently_emitted() {
-        let m = msgs("def f(obj):\n    x = getattr(obj, \"k\", 0)\n    return x\n");
+    fn a_builtin_shaped_name_with_no_implementation_is_still_reported() {
+        let m = msgs("def f(obj):\n    x = frobnicate(obj, \"k\", 0)\n    return x\n");
         assert_eq!(m.len(), 1, "{m:?}");
-        assert!(m[0].contains("getattr"), "{m:?}");
+        assert!(m[0].contains("frobnicate"), "{m:?}");
+    }
+
+    /// `getattr` moved from "reported" to "lowered", and the lowering has to be
+    /// real: a silent checker plus a missing import is the exact failure the
+    /// rule above exists to prevent.
+    #[test]
+    fn getattr_is_lowered_to_the_runtime_helper() {
+        let src = "def f(obj):\n    x = getattr(obj, \"k\", 0)\n    return x\n";
+        let m = msgs(src);
+        assert_eq!(m.len(), 0, "getattr now has an implementation: {m:?}");
+        let (out, _) = crate::compile(src, "t.hys").expect("compiles");
+        assert!(out.contains("getattr("), "the call must survive: {out}");
+        assert!(
+            out.contains("import { getattr }") || out.contains("getattr } from 'hydra'"),
+            "and must be imported, or it is a ReferenceError: {out}"
+        );
     }
 
     #[test]

@@ -379,6 +379,52 @@ terlihat dalam sekitar 10 detik. Tapi **tidak** mendorong update ke browser —
 tidak ada websocket, tidak ada protokol hot-module. Kamu me-refresh halamannya.
 Menyebut itu HMR akan salah, jadi README ini tidak.
 
+### Routing berbasis berkas
+
+`src/pages/` adalah tabel route-nya. Nama berkas menentukan URL-nya, dan
+`hydra routes` mencetak hasilnya supaya tidak ada yang tersembunyi.
+
+```
+src/pages/index.hyx             -> /
+src/pages/about.hyx             -> /about
+src/pages/blog/index.hyx        -> /blog
+src/pages/blog/[slug].hyx       -> /blog/:slug
+src/pages/docs/[...rest].hyx    -> /docs/*      (satu segmen atau lebih)
+src/pages/files/[[...rest]].hyx -> /files/*     (boleh juga /files)
+src/pages/(marketing)/price.hyx -> /price       (grup: hanya untuk layout)
+src/pages/_partials/Hero.hyx    -> tidak routable
+```
+
+`_layout.hyx` membungkus semua route di foldernya ke bawah, `_404.hyx` dipakai
+saat tidak ada yang cocok, dan `_error.hyx` jadi batas error untuk foldernya.
+Ketiganya boleh ada di banyak level; yang terdekat menang.
+
+Dua berkas yang mengklaim URL yang sama adalah **error build** yang menyebut
+kedua berkasnya, bukan pertandingan yang diputuskan diam-diam. Itu berlaku untuk
+`blog/[slug].hyx` + `blog/[id].hyx` (satu posisi URL, dua nama parameter) dan
+untuk `about.hyx` + `about/index.hyx` (satu URL, dua berkas).
+
+Direktori route bisa diubah lewat `"routes"` di `hydraconfig.json`, atau
+dimatikan dengan `"routes": false`.
+
+### SSG per route
+
+**SSG menulis satu berkas HTML per route statis**: `dist/about/index.html`, bukan
+satu `dist/index.html` untuk seluruh situs. Route dinamis dilewati dan
+**disebutkan namanya** di log build, karena URL ber-parameter tidak punya satu
+halaman untuk dibangun:
+
+```
+[hydra] 4 route(s) from src/pages, 1 dynamic (/blog/:slug)
+[hydra] SSG: pre-rendered 3/3 static route(s) into dist/
+[hydra] SSG: 1 dynamic route(s) left as the client shell (/blog/:slug) —
+        a URL with a parameter has no single page to build
+```
+
+Runtime gate sekarang memeriksa **setiap** `index.html` yang dihasilkan, bukan
+hanya yang di akar: dengan HTML per-route, memeriksa satu halaman meninggalkan
+setiap route lain tanpa pemeriksaan.
+
 **Soal SSG:** pra-render bersifat opt-in per proyek
 (`"rendering": { "ssg": true }`) dan proyek contoh dikirim dengan itu mati, jadi
 `dist/index.html` mereka adalah cangkang ~400 byte yang render di klien. Dengan
@@ -573,20 +619,27 @@ Daftar jujur, per 0.3.5:
   specnya**, bukan hilang diam-diam. `!r` / `!s` / `!a` berarti `String(x)`.
   Satu catatan: `toLocaleString` membulatkan tie `.0f` menjauh dari nol,
   sedangkan Python membulatkan ke genap, jadi `1500.5` mencetak `1,501`.
-- Tidak ada `getattr(x, "y", default)`, tidak ada multiple inheritance, tidak ada
-  `super().method()` dengan argumen kata kunci.
+- Tidak ada multiple inheritance. Compiler mengatakannya dengan menyebut
+  namanya, bukan mengirim kode yang meledak saat konstruksi (lihat
+  [MIGRATING.md](MIGRATING.md)).
 - Argumen kata kunci bekerja untuk fungsi yang didefinisikan di berkas yang sama;
   fungsi impor harus dipanggil secara posisional (compiler tidak bisa melihat
   signature-nya).
 - Biner prabangun hanya Linux x86_64, jadi macOS/Windows/ARM membangun dari
   sumber.
-- Sebagian builtin Python tidak punya padanan JS dan **tidak** disediakan: `any`,
-  `all`, `map`, `filter`, `getattr`, `setattr`, `hasattr`, `repr`. Build sekarang
-  gagal pada nama-nama itu alih-alih mengirim `ReferenceError` (lihat
-  [MIGRATING.md](MIGRATING.md)); padanannya `xs.some(...)` / `xs.every(...)` /
-  `xs.map(...)`.
-- File-based routing dan `hydra-lsp` masih rencana, belum ada. Dokumen lama di
-  riwayat repo ini menggambarkannya seolah sudah ada; tidak.
+- Builtin yang tidak punya padanan JS persis **disediakan**, dan bedanya
+  dinyatakan alih-alih disembunyikan: `any` / `all` short-circuit dan menjawab
+  kasus urutan kosong seperti Python (`any([])` = `False`, `all([])` = `True`);
+  `getattr(x, "y")` tanpa default **melempar** `AttributeError`, bukan
+  mengembalikan `undefined`; `repr` adalah JSON untuk data biasa dan `String(x)`
+  untuk sisanya, karena objek JS tidak punya `__repr__`. Nama yang benar-benar
+  tidak punya jawaban (salah ketik) tetap menggagalkan build alih-alih mengirim
+  `ReferenceError`.
+- `hydra-lsp` masih rencana, belum ada. Dokumen lama di riwayat repo ini
+  menggambarkannya seolah sudah ada; tidak.
+- File-based routing sudah ada dan didokumentasikan di atas, tapi masih baru:
+  konvensi `_layout` / `_404` / `_error` dan pra-render belum dipakai dalam
+  skala, dan `hydra dev` masih build ulang tanpa mendorong update ke browser.
 
 ---
 

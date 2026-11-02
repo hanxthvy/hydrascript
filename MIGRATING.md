@@ -11,6 +11,51 @@ precisely when it cannot. "Some things changed" is not an entry.
 
 ---
 
+## 0.5.x -> 0.6.0
+
+**Nothing here requires editing a file.** Both changes make something work that
+previously did not, so the migration is "delete the workaround".
+
+### `map(fn, xs)` and `filter(fn, xs)` are calls now, not elements
+
+If a project worked around the old behaviour by writing `xs.map(fn)`, that keeps
+working — it always did, and it is still the clearer spelling for a method call.
+What changes is the bare form: `map(fn, xs)` used to compile to the JSX element
+`<map>{fn}{xs}</map>`, which dropped `fn` and `xs` entirely. If a project had a
+real `<map>` element inside a tree, that is unaffected: the element rule applies
+to a tree head or a dotted head, and only the bare CALL is a call.
+
+Nothing to do. If a build that used the old, broken form now behaves differently,
+it is because it was not doing what the source said.
+
+### `getattr`, `hasattr`, `setattr`, `repr`, `any`, `all` no longer fail the build
+
+They used to be reported by `hydra check --strict` and refused at build time,
+because there was no implementation and shipping a `ReferenceError` is worse than
+failing early. There is an implementation now, so a project that set
+`HYDRA_NO_CHECK=1` to get past the check for one of these names can drop it.
+
+The behaviour, precisely, because these are the places Python and JavaScript
+disagree:
+
+- `any([])` is `False` and `all([])` is `True`, as in Python. `Array.prototype.some`
+  and `.every` agree with this; `Array.prototype.some()` with no argument throws,
+  which is why the bare form does not map to it.
+- `getattr(x, "y")` with **no** default raises `AttributeError`, it does not
+  return `undefined`. The three-argument form returns the default.
+- `hasattr` never raises, including on `null` and `undefined`.
+- `repr` is `JSON.stringify` for strings and plain data, `String(x)` otherwise. It
+  is not Python's `repr`, and it does not claim to be: a JS object has no
+  `__repr__` to call.
+
+### `super().method()` parses
+
+Previously a parse error. `super().__init__(...)` still becomes a bare
+`super(...)`; any other member becomes `super.name(...)`. `super().name` without a
+call is an error with a hint, because `super` is not a value in JS either.
+
+---
+
 ## 0.3.x -> 0.4.0
 
 The database and list sections below shipped in 0.3.4; the number only caught up

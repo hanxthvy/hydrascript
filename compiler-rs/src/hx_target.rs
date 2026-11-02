@@ -219,6 +219,15 @@ impl JsEmitter {
                 Ok(format!("{}?.{}", o, str_method(name)))
             }
             Kind::Super => Ok("super".to_string()),
+            // See the .hyx emitter: `__init__` becomes a bare `super(...)`,
+            // every other member becomes `super.name(...)`.
+            Kind::SuperMember { member } => {
+                if member == "__init__" {
+                    Ok("super".to_string())
+                } else {
+                    Ok(format!("super.{}", str_method(member)))
+                }
+            }
             Kind::Index { obj, index } => {
                 let o = self.js(obj)?;
                 let i = self.js(index)?;
@@ -504,6 +513,24 @@ impl JsEmitter {
                                 self.used_helpers.borrow_mut().insert("len_of".into());
                                 return Ok(format!("len_of({})", arg));
                             }
+                            // The plain-JS side of the language (`hydra run x.hys`)
+                            // gets the same builtins, or `run` and `build` answer
+                            // differently for the same source — which is worse
+                            // than either answer alone.
+                            "any" => {
+                                self.used_helpers.borrow_mut().insert("any".into());
+                                return Ok(format!("any({})", arg));
+                            }
+                            "all" => {
+                                self.used_helpers.borrow_mut().insert("all".into());
+                                return Ok(format!("all({})", arg));
+                            }
+                            "repr" => {
+                                self.used_helpers.borrow_mut().insert("repr".into());
+                                return Ok(format!("repr({})", arg));
+                            }
+                            "ord" => return Ok(format!("{}.charCodeAt(0)", arg)),
+                            "chr" => return Ok(format!("String.fromCharCode({})", arg)),
                             "pow" => return Ok(format!("Math.pow({})", arg)),
                             "str" => return Ok(format!("String({})", arg)),
                             "abs" => return Ok(format!("Math.abs({})", arg)),
@@ -547,6 +574,35 @@ impl JsEmitter {
                         let a = self.js(&args[0])?;
                         let b = self.js(&args[1])?;
                         return Ok(format!("{}.reduce((acc, x) => acc + x, {})", a, b));
+                    }
+                    // `divmod`, and the attribute trio. Present on both targets
+                    // because the runtime helpers are target-agnostic; the only
+                    // thing that differs is which JS this file used to be.
+                    if args.len() == 2 {
+                        let a = self.js(&args[0])?;
+                        let b = self.js(&args[1])?;
+                        match id.as_str() {
+                            "divmod" => {
+                                self.used_helpers.borrow_mut().insert("divmod".into());
+                                return Ok(format!("divmod({}, {})", a, b));
+                            }
+                            "getattr" => {
+                                self.used_helpers.borrow_mut().insert("getattr".into());
+                                return Ok(format!("getattr({}, {})", a, b));
+                            }
+                            "hasattr" => {
+                                self.used_helpers.borrow_mut().insert("hasattr".into());
+                                return Ok(format!("hasattr({}, {})", a, b));
+                            }
+                            "map" => return Ok(format!("(fn => {}.map(fn))({})", b, a)),
+                            "filter" => return Ok(format!("(fn => {}.filter(fn))({})", b, a)),
+                            _ => {}
+                        }
+                    }
+                    if args.len() == 3 && (id == "getattr" || id == "setattr") {
+                        self.used_helpers.borrow_mut().insert(id.clone());
+                        let bits: Result<Vec<_>, _> = args.iter().map(|a| self.js(a)).collect();
+                        return Ok(format!("{}({})", id, bits?.join(", ")));
                     }
                     // `pow(a, b)`
                     if id == "pow" && args.len() == 2 {
