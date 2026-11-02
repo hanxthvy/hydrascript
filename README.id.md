@@ -610,7 +610,7 @@ yang ada karena temuan profil itu, dan cara mengerjakan runtime gate ada di
 
 ## Keterbatasan yang diketahui
 
-Daftar jujur, per 0.6.1:
+Daftar jujur, per 0.6.2:
 
 - **Format spec f-string diterjemahkan, bukan dibuang.** `f"{x:.2f}"` jadi
   pemanggilan runtime yang membulatkan seperti Python, `f"{n:,.0f}"`

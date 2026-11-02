@@ -617,7 +617,7 @@ the runtime gate are in
 
 ## Known limitations
 
-Honest list, current as of 0.6.1:
+Honest list, current as of 0.6.2:
 
 - **f-string format specs are translated, not dropped.** `f"{x:.2f}"` compiles to
   a runtime call that rounds the way Python does, `f"{n:,.0f}"` groups the
