@@ -20,6 +20,48 @@ written to avoid.
 
 ---
 
+## 0.9.x -> 0.10.0
+
+**Nothing here requires editing a file, unless you already have a `.env`.**
+
+### A client file that reads a non-`PUBLIC_` variable now fails the build
+
+Before 0.10, `process.env.ANYTHING` in a component or a `.hys` it imports
+compiled to a real `process` lookup, which is `undefined` in a browser — a
+silent empty value, or a crash, depending on what you did with it. It is now a
+build error naming the variable and the file.
+
+Two ways out, and the choice is about where the value belongs, not about
+syntax:
+
+- **The value is server-only.** Move the read into a `*.server.hys` loader, an
+  `src/api` route, or `src/middleware.hys`, and pass the result to the page as a
+  prop (`loader` returns props) or fetch it from the API route.
+- **The value is genuinely public.** Rename it to `PUBLIC_<NAME>` in `.env`. It
+  is inlined into the bundle as a literal, which is exactly what you are
+  agreeing to when you rename it.
+
+A computed key — `process.env[name]` — is refused as well, and the fix is to
+write the dot form: a computed key cannot be inlined at build time, and could
+not be checked either.
+
+### `hydra build` defaults to `--target static`, which is what it always did
+
+If your project has no `src/api` and no `src/middleware.hys`, nothing changes:
+the static target is the old behaviour, and the only new output is a `.hydra/build.json`
+record. If you DO add API routes, `hydra build` prints every one of them as
+dropped. That is not a warning to ignore — add `--target node` (or
+`"build": { "target": "node" }`) to keep them.
+
+### `.env` is read now, and a real environment variable wins
+
+If a project has a `.env` that something else was loading, the values are the
+same and the precedence is the one you would expect: the environment first, the
+file second. Interpolation is NOT supported — `${OTHER}` stays the literal
+string — so a `.env` that relied on it needs the value written out.
+
+---
+
 ## 0.5.x -> 0.6.0
 
 **Nothing here requires editing a file.** Both changes make something work that

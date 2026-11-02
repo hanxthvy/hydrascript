@@ -95,6 +95,12 @@
           "type": "boolean",
           "default": true,
           "description": "Emit source maps for the client bundle."
+        },
+        "target": {
+          "type": "string",
+          "enum": ["node", "static"],
+          "default": "static",
+          "description": "What the artifact is for. `static` writes HTML/JS/CSS only and does NOT serve src/api or src/middleware.hys (it lists every dropped route at build time). `node` also includes the API routes, middleware, loaders and actions. `hydra build --target` overrides this for one build. There are deliberately only two targets."
         }
       }
     },

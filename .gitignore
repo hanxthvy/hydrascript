@@ -31,6 +31,11 @@ target/
 *.swp
 .vscode-test/
 
+# A project's secrets. `.env.example` is committed (it has no values); `.env`
+# itself holds the ones that must never reach a repository, and `PUBLIC_*` in
+# it is inlined into the client bundle, so it is not a file to share blindly.
+.env
+
 # Packed tarballs from `npm pack` / the pack-install check.
 *.tgz
 

@@ -137,6 +137,62 @@ that name promised, and nothing beyond it.
 
 ---
 
+## 0.11.0 — 2026-11-02
+
+**The server side, as one package: `.env` with a real secret split, API routes,
+middleware, and two build targets.** These shipped together because API routes
+without the split are a trap rather than a feature — the first component that
+reaches for `process.env.STRIPE_KEY` would have gotten `undefined` and shipped.
+
+### Added
+- **`.env`, with `PUBLIC_` as the only way into the browser.** A 25-line parser
+  (`KEY=VALUE`, `#` comments, quotes, no interpolation, no dotenv dependency).
+  `PUBLIC_*` is inlined into the client bundle as literal strings; everything
+  else stays on the server and is read with `env()` from `hydra/server`. A real
+  environment variable wins over the file, so a deploy's secrets are never
+  overridden by a `.env` that shipped in the tarball.
+- **A build that FAILS when a client file reads a non-`PUBLIC_` variable**, and
+  names the variable, the file and the line:
+
+  ```
+  ✘ [ERROR] src/lib/api.hys:5:32: STRIPE_KEY is not available in the browser.
+    Only names starting with PUBLIC_ are inlined into the client bundle...
+  ```
+
+  The check runs on the COMPILED output of every module in the client graph, so
+  a `.hys` pulled in by a component is covered, and a comment that merely
+  mentions a variable name is not. A computed key (`process.env[name]`) is
+  refused too: it cannot be inlined, so it would be a silent `undefined`.
+- **`src/api/*.hys` — one file, one URL, one exported function per HTTP method.**
+  `export def get(req)` and `export def post(req, body)` answer `/api/<file>` in
+  `hydra dev` and `hydra preview`. `(value, status)` sets the status, `None` is
+  `204`, a method that is not exported is a `405` with `Allow`, and a missing
+  URL is a JSON `404` rather than the SPA shell with a `200`.
+- **`src/middleware.hys` — one exported `handle(req)`** that can reply, mutate
+  the request, or return `None` to pass through. Scope is `/api` and below,
+  stated in the docs rather than left to be discovered.
+- **`hydra build --target node|static`.** Two targets, no adapters, no presets.
+  `static` stays the default because that is what every earlier release
+  produced. A static build prints every dropped API route and the middleware by
+  name, because an endpoint that builds "successfully" and 404s in production is
+  the failure that report exists to prevent.
+- **`api-routes.test.mjs`** — nine tests, six of which drive a real build and a
+  real `hydra dev` over a socket: GET and POST with an asserted JSON body,
+  middleware blocking one path and passing another, a `405`, a JSON `404`, a
+  build that fails naming the secret, and a `PUBLIC_` value that IS inlined
+  while the secret appears nowhere in `dist/`.
+
+### Changed
+- **`process` no longer trips the strict semantic check when every mention in a
+  file is a `process.env` read.** The checker has no concept of environment
+  access, so it reported `process` as "used but never bound" — which would have
+  made `.env` unusable and taught authors to disable the whole check. A bare
+  `process.exit()` in a component still fails, because there is no `process`
+  object in a browser.
+- **`--target` rejects any third value at the command line**, before anything is
+  bundled, rather than falling back to a default.
+
+---
 
 ## 0.9.0 — 2026-11-02
 
