@@ -626,9 +626,12 @@ Daftar jujur, per 0.3.5:
   diekspansi ke 100 digit pecahan — di luar `1e-100` bedanya di bawah presisi
   apa pun yang bisa dinyatakan f-string, dan itu batas yang disebut, bukan
   tebakan.
-- Tidak ada multiple inheritance. Compiler mengatakannya dengan menyebut
-  namanya, bukan mengirim kode yang meledak saat konstruksi (lihat
-  [MIGRATING.md](MIGRATING.md)).
+- **Tidak ada multiple inheritance, dan itu sengaja.** Base kedua harus
+  diemulasi, dan tiap emulasi berbeda dari Python di tempat yang tidak bisa
+  dilihat penulisnya: base mana yang menang di diamond, apakah `super()`
+  mengikuti MRO, apa jawaban `isinstance(x, Both)`. Ini ditolak dengan
+  menyebut namanya saat parse, di kedua target (hint-nya dulu menyarankan berkas
+  `.hys`, yang gagal sama persis — bug, diperbaiki di 0.6.1).
 - Argumen kata kunci bekerja untuk fungsi yang didefinisikan di berkas yang sama;
   fungsi impor harus dipanggil secara posisional (compiler tidak bisa melihat
   signature-nya).

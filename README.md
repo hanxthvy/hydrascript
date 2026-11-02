@@ -631,9 +631,12 @@ Honest list, current as of 0.3.5:
   for a `f`/`F`/`e`/`E` spec. The tie is detected after expanding the double to
   100 fraction digits — beyond `1e-100` the difference is under any precision an
   f-string can express, which is a bound rather than a guess.
-- No multiple inheritance. The compiler says so by name rather than emitting
-  something that throws at construction time (see
-  [MIGRATING.md](MIGRATING.md)).
+- **No multiple inheritance, on purpose.** A second base would have to be
+  emulated, and every emulation differs from Python somewhere the author cannot
+  see: which base wins in a diamond, whether `super()` follows the MRO, what
+  `isinstance(x, Both)` answers. This is refused by name at parse time, on both
+  targets (the hint used to suggest a `.hys` file, which failed identically — a
+  bug, fixed in 0.6.1).
 - Keyword arguments work for functions defined in the same file; imported
   functions must be called positionally (the compiler cannot see their
   signature).

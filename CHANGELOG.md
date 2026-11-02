@@ -35,6 +35,12 @@ pairs and 12 grouped pairs, including the ties and the near-ties
 (`0.125`→`0.12`, `0.135`→`0.14`, `2.675`→`2.67`, `1.005`→`1.00`, `9.995`→`9.99`,
 `99.95`→`100.0`, `-0.5`→`-0`), all identical to `format()`.
 
+### Fixed
+- **A hint that sent you somewhere that fails the same way.** `class C(A, B)`
+  said "extend one base and compose the rest, or use a .hys file", but the parse
+  is shared and a `.hys` file was refused identically. The hint now names the two
+  options that actually work.
+
 ### Notes
 - The tie is detected after expanding the double to 100 fraction digits, which is
   past the ~767 a double can need; beyond `1e-100` the difference is under any

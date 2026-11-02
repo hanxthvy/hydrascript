@@ -1394,12 +1394,28 @@ impl Parser {
                 None
             } else {
                 let b = self.ident_or_dotted()?;
-                // `class Foo(Base, Mixin)` — the first base is the JS `extends`;
-                // the rest are a documented limitation rather than silence.
+                // `class Foo(Base, Mixin)` is refused, and the refusal is the
+                // whole feature: JavaScript has one prototype chain, so a second
+                // base has to be emulated, and every emulation differs from
+                // Python somewhere the author cannot see — which base wins for a
+                // diamond, whether `super()` walks the MRO, what
+                // `isinstance(x, Both)` answers. Emitting one of those
+                // silently is the failure mode this compiler refuses everywhere
+                // else.
+                //
+                // The hint used to end "or use a .hys file", which was a lie: the
+                // parse is shared and `.hys` failed identically. A hint that
+                // sends someone to a target with the same limitation costs them
+                // the time to discover that, so the real options are named.
                 if self.cur().ty == TokType::Comma {
                     return Err(self
-                        .err("multiple inheritance is not supported in the JS target".to_string())
-                        .with_hint("extend one base and compose the rest, or use a .hys file"));
+                        .err("multiple inheritance is not supported".to_string())
+                        .with_hint(
+                            "JavaScript has one prototype chain, so a second base \
+                             would silently differ from Python\n\
+                             = extend one base and hold the other as a member, \
+                             or copy the methods you need",
+                        ));
                 }
                 self.eat(TokType::RParen)?;
                 Some(b)
