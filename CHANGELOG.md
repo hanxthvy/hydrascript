@@ -12,6 +12,49 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## Unreleased
+
+**Per-page `meta`: the title and description a page declares, in its static HTML
+and after a client-side navigation.**
+
+`meta` was already accepted by the compiler and already did nothing. A page could
+declare `meta = {"title": "About — Hanz"}`, the build stayed green, and
+`dist/about/index.html` still said `<title>app</title>`. This work is the feature
+that name promised, and nothing beyond it.
+
+### Added
+- **`meta = {"title": ..., "description": ...}` in a page file**, written into
+  that route's static HTML: the `<title>` and the description tag are REPLACED in
+  place. A page without `meta` — and every route a project never gave one — keeps
+  the shell's title, which is what a page that claims nothing should say.
+- **The same values on a client navigation.** `Router()` applies the new route's
+  title after `navigate()`, and restores the SHELL's title when the new route
+  declares none. The values travel in the generated route table, so a navigation
+  costs no request: the build already knew them.
+- **`hydra dev` / `hydra preview`** apply the page's `meta` to the document they
+  render per request, so a dynamic route served by a server is not the one place
+  in the project with the app's title.
+
+### Shape, deliberately
+- **Two keys.** `title` and `description`. A third key is a build error that names
+  it, not a value that reaches no page. There is no `use_head`, no open-graph, no
+  per-route config file.
+- **Read from the source, not by importing the page.** The compiler emits a
+  module-level `meta` as a local `const`, so an import would not carry it — and a
+  page is a client module, which the build has no business running in node.
+- **`hydra routes --json` reports `meta` per route**, so the value is inspectable
+  without opening the generated table.
+
+### Not done, stated in the README
+- Metadata derived from the URL (`/blog/hello` wanting "hello" in its title) is
+  not static metadata. A dynamic route's shell keeps the app's title, and the
+  client sets the page's after hydration.
+- Open-graph, Twitter cards, canonical links and structured data are out of
+  scope. Each is a separate claim about a page and would need its own statement
+  of what makes it true.
+
+---
+
 ## 0.9.0 — 2026-11-02
 
 **Tests for the features 0.8 shipped, and four silent-failure bugs they found.**

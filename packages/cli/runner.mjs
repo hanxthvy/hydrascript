@@ -34,6 +34,7 @@ import {
   routesJson,
   matchRoute,
 } from './router.mjs';
+import { applyMeta } from './meta.mjs';
 
 /**
  * The entrypoint filenames, in priority order. ONE list: the runner resolves
@@ -1672,10 +1673,19 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
               // paint has the same data the server rendered from. Without it the
               // client fetches again and the two frames disagree — React says so
               // as a hydration mismatch, which is how this was found.
-              const html = injectLoaderData(
-                withBundle(inject(sourceHtml, rendered)),
-                route.pattern,
-                out && out.data,
+              //
+              // `meta` goes in AFTER that, on the whole document: the page's own
+              // `<title>` replaces the shell's, so a crawler and a tab read the
+              // route rather than the app. It is read from the scanner's table —
+              // the same source the client's route table is generated from — so
+              // the static HTML and a later client navigation cannot disagree.
+              const html = applyMeta(
+                injectLoaderData(
+                  withBundle(inject(sourceHtml, rendered)),
+                  route.pattern,
+                  out && out.data,
+                ),
+                route.meta,
               );
               fs.writeFileSync(htmlPathForPattern(route.pattern), html, 'utf8');
               renderedCount += 1;

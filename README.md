@@ -427,6 +427,9 @@ src/pages/_partials/Hero.hyx    -> not routable
 nothing matches, and `_error.hyx` is the error boundary for its folder. All three
 may appear at several levels; the nearest one wins.
 
+`hydra routes --json` includes each route's `meta`, so the title a page declares
+is inspectable from the shell rather than only by reading the build's output.
+
 Two files that claim the same URL are a **build error naming both files**, not a
 race decided silently. That covers `blog/[slug].hyx` + `blog/[id].hyx` (one URL
 position, two parameter names) and `about.hyx` + `about/index.hyx` (one URL, two
@@ -481,6 +484,49 @@ pre-rendering them would demonstrate the feature without exercising it.
 If a project has `src/pages` but its `App` never calls `Router()`, nothing is
 pre-rendered: with no router there is no route to pre-render, and the build says
 so instead of writing empty pages.
+
+### Metadata: `meta`
+
+A page may declare its own `<title>` and description as a module-level dict:
+
+```python
+# src/pages/about.hyx
+meta = {"title": "About — Hanz", "description": "Who writes this, and why."}
+
+component About():
+    ...
+```
+
+That is applied in two places, from one value:
+
+- **At build time**, into the static HTML for the route: `dist/about/index.html`
+  gets that `<title>` and that `<meta name="description">`, replacing the shell's.
+  A page with no `meta` keeps the shell's title, and so does every route a
+  project never gave one.
+- **On a client-side navigation**, by `Router()`, which is what every routable
+  project already renders. Navigating from `/` to `/about` sets the new title;
+  navigating back restores the shell's, because a page that declares nothing
+  must not inherit the title of the page before it.
+
+Two keys, `title` and `description`. A third is a **build error naming it**, not
+a value that sits in the file reaching no page: this is not a head manager, and
+it is not growing into one. It is also not a hook — there is no `use_head`, and
+adding one would be a second way to say the same thing.
+
+`meta` is read from the page's SOURCE, at the same place `rendering = "csr"` is
+read, and not by importing the page. The compiler emits a module-level `meta` as
+a local `const`, not an export, so importing would not carry it — and a page is a
+client module, so importing it during the build would run its imports in node,
+across the boundary `.server.hys` exists to keep.
+
+**Not done, deliberately:** a `title`/`description` that depends on the URL
+(`/blog/hello` wanting "hello" in its title) cannot be static metadata, and this
+does not pretend otherwise — a dynamic route's static shell has the app's title
+and the client sets the page's after hydration. A `rendering = "csr"` page is the
+same trade from the other side: it has no static HTML at all, so its title shows
+up when the client mounts. There is no open-graph, twitter card, canonical or
+structured-data support; those are separate promises about a page and each needs
+its own verifiable statement.
 
 ### Data: `loader` and `action`
 
@@ -974,6 +1020,7 @@ dates; the version numbers are targets and the order is the honest part.
 | 0.8 | Loaders re-run on a client-side navigation | shipped |
 | 0.9 | `hydra-lsp`: diagnostics, hover, go-to-definition, rename | shipped |
 | 0.9 | `hydra test`: component, route and snapshot tests | shipped |
+| next | Per-page `meta`: `<title>` and description, at SSG and on navigation | done, unreleased |
 | 1.0 | Incremental compile cache (content-addressed, on disk) | shipped |
 | 1.0 | Parallel compilation (worker pool, measured, off below scale) | shipped |
 | next | React Fast Refresh (state preserved across an edit) | not started |

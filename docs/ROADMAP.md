@@ -116,6 +116,19 @@ membuat SSG punya alasan untuk dipakai.
 Diverifikasi kalau: `dist/about/index.html` memuat `<title>` yang benar, dan
 `view-source` halaman itu bukan cangkang kosong.
 
+**Sudah dikirim** (lihat `CHANGELOG.md`, bagian Unreleased). Yang berubah dari
+rencana di atas: `use_head({...})` TIDAK dibuat. Satu sumber saja — ekspor
+`meta` di berkas halaman — dan hanya dua kunci, `title` dan `description`; kunci
+ketiga adalah error build yang menyebut namanya, bukan nilai yang tidak pernah
+sampai ke halaman. `meta` dibaca dari sumber halaman saat scan, bukan dengan
+mengimpor halaman: compiler meng-emit `meta` sebagai `const` lokal, bukan
+ekspor.
+
+Yang TIDAK dikerjakan, dan disebut di README: metadata yang bergantung pada URL
+(`/blog/hello` ingin "hello" di judulnya) bukan metadata statis — cangkang route
+dinamis tetap memakai judul aplikasi. Tidak ada open-graph, twitter card,
+canonical, atau structured data.
+
 ### F6. SSG per-route `PERBAIKI`
 
 Sekarang hanya `dist/index.html`. Setelah F1 ada, loop `renderToString` untuk

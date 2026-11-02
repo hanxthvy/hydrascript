@@ -1044,6 +1044,22 @@ export interface RouteEntry {
   pattern: string
   file: string
   params: string[]
+  /** The page's `meta` dict, or null. Applied by `Router`; not a public hook. */
+  meta?: { title?: string; description?: string } | null
+}
+
+/**
+ * The per-page metadata a page declares at module level:
+ *
+ *     meta = {"title": "About — Hanz", "description": "Who writes this."}
+ *
+ * Two keys, `title` and `description`. Read from the page's source at build
+ * time and carried in the route table, so the build can put them in the static
+ * HTML and the browser can put them back after a navigation.
+ */
+export interface PageMeta {
+  title?: string
+  description?: string
 }
 
 /**
@@ -1070,6 +1086,17 @@ export interface RouteTable {
   notFound: any
   hasNotFound: boolean
   base: string
+  /** pattern -> the page's `meta`. Only routes that declare one appear. */
+  pageMeta: Record<string, PageMeta>
+  /**
+   * The project's own `index.html` title and description, read at build time.
+   *
+   * A route that declares no `meta` must put the SHELL's title back after a
+   * navigation, not leave the previous page's in place, and the shell lives in
+   * the project — not in the browser. Null means the shell has none, which a
+   * page must be able to tell from an empty string.
+   */
+  shellMeta: { title: string | null; description: string | null }
 }
 
 /**
@@ -1113,6 +1140,8 @@ function readGeneratedTable(): RouteTable {
     notFound: m.notFound || null,
     hasNotFound: Boolean(m.hasNotFound),
     base: m.base || '/',
+    pageMeta: m.pageMeta || {},
+    shellMeta: m.shellMeta || { title: null, description: null },
   }
 }
 
@@ -1193,6 +1222,49 @@ export function use_route_match(): { route: RouteEntry; params: Record<string, s
     if (!table || table.routes.length === 0) return null
     return core_match_route(path, table.routes as any) as any
   }, [path, table])
+}
+
+/**
+ * Put the current page's `meta` into the document.
+ *
+ * Called by `Router`, which is the one place that knows both the matched
+ * pattern and when navigation happened. Deliberately NOT a public hook: there
+ * is no `use_head` for a page to call, because the whole point of a module-level
+ * `meta` is that the page says it once and the framework applies it. A second
+ * API for the same data would be one more thing to keep in sync.
+ *
+ * The effect is what makes it work on a CLIENT navigation: `navigate()` changes
+ * the path, `use_path` re-renders, and the new route's title lands here. During
+ * the first paint on a server-rendered page the effect does not run — the HTML
+ * already has the right title, which is what SSG is for.
+ */
+function use_page_meta(meta: PageMeta, table: RouteTable | null): void {
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    // The shell's own values, not the previous route's: a page with no `title`
+    // of its own must not inherit the title of the page it navigated from.
+    const shell = (table && table.shellMeta) || { title: null, description: null }
+    const title = typeof meta.title === 'string' ? meta.title : shell.title
+    if (title !== null) document.title = title
+    if (typeof meta.description === 'string') {
+      set_description(meta.description)
+    } else if (shell.description !== null) {
+      set_description(shell.description)
+    }
+  }, [meta, table])
+}
+
+/** Replace the description tag, or add one next to `<title>` when there is none. */
+function set_description(value: string): void {
+  let tag = document.querySelector('meta[name="description"]')
+  if (!tag) {
+    const head = document.head || document.querySelector('head')
+    if (!head) return
+    tag = document.createElement('meta')
+    tag.setAttribute('name', 'description')
+    head.appendChild(tag)
+  }
+  tag.setAttribute('content', value)
 }
 
 /**
@@ -1521,6 +1593,15 @@ export function Router(props: RouterProps) {
   }, [pattern, table])
 
   const notFoundComponent = useMemo(() => (table ? table.notFound || null : null), [table])
+
+  // The page's metadata, applied to the document on every navigation. Hooks are
+  // called before the early `!match` return below, because a conditional hook
+  // changes the hook order the first time a URL matches nothing.
+  const meta = useMemo<PageMeta>(() => {
+    if (!pattern || !table || !table.pageMeta) return {}
+    return table.pageMeta[pattern] || {}
+  }, [pattern, table])
+  use_page_meta(meta, table)
 
   if (!match) {
     if (notFoundComponent) {
