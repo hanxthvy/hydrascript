@@ -12,7 +12,16 @@ const ROOT = path.resolve(HERE, '..');
 const args = process.argv.slice(2);
 const cmd = args[0];
 
-const isMetaCommand = cmd === 'dev' || cmd === 'build' || cmd === 'preview' || cmd === 'routes';
+// `run` is here because the native binary hands the compiled source to node,
+// which cannot resolve the `hydra` specifier; the runner bundles it first.
+const isMetaCommand =
+  cmd === 'dev' ||
+  cmd === 'build' ||
+  cmd === 'preview' ||
+  cmd === 'routes' ||
+  cmd === 'run' ||
+  cmd === 'test' ||
+  cmd === 'lsp';
 
 if (isMetaCommand) {
   const runnerPath = path.join(ROOT, 'packages/cli/runner.mjs');

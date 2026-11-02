@@ -537,9 +537,117 @@ field:
 A `.server.hys` with no page beside it is a **build error naming both files**,
 because a loader nobody calls is almost always a typo in the filename.
 
-**Not done yet:** loaders do not re-run on a *client-side* navigation — the
-inlined JSON is what the client has until you reload. That, and SSR for dynamic
-routes, are the next pieces; see the roadmap.
+Loaders **do** re-run on a client-side navigation now (0.8): a URL that was never
+server-rendered fetches its data from `/__hydra/data`. See "SSR for dynamic
+routes" below.
+
+### SSR for dynamic routes
+
+A route with a parameter has no single URL, so the static build cannot write one
+file for it. `hydra dev`, `preview` and `serve` render those routes **per
+request** from the same server bundle the build produces:
+
+```
+GET /blog/hello   ->  a full page, server-rendered, with the loader's data
+GET /blog/world   ->  a full page with ITS data, not hello's
+```
+
+Two rules keep that honest, and both come from the runtime having one
+module-global seed:
+
+1. **Loading and rendering are separate calls**, and nothing may `await` between
+   the render and `renderToString`. Otherwise two concurrent requests interleave
+   and the second page renders with the first one's props.
+2. **Identity is the full URL.** `/blog/a` and `/blog/b` match the same pattern,
+   so the inlined payload carries `url` as well as `pattern`, and the client only
+   trusts a payload for the URL it is rendering.
+
+`GET /__hydra/data?url=/blog/hello` runs a loader on demand. That is what a
+client-side navigation uses: the route was never server-rendered, so there is no
+inlined payload, and the page fetches. A loader that throws is a `500` with its
+message — never an empty data object, because "no items" and "the request
+failed" look identical in a UI and mean different things.
+
+**On a purely static deploy the endpoint does not exist.** The page then reports
+`status: "error"` rather than pretending the data is empty; `use_loader` returns
+`{data, status, error}` and a page that ignores it is unaffected.
+
+### `hydra test`
+
+```
+hydra test                 # every *.test.hys under tests/, src/ or the root
+hydra test path/to/x.test.hys
+SNAP_UPDATE=1 hydra test   # accept snapshot changes
+```
+
+```python
+# tests/card.test.hys
+from "hydra/test" import test, expect, render, snapshot
+from "../src/Card.hyx" import Card
+
+def renders_the_title():
+    expect(render(Card, {"title": "hi"})).to_contain("hi")
+
+def the_whole_card():
+    snapshot("card", render(Card, {"title": "s"}))
+
+test("renders the title", renders_the_title)
+test("the whole card", the_whole_card)
+```
+
+A `.test.hyx` may call `render(Card(title="hi"))` directly; in a `.hys` the props
+go in a dict, because a `.hys` call with keyword arguments has no signature to
+read for an imported component.
+
+Each file is bundled with the same resolver and plugins the build uses and run
+in **its own process**, so a global left behind by one file cannot affect the
+next. A snapshot is written on first run and compared after that; a change is a
+**failure**, not a silent rewrite.
+
+### `hydra lsp`
+
+```
+hydra lsp        # JSON-RPC over stdio, LSP 3.17
+```
+
+What it does: `initialize`/`shutdown`/`exit` with real `Content-Length` framing,
+`publishDiagnostics` from the **compiler's own** check (via `hydra check --json -`,
+so the server cannot disagree with the build), hover, go-to-definition, and
+rename within one file.
+
+What it does **not** do, said plainly rather than implied: cross-file rename
+(and it REFUSES a rename of an imported name, with the reason, instead of
+half-doing it), completion, signature help, formatting, semantic tokens. An
+unimplemented request gets `method not found` rather than silence.
+
+### Incremental and parallel builds
+
+Compiled modules are cached on disk under `.hydra/cache/`, keyed by
+`sha256(source, compiler version, filename)`. Content-addressed, so a changed
+file is a different key by construction, and a compiler upgrade is a miss rather
+than a stale hit. A second build of an untouched project compiles nothing and
+says so:
+
+```
+[hydra] compile cache: 8 reused, 0 compiled
+```
+
+`HYDRA_NO_CACHE=1`, or `"build": {"cache": false}`, turns it off.
+
+**Parallel compilation is implemented, tested, and off below scale — because it
+was measured.** `benchmarks/compile.mjs` on a 2-vCPU box, 120 files:
+
+| | time |
+|---|---|
+| serial, cold | 47 ms (0.39 ms/file) |
+| cache, cold | 91 ms (first run; it writes) |
+| cache, warm | 1 ms (120/120 hits) |
+| worker pool | 124 ms |
+
+The compiler is fast enough per file that a `worker_threads` pool spends more on
+startup and a second copy of the addon than it saves. `shouldPool` is that
+measured threshold, so the pool runs on a project large enough for it to pay
+(roughly 5,000 files at this speed) and is a no-op otherwise.
 
 Build output: `dist/index.html`, `dist/assets/index-<hash>.js`, `dist/assets/index.css`,
 plus chunks for dynamic `import()`.
@@ -603,6 +711,8 @@ hydra fmt [--check] [files]  format sources (idempotent)
 hydra stats [dir]            file/line/definition counts
 hydra doctor                 report toolchain and project health
 hydra routes [--json]        print the file-based route table
+hydra test [path]            run *.test.hys (component, route, snapshot)
+hydra lsp                    run the language server on stdio
 hydra init [dir]             scaffold a project
 hydra add <pkg> [--dev]      install a dependency
 hydra remove <pkg>           remove a dependency
@@ -707,9 +817,10 @@ out to the `hydra` binary for diagnostics; there is no separate language server.
 ## Testing
 
 ```bash
-cd compiler-rs && cargo test          # 390 tests: 269 unit + 121 integration
-node --test packages/cli/*.test.mjs   # 57 CLI/runtime tests, some against a real browser
+cd compiler-rs && cargo test          # 394 tests: 269 unit + 125 integration
+node --test packages/cli/*.test.mjs   # 96 CLI/runtime tests, some against a real browser
 node benchmarks/measure.mjs           # the numbers quoted above
+node benchmarks/compile.mjs           # what the compile cache and the pool buy
 bash scripts/hx-examples-check.sh     # builds every example/ project
 ```
 
@@ -780,20 +891,32 @@ dates; the version numbers are targets and the order is the honest part.
 | 0.7 | `loader` / `action` (`.server.hys` beside a page) | shipped |
 | 0.7 | `hydra/server` and `hydra/client`, enforced per module | shipped |
 | 0.7 | SSG by default for static routes, `rendering = "csr"` opt-out | shipped |
-| 0.7 | React Fast Refresh (state preserved across an edit) | not started |
-| 0.8 | SSR for dynamic routes; loaders re-run on client navigation | not started |
-| 0.9 | `hydra-lsp`: hover, go-to-definition, rename | not started |
-| 0.9 | `hydra test`: unit, route and snapshot tests for components | not started |
-| 1.0 | Incremental build cache, parallel compilation | not started |
+| 0.8 | SSR for dynamic routes, rendered per request | shipped |
+| 0.8 | Loaders re-run on a client-side navigation | shipped |
+| 0.9 | `hydra-lsp`: diagnostics, hover, go-to-definition, rename | shipped |
+| 0.9 | `hydra test`: component, route and snapshot tests | shipped |
+| 1.0 | Incremental compile cache (content-addressed, on disk) | shipped |
+| 1.0 | Parallel compilation (worker pool, measured, off below scale) | shipped |
+| next | React Fast Refresh (state preserved across an edit) | not started |
+| next | Cross-file rename in `hydra-lsp` | not started |
+| next | Completion and signature help in `hydra-lsp` | not started |
+
+The three "next" rows are the honest remainder, and each is a feature with its
+own correctness argument rather than a gap:
+
+- **Fast Refresh** needs a module boundary the compiler can prove (which
+  components can be swapped without losing state, which cannot). Live reload
+  ships; calling it Fast Refresh would be wrong, so it is not.
+- **Cross-file rename** needs the import graph resolved for the rename target.
+  `hydra-lsp` refuses a rename it cannot complete, with the reason, rather than
+  half-renaming a name that is imported.
+- **Completion** needs the compiler's scope information exposed per position,
+  which is the same work as a real symbol table. Until then the LSP answers
+  "method not found" rather than offering guesses.
 
 Not planned, and not a gap: React Server Components, islands, streaming SSR and
 multi-platform deploy adapters. The compiler's output is ordinary React on the
 client, and that is a feature with a name rather than an unfinished one.
-
-`hydra-lsp` deserves a note because older documents in this repository's history
-described it as if it existed. It does not. `editors/vscode` provides syntax
-highlighting and inline diagnostics by shelling out to the `hydra` binary, which
-is not a language server and does not claim to be one.
 
 ---
 

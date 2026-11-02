@@ -243,6 +243,66 @@ export class AttributeError extends Error {
   }
 }
 
+/* --------------------------------------------------------- exception classes
+ *
+ * Python's exception hierarchy, as real JS classes.
+ *
+ * `raise ValueError("bad")` and `except ValueError:` are documented in the
+ * README, and both need a NAME to exist: the raise becomes
+ * `new ValueError(...)`, the handler becomes `x instanceof ValueError`. They
+ * were emitted as bare identifiers, so a module that used either threw
+ * `ReferenceError: ValueError is not defined` the moment it loaded.
+ *
+ * They cannot all be `Error` aliases: every handler would then match every
+ * error, which is worse than not compiling. The hierarchy here is Python's —
+ * `ValueError` is a `LookupError`? no: Python's tree is
+ *
+ *     BaseException
+ *       Exception
+ *         ArithmeticError -> ZeroDivisionError, OverflowError
+ *         LookupError -> KeyError, IndexError
+ *         AssertionError, AttributeError, EOFError, RuntimeError,
+ *         NotImplementedError, StopIteration, OSError -> FileNotFoundError,
+ *         PermissionError, TypeError, ValueError
+ *
+ * and `except LookupError:` catching a `KeyError` is the reason to keep it.
+ * The shape is asserted by a test, not just written here.
+ */
+export class BaseException extends Error {
+  constructor(message = '') {
+    super(message)
+    this.name = new.target.name || 'BaseException'
+  }
+}
+export class Exception extends BaseException {}
+export class ArithmeticError extends Exception {}
+export class ZeroDivisionError extends ArithmeticError {}
+export class OverflowError extends ArithmeticError {}
+export class LookupError extends Exception {}
+export class KeyError extends LookupError {}
+export class IndexError extends LookupError {}
+export class AssertionError extends Exception {}
+export class RuntimeError extends Exception {}
+export class NotImplementedError extends RuntimeError {}
+export class StopIteration extends Exception {}
+/**
+ * `TypeError` IS the JS built-in, not a subclass of ours.
+ *
+ * `except TypeError:` has to catch the ``x is not a function`` the ENGINE
+ * throws, and a class of our own would never be in that error's prototype
+ * chain. Exporting the native one makes the handler work in both directions
+ * (a `raise TypeError(...)` and an engine TypeError), which is what a reader
+ * expects from the name. `RangeError` is the same argument.
+ */
+export const TypeError = globalThis.TypeError
+export const RangeError = globalThis.RangeError
+export class ValueError extends Exception {}
+export class OSError extends Exception {}
+export class FileNotFoundError extends OSError {}
+export class PermissionError extends OSError {}
+export class UnicodeError extends ValueError {}
+
+
 /* ------------------------------------------------------------------ state */
 
 /**
@@ -1176,19 +1236,141 @@ export function navigate_to(
  * is the honest answer: there is no data because no loader ran, and a page that
  * needs it should say so rather than render with empty props.
  */
+/**
+ * Do two URLs name the same page?
+ *
+ * A trailing slash is the same route (`/about` and `/about/`), and a
+ * pre-render writes the PATTERN as its url while the browser reports whatever
+ * the address bar says. Comparing them raw made the client conclude the
+ * inlined data was for another URL, so it rendered without the loader's props
+ * while the server had rendered with them: React #425/#418 on every
+ * pre-rendered route that had a loader.
+ *
+ * Only the trailing slash, and only the path: two URLs that differ otherwise
+ * are different pages, which is what stops `/blog/a`'s data appearing on
+ * `/blog/b`.
+ */
+function same_path(a: string, b: string): boolean {
+  const norm = (s: string) => {
+    let v = String(s ?? '/').split('#')[0].split('?')[0]
+    if (v.length > 1 && v.endsWith('/')) v = v.replace(/\/+$/, '')
+    return v || '/'
+  }
+  return norm(a) === norm(b)
+}
+
+/** Read the inlined payload, if there is one. */
+function read_inlined_data(): { pattern: string; url?: string; data: any } | null {
+  if (typeof document === 'undefined') return null
+  const el = document.getElementById('__hydra_data__')
+  if (!el || !el.textContent) return null
+  try {
+    const parsed = JSON.parse(el.textContent)
+    return parsed && typeof parsed.pattern === 'string' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Where a loader's data comes from when the page was NOT pre-rendered for this
+ * URL: a server that runs the loader on demand.
+ *
+ * The endpoint exists in `hydra dev`, `hydra preview` and `hydra serve`. On a
+ * purely static deploy it does not, the fetch fails, and the hook reports that
+ * honestly rather than pretending the data is empty — an empty list and a
+ * failed request look identical in the UI and mean different things.
+ */
+export const DATA_ENDPOINT = '/__hydra/data'
+
+export interface LoaderState {
+  data: Record<string, any> | null
+  status: 'ready' | 'loading' | 'error' | 'absent'
+  error: string | null
+}
+
+/**
+ * `state = use_loader(pattern)` — the route's loaders, live.
+ *
+ * Three sources, in order:
+ *
+ *   1. The payload the server inlined, when its URL is the URL being rendered.
+ *      That is what makes the first paint match the HTML, and it is why the
+ *      payload carries `url` and not only `pattern`.
+ *   2. Otherwise a `fetch` to the data endpoint, so a client-side navigation to
+ *      a route that was never pre-rendered still gets its data.
+ *   3. A route with no loader at all is `absent`, not `loading`: nothing will
+ *      ever arrive, and a spinner for it would spin forever.
+ */
+export function use_loader(pattern: string | null, url: string): LoaderState {
+  const table = use_route_table()
+  const has_loader = useMemo(() => {
+    if (!pattern || !table) return false
+    const entry = (table.routes || []).find((r: any) => r.pattern === pattern) as any
+    return Boolean(entry && entry.serverFile)
+  }, [pattern, table])
+
+  const inlined = useMemo(() => read_inlined_data(), [])
+
+  // `url` is a dependency, so navigating between two URLs of the SAME pattern
+  // re-fetches. Keying on `pattern` alone would show /blog/a's data on /blog/b.
+  const [fetched, set_fetched] = useState<{ url: string; data: any } | null>(null)
+  const [failed, set_failed] = useState<string | null>(null)
+
+  const inlined_matches =
+    !!inlined &&
+    !!pattern &&
+    inlined.pattern === pattern &&
+    same_path(inlined.url ?? pattern, url)
+
+  useEffect(() => {
+    if (!has_loader || inlined_matches) return
+    if (typeof window === 'undefined') return
+    let cancelled = false
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
+    const qs = new URLSearchParams({ url })
+    fetch(`${DATA_ENDPOINT}?${qs.toString()}`, {
+      headers: { accept: 'application/json' },
+      signal: controller ? controller.signal : undefined,
+    })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+        return res.json()
+      })
+      .then((payload) => {
+        if (cancelled) return
+        if (payload && payload.pattern === pattern && same_path(payload.url ?? pattern, url)) {
+          set_failed(null)
+          set_fetched({ url, data: payload.data ?? null })
+        } else {
+          // A payload for a different URL is a stale response, not this route's
+          // data. Racing navigations make this reachable.
+          set_fetched({ url, data: null })
+        }
+      })
+      .catch((err) => {
+        if (cancelled || (err && err.name === 'AbortError')) return
+        set_failed(err && err.message ? err.message : String(err))
+      })
+    return () => {
+      cancelled = true
+      if (controller) controller.abort()
+    }
+  }, [has_loader, inlined_matches, pattern, url])
+
+  if (!has_loader) return { data: null, status: 'absent', error: null }
+  if (inlined_matches) return { data: inlined!.data || null, status: 'ready', error: null }
+  if (failed) return { data: null, status: 'error', error: failed }
+  if (fetched && same_path(fetched.url, url)) return { data: fetched.data, status: 'ready', error: null }
+  return { data: null, status: 'loading', error: null }
+}
+
 export function use_loader_data(pattern: string | null): Record<string, any> | null {
   return useMemo(() => {
     if (!pattern) return null
-    if (typeof document === 'undefined') return null
-    const el = document.getElementById('__hydra_data__')
-    if (!el || !el.textContent) return null
-    try {
-      const parsed = JSON.parse(el.textContent)
-      if (parsed && parsed.pattern === pattern) return parsed.data || null
-      return null
-    } catch {
-      return null
-    }
+    const parsed = read_inlined_data()
+    if (!parsed || parsed.pattern !== pattern) return null
+    return parsed.data || null
   }, [pattern])
 }
 
@@ -1307,13 +1489,25 @@ export function Router(props: RouterProps) {
     return (table && table.pages[pattern]) || null
   }, [pattern, components, table])
 
-  // The pre-render pass inlines what the loader returned, so the first paint
-  // uses the SAME data the server rendered from. Re-fetching here would be a
-  // second source of truth and a hydration mismatch the moment they differ.
-  // The loader result: in the browser it comes from the JSON the pre-render pass
-  // inlined; during a pre-render it is already in the seed, because there is no
-  // document to read and no second render to wait for.
-  const loaderData = ssr_seed && ssr_seed.path === pattern ? ssr_seed.data : use_loader_data(pattern)
+  // Where the page's props come from. Three cases, and the order matters:
+  //
+  //   1. A pre-render (SSG) or a server render (SSR): the loader already ran and
+  //      its result is in the seed. There is no document to read and no second
+  //      render to wait for, so the seed is the answer.
+  //   2. The browser, on the URL the server rendered: `use_loader` returns the
+  //      payload the server inlined, so the first paint uses the SAME data and
+  //      hydrates clean. Re-fetching here would be a second source of truth and
+  //      a mismatch the moment the two differ.
+  //   3. The browser, after a client-side navigation to a URL that was never
+  //      rendered: the inline payload is for a different URL, `use_loader`
+  //      fetches, and the page re-renders with real data when it arrives.
+  //
+  // The hook is called unconditionally: a conditional hook changes the hook
+  // order between renders the first time a navigation happens.
+  const live = use_loader(pattern, path)
+  const loaderData =
+    ssr_seed && ssr_seed.path === pattern ? ssr_seed.data : live.data
+
 
   const layoutChain = useMemo(() => {
     if (!pattern || !table) return []
@@ -1340,16 +1534,22 @@ export function Router(props: RouterProps) {
     return null
   }
 
+  const pageProps: any = {
+    ...(loaderData || {}),
+    params: match.params,
+    path,
+    route: match.route,
+  }
+  // The data state travels to the page, so a page can tell "still loading" from
+  // "loaded and empty" without re-deriving it from the props. A page that does
+  // not look at it is unaffected.
+  if (live.status !== 'absent') {
+    pageProps.loading = live.status === 'loading'
+    pageProps.error = live.error
+  }
+
   const body = page
-    ? wrapInLayouts(
-        React.createElement(page, {
-          ...(loaderData || {}),
-          params: match.params,
-          path,
-          route: match.route,
-        }),
-        layoutChain,
-      )
+    ? wrapInLayouts(React.createElement(page, pageProps), layoutChain)
     : ((loading as any) ?? null)
 
   return React.createElement(

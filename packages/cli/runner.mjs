@@ -13,6 +13,17 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 import { writeActionBundle, bundleActions, loadActions, readBody, requestFor } from './actions.mjs';
 import { attachSocketServer, injectHmrClient } from './hmr.mjs';
+import { CompileCache, CompilePool, cacheDirFor, shouldPool, sourceFilesUnder } from './compile-cache.mjs';
+import { handleDataRequest, createRenderer, SERVER_BUNDLE } from './ssr.mjs';
+import {
+  findTestFiles,
+  testRoot,
+  readSnapshots,
+  writeSnapshots,
+  bundleTest,
+  parseTestOutput,
+  runBundle,
+} from './testing.mjs';
 
 import {
   scanRoutes,
@@ -230,25 +241,42 @@ function runtimeSpecifierPlugin(allow) {
   };
 }
 
-function createHydraEsbuildPlugin() {
+function createHydraEsbuildPlugin(options = {}) {
   const native = findNativeAddon();
-  // Keyed by path AND source. Keying on path alone was enough for a one-shot
-  // build but not for an incremental rebuild: esbuild re-runs onLoad for a
-  // file that changed, and a path-only cache would hand back the previous
-  // compile for the new text. The comparison is what makes the cache safe to
-  // keep across rebuilds.
+  // Two layers, on purpose.
+  //
+  // This `Map` is keyed by path AND source: esbuild re-runs `onLoad` for a file
+  // that changed during a rebuild, and a path-only cache would hand back the
+  // previous compile for the new text.
+  //
+  // It only helps WITHIN one build, which is why `options.cache` (the on-disk
+  // `CompileCache`) sits behind it: the next `hydra build` of an untouched
+  // project reuses every module instead of recompiling all of them. The disk key
+  // includes the compiler version, so a compiler change is a miss by
+  // construction rather than a stale hit.
   const cache = new Map();
+  const disk = options.cache || null;
 
   function compile(file, source) {
     const hit = cache.get(file);
     if (hit !== undefined && hit.source === source) return hit.res;
 
-    let res;
-    if (native) {
-      res = native.compile(source, file);
-    } else {
-      res = cliFallbackCompile(file, source);
+    if (disk) {
+      const key = disk.keyFor(file, source);
+      const found = disk.get(key);
+      if (found) {
+        cache.set(file, { source, res: found });
+        return found;
+      }
+      const res = native ? native.compile(source, file) : cliFallbackCompile(file, source);
+      // Only successes are stored: caching an error would make a build fail
+      // forever on a file the developer has since fixed in the same second.
+      if (!res.error) disk.set(key, res);
+      cache.set(file, { source, res });
+      return res;
     }
+
+    const res = native ? native.compile(source, file) : cliFallbackCompile(file, source);
     cache.set(file, { source, res });
     return res;
   }
@@ -343,8 +371,16 @@ function appComponentPath(cwd, entryPoint) {
  * parsed anyway. `</script>` inside the JSON is escaped so a loader returning
  * HTML cannot close the tag early.
  */
-function injectLoaderData(html, pattern, data) {
-  const payload = JSON.stringify({ pattern, data: data === undefined ? null : data })
+function injectLoaderData(html, pattern, data, url = pattern) {
+  // `url`, not only `pattern`, and it is load-bearing.
+  //
+  // Two URLs can match the same pattern (`/blog/a` and `/blog/b` both hit
+  // `/blog/[slug]`), so a payload keyed only by pattern cannot tell the client
+  // whether the data it holds belongs to the URL it is looking at. During SSG
+  // there is one URL per pattern and it never showed; the moment a server
+  // renders per REQUEST it does, and the page would hydrate with another URL's
+  // data.
+  const payload = JSON.stringify({ pattern, url, data: data === undefined ? null : data })
     .replace(/</g, '\\u003c')
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
@@ -872,6 +908,16 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
 
   const outDir = path.resolve(cwd, config.outputDir || 'dist');
   const assetsDir = path.join(outDir, 'assets');
+
+  // Compilation cache. On by default; `HYDRA_NO_CACHE=1` (or
+  // `"build": {"cache": false}`) turns it off, and `dev` never writes one —
+  // a dev loop recompiles so few files that the write costs more than the hit.
+  const cacheWanted =
+    opts.dev !== true && process.env.HYDRA_NO_CACHE !== '1' && config.build?.cache !== false;
+  const compileCache = cacheWanted
+    ? new CompileCache(cacheDirFor(cwd), { version: VERSION })
+    : null;
+
   const base = normalizeBase(config.base);
   // URL prefix that corresponds to `assetsDir`. `publicPath` needs this rather
   // than `base`; see the esbuild options below.
@@ -1053,6 +1099,59 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     }
   }
 
+  // 1c. Warm the compile cache, in parallel, when the project is big enough for
+  //     it to pay.
+  //
+  // esbuild runs every `onLoad` on one JS thread, so on a many-core box the
+  // compiler is the serial part of a build. This compiles every source ONCE
+  // across a worker pool and stores the results, so esbuild's own pass is a
+  // cache hit per module.
+  //
+  // Guarded by `shouldPool`, which is a MEASUREMENT from
+  // `benchmarks/compile.mjs`: at 0.39 ms/file a pool spends more on thread
+  // startup than it saves, so this is a no-op on a normal project and the code
+  // is still exercised on a large one. It also runs only on a cold cache —
+  // nothing to warm otherwise.
+  const _poolPhase = phaseStart();
+  if (compileCache && process.env.HYDRA_NO_POOL !== '1') {
+    const sources = sourceFilesUnder(path.join(cwd, 'src'));
+    if (shouldPool(sources.length)) {
+      const cold = sources.filter((f) => {
+        try {
+          return !compileCache.get(compileCache.keyFor(f, fs.readFileSync(f, 'utf8')));
+        } catch {
+          return false;
+        }
+      });
+      if (cold.length > 0) {
+        const addon = findNativeAddon();
+        const pool = new CompilePool(addon).start();
+        if (!pool.unsupported && !pool.failed) {
+          _p = phaseStart();
+          try {
+            const items = cold.map((f) => ({ filename: f, source: fs.readFileSync(f, 'utf8') }));
+            const results = await pool.compileAll(items);
+            let stored = 0;
+            for (let i = 0; i < items.length; i++) {
+              const res = results[i];
+              if (res && !res.error) {
+                compileCache.set(compileCache.keyFor(items[i].filename, items[i].source), res);
+                stored += 1;
+              }
+            }
+            phase(`1c. compile pool (${stored})`, _poolPhase);
+          } catch (err) {
+            // A pool that fails must not fail the build: it is an optimization,
+            // and the serial path below produces the same result.
+            console.error(`[hydra] compile pool skipped: ${err.message}`);
+          } finally {
+            await pool.stop();
+          }
+        }
+      }
+    }
+  }
+
   // 2. Discover the runtime
   //
   // `hydra` is the single runtime specifier. The compiler emits
@@ -1117,9 +1216,20 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   // Runtime gate: on by default for a production build, never during `dev`
   // (a browser per rebuild would make the loop unusable), and skippable.
   const gateWanted = !opts.dev && process.env.HYDRA_NO_GATE !== '1';
-  const ssgEntry = ssgWanted
-    ? ssgEntryCandidates.find((f) => fs.existsSync(f))
-    : undefined;
+  // The SERVER BUNDLE is built whenever routing is on, even in `dev` and even
+  // when pre-rendering is off, because `hydra dev` / `preview` / `serve` render
+  // dynamic routes per REQUEST from it. Tying it to `ssgWanted` meant a project
+  // with `"ssg": false` could not server-render a dynamic route at all — the
+  // command that exists to render them had no bundle to render from.
+  //
+  // The PRE-RENDER pass below still uses `ssgWanted`; the two decisions are
+  // separate on purpose. One is an artifact the server needs; the other is a
+  // build step that writes static HTML.
+  const serverBundleWanted = Boolean(routesTable);
+  const ssgEntry =
+    ssgWanted || serverBundleWanted
+      ? ssgEntryCandidates.find((f) => fs.existsSync(f))
+      : undefined;
 
   let ssgPromise = null;
   if (ssgEntry) {
@@ -1198,7 +1308,7 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     metafile: true,
     plugins: [
       runtimeSpecifierPlugin({ hydra: hydraAlias, 'hydra/client': clientAlias }),
-      createHydraEsbuildPlugin(),
+      createHydraEsbuildPlugin({ cache: compileCache }),
       // `hydra:routes` ALWAYS resolves, with an empty table when the project has
       // no pages directory. That is what lets the runtime import it statically:
       // a synchronous table is required for the client's first paint to match
@@ -1452,8 +1562,19 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
           const requireFromOut = createRequire(pathToFileURL(ssgOut).href);
           ssgMod = requireFromOut(ssgOut);
         } finally {
-          // Pre-render is a build step, not an artifact: never ship the bundle.
+          // Pre-render is a build step, not an artifact: never ship the bundle
+          // in `dist/`. It IS kept in `.hydra/`, which is gitignored and is what
+          // the dev/preview/serve commands render dynamic routes from. A server
+          // needs it per request; a deploy to a CDN must not have it.
           try { fs.rmSync(ssgOut, { force: true }); } catch {}
+        }
+        // The server's copy, written next to the route table it belongs to.
+        try {
+          const serverDir = path.join(cwd, '.hydra');
+          fs.mkdirSync(serverDir, { recursive: true });
+          fs.writeFileSync(path.join(cwd, SERVER_BUNDLE), ssgCode, 'utf8');
+        } catch (err) {
+          console.error(`[hydra] could not write the server bundle: ${err.message}`);
         }
 
         phase('5b. ssg load bundle', _s);
@@ -1601,6 +1722,12 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
 
   const ms = Date.now() - t0;
   console.log(`[hydra] Built successfully in ${ms}ms -> ${path.relative(cwd, outDir)}/`);
+  if (compileCache) {
+    const s = compileCache.stats();
+    // Said out loud, because "why is this build fast now" and "why is it slow
+    // again" both deserve an answer in the log rather than a guess.
+    if (s.hits > 0) console.log(`[hydra] compile cache: ${s.hits} reused, ${s.misses} compiled`);
+  }
   phaseReport(ms);
 
   // 6. Runtime gate. The build reporting success while the page throws is the
@@ -1815,7 +1942,7 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
   const startedAt = Date.now();
   let actualPort = port;
 
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
     const rawUrl = req.url || '/';
     const queryAt = rawUrl.indexOf('?');
     const rawPath = queryAt === -1 ? rawUrl : rawUrl.slice(0, queryAt);
@@ -1871,6 +1998,18 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
       return;
     }
 
+    // The data endpoint a client-side navigation uses. Answered before static
+    // resolution because it is a virtual path, not a file, and the SPA fallback
+    // would otherwise hand it index.html with a 200 — a JSON endpoint that
+    // answers HTML is worse than one that is missing.
+    if (reqPath === '/__hydra/data' && opts.ssr) {
+      handleDataRequest(req, res, opts.ssr, rawUrl).catch((err) => {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: err && err.message ? err.message : String(err) }));
+      });
+      return;
+    }
+
     // The base is part of the public URL, not of the directory layout: with
     // `base: "/sub/"` a request for `/sub/assets/x.js` is `assets/x.js` here.
     let urlPath = reqPath;
@@ -1894,10 +2033,35 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
     }
 
     if (!exists) {
+      const isNavigation = req.method === 'GET' || req.method === 'HEAD';
+
+      // A route the static build could not write: `/blog/[slug]` has no single
+      // URL, so there is no file for `/blog/hello`. Rendering it here is what
+      // makes a reload and a crawler see the page instead of the shell.
+      //
+      // Before the SPA fallback, because the shell is the WORSE answer: it is
+      // correct-looking HTML that only becomes content after JavaScript runs,
+      // and a crawler does not run JavaScript.
+      if (isNavigation && opts.ssr && opts.ssr.available) {
+        try {
+          const out = await opts.ssr.renderPage(reqPath);
+          if (out) {
+            const body = opts.injectHtml ? opts.injectHtml(out.document) : out.document;
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end(body);
+            return;
+          }
+        } catch (err) {
+          // A page that throws while rendering server-side must still reach the
+          // browser, where React can show the route's error boundary. The
+          // message goes to the terminal, not into the HTML.
+          console.error(`[hydra] SSR failed for ${reqPath}: ${err && err.message ? err.message : err}`);
+        }
+      }
+
       // SPA fallback: react-router, TanStack Router and friends own every path
       // that is not a file, and a reload on /dashboard/settings has to reach
       // the app rather than a 404 page.
-      const isNavigation = req.method === 'GET' || req.method === 'HEAD';
       if (!isNavigation || !fs.existsSync(indexPath)) {
         res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end('Not Found');
@@ -1990,11 +2154,26 @@ export async function runPreview(cwd = process.cwd(), opts = {}) {
     await runBuild(cwd);
   }
 
+  // The server bundle renders the routes the static build could not write.
+  // `preview` is meant to be what production serves, so it renders them here
+  // for the same reason the real server would.
+  const renderer = await createRenderer({
+    cwd,
+    bundlePath: path.join(cwd, SERVER_BUNDLE),
+    shellPath: indexPath,
+  });
+  if (!renderer.available && config.rendering?.ssr !== false) {
+    // Not fatal: a project with no dynamic routes has nothing to render, and
+    // saying so on every preview would be noise. Say it once, plainly.
+    console.log(`[hydra] SSR off: ${renderer.reason}`);
+  }
+
   console.log('[hydra] Previewing production build:');
   await serveDirectory(outDir, port, host, {
     base: normalizeBase(config.base),
     proxy: config.server?.proxy,
     actions: readActionBundle(cwd),
+    ssr: renderer.available ? renderer : null,
     version: opts.version,
     sha: opts.sha,
     configPath: path.join(cwd, 'hydraconfig.json'),
@@ -2020,12 +2199,19 @@ export async function runDev(cwd = process.cwd(), opts = {}) {
   // hydraconfig.json, and the startup line says which one is in effect.
   const host = opts.host || config.server?.host || '127.0.0.1';
 
+  const renderer = await createRenderer({
+    cwd,
+    bundlePath: path.join(cwd, SERVER_BUNDLE),
+    shellPath: path.join(outDir, 'index.html'),
+  });
+
   console.log('[hydra] Development mode active.');
   const served = await serveDirectory(outDir, port, host, {
     base: normalizeBase(config.base),
     proxy: config.server?.proxy,
     // Re-read on every dev build, because the bundle is regenerated per build.
     actions: readActionBundle(cwd),
+    ssr: renderer.available ? renderer : null,
     // The dev server injects the HMR client into every HTML response, because
     // the build wrote the file and the page has to reach the browser with it.
     injectHtml: (html) => injectHmrClient(html),
@@ -2068,6 +2254,285 @@ export async function runDev(cwd = process.cwd(), opts = {}) {
       }, 60);
     });
   }
+}
+
+/**
+ * `hydra run script.hys` — execute a script.
+ *
+ * The binary used to hand the compiled source straight to `node -`, which
+ * cannot resolve the `hydra` specifier: the compiler emits
+ * `import { raise_ } from 'hydra'` and node has no idea what that is. So a
+ * script that used any runtime helper died with
+ * `ERR_MODULE_NOT_FOUND: Cannot find package 'hydra'` — while the README
+ * documents importing from `hydra`.
+ *
+ * Bundling it here fixes that the same way the build does, with the same
+ * plugins: one resolver, not a second one that can drift.
+ */
+export async function runScript(cwd, file, scriptArgs = []) {
+  const abs = path.resolve(cwd, file);
+  if (!fs.existsSync(abs)) {
+    console.error(`[hydra] cannot read ${file}`);
+    return 1;
+  }
+  const config = readConfig(cwd);
+  const pkgRoot = path.resolve(HERE, '../..');
+  const { esbuild } = await loadBundlerDeps(cwd);
+
+  const pkgNodeModules = path.join(pkgRoot, 'node_modules');
+  const outfile = path.join(os.tmpdir(), `hydra-run-${process.pid}-${Date.now()}.mjs`);
+  try {
+    await esbuild.build({
+      entryPoints: [abs],
+      bundle: true,
+      write: true,
+      format: 'esm',
+      platform: 'node',
+      target: 'node18',
+      outfile,
+      jsx: 'automatic',
+      logLevel: 'silent',
+      resolveExtensions: ['.hys', '.hyx', '.hsx', '.hs', '.mjs', '.js', '.jsx', '.ts', '.tsx', '.json'],
+      nodePaths: [path.join(cwd, 'node_modules'), pkgNodeModules],
+      plugins: [
+        runtimeSpecifierPlugin({
+          hydra: path.join(pkgRoot, 'runtime', 'hydra.ts'),
+          'hydra/server': path.join(pkgRoot, 'runtime', 'server.ts'),
+          'hydra/client': path.join(pkgRoot, 'runtime', 'client.ts'),
+        }),
+        createHydraEsbuildPlugin(),
+        routesEsbuildPlugin(scanRoutesSafe(cwd, config), { base: '/', cwd }),
+      ],
+    });
+  } catch (err) {
+    if (!err || !err.errors) throw err;
+    for (const e of err.errors) {
+      const where = e.location ? `${e.location.file}:${e.location.line}:${e.location.column}: ` : '';
+      console.error(`${where}${e.text}`);
+    }
+    return 1;
+  }
+
+  const { spawn } = await import('node:child_process');
+  return await new Promise((resolve) => {
+    const child = spawn(process.execPath, [outfile, ...scriptArgs], {
+      cwd,
+      stdio: 'inherit',
+    });
+    child.on('exit', (code) => {
+      try {
+        fs.rmSync(outfile, { force: true });
+      } catch {}
+      resolve(code || 0);
+    });
+  });
+}
+
+/** The route table, or an empty one — never a throw from a script runner. */
+function scanRoutesSafe(cwd, config) {
+  try {
+    const dir = pagesDirectory(cwd, config);
+    if (!dir) return EMPTY_ROUTES;
+    return scanRoutes(dir);
+  } catch {
+    return EMPTY_ROUTES;
+  }
+}
+
+/**
+ * `hydra test [path]` — run the project's component tests.
+ *
+ * Bundles each `*.test.hys` with the same resolver, plugins and compiler the
+ * build uses, runs it in its own node process, and reports what the file
+ * printed. Exit code 1 if any test failed, so CI needs no parsing.
+ */
+export async function runTests(cwd = process.cwd(), opts = {}) {
+  const config = readConfig(cwd);
+  const pkgRoot = path.resolve(HERE, '../..');
+
+  let files;
+  if (opts.pattern) {
+    const abs = path.resolve(cwd, opts.pattern);
+    files = fs.existsSync(abs) && fs.statSync(abs).isFile() ? [abs] : findTestFiles(abs);
+    if (files.length === 0) {
+      console.error(`[hydra] no test files under ${opts.pattern}`);
+      return 1;
+    }
+  } else {
+    const root = testRoot(cwd, config);
+    if (!root) {
+      console.error(
+        '[hydra] no test files found. Put them in tests/, next to the code, or at the root, named `*.test.hys`.',
+      );
+      return 1;
+    }
+    files = findTestFiles(root);
+  }
+
+  const { esbuild } = await loadBundlerDeps(cwd);
+  const routesTable = (() => {
+    try {
+      const dir = pagesDirectory(cwd, config);
+      return dir ? scanRoutes(dir) : EMPTY_ROUTES;
+    } catch {
+      return EMPTY_ROUTES;
+    }
+  })();
+
+  const plugins = [
+    runtimeSpecifierPlugin({
+      hydra: path.join(pkgRoot, 'runtime', 'hydra.ts'),
+      'hydra/server': path.join(pkgRoot, 'runtime', 'server.ts'),
+      'hydra/client': path.join(pkgRoot, 'runtime', 'client.ts'),
+      'hydra/test': path.join(pkgRoot, 'runtime', 'test.ts'),
+    }),
+    createHydraEsbuildPlugin(),
+    // ONE instance of the test runtime, whichever module asks for it.
+    //
+    // Both the harness and the test file import `hydra/test`. Bundled
+    // separately that is two module instances with two `results` arrays and two
+    // `pending` queues — the harness would wait on a queue the test file never
+    // pushed to, and every test reported "did not run". The runtime is the
+    // shared state of a test run, so it has to be shared.
+    {
+      name: 'hydra-test-single-runtime',
+      setup(build) {
+        build.onResolve({ filter: /^hydra\/test$/ }, () => ({
+          path: path.join(pkgRoot, 'runtime', 'test.ts'),
+        }));
+      },
+    },
+    routesEsbuildPlugin(routesTable, { base: normalizeBase(config.base), cwd }),
+  ];
+
+  const { file: snapFile, data: snapshots } = readSnapshots(cwd);
+  // INSIDE the project, not in os.tmpdir().
+  //
+  // The bundle keeps react/react-dom external so node resolves them natively
+  // (bundling React's CommonJS into ESM breaks on `require("stream")`). A bare
+  // specifier resolves relative to the FILE, so a bundle in /tmp finds no
+  // `react` — it has to sit under the project whose node_modules has it.
+  // `.hydra/` is gitignored and already holds generated artifacts.
+  const tmpDir = path.join(cwd, '.hydra', 'tests');
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const outfile = path.join(tmpDir, 'bundle.mjs');
+  // The snapshot file is written by the CHILD process, so it needs a path it can
+  // reach; the parent re-reads it afterwards.
+  const snapWork = path.join(tmpDir, 'snapshots.json');
+  fs.writeFileSync(snapWork, JSON.stringify(snapshots, null, 2), 'utf8');
+
+  let passed = 0;
+  let failed = 0;
+  const failures = [];
+
+  try {
+    for (const file of files) {
+      const rel = path.relative(cwd, file);
+      try {
+        await bundleTest(esbuild, file, {
+          cwd,
+          pkgRoot,
+          plugins,
+          outfile,
+        });
+      } catch (err) {
+        failed += 1;
+        const detail =
+          err && err.errors
+            ? err.errors
+                .map((e) => `${e.location ? `${path.relative(cwd, e.location.file)}: ` : ''}${e.text}`)
+                .join('\n')
+            : err.message || String(err);
+        console.error(`FAIL ${rel}\n  = the test file does not compile:\n${indent(detail, '  ')}`);
+        failures.push(rel);
+        continue;
+      }
+
+      const out = await runBundle(outfile, {
+        HYDRA_TEST_FILE: rel,
+        HYDRA_TEST_SNAPSHOTS: snapWork,
+        HYDRA_TEST_STORE: snapWork,
+      });
+      if (process.env.HYDRA_TEST_DEBUG) {
+        console.error(`[dbg] ${rel}: code=${out.code}\nSTDOUT=${out.stdout.slice(-800)}\nSTDERR=${out.stderr.slice(0, 400)}`);
+      }
+      const results = parseTestOutput(out.stdout);
+
+      if (!results) {
+        // No results block means the file threw before reporting. Its stderr is
+        // the whole story and must not be swallowed.
+        failed += 1;
+        console.error(`FAIL ${rel} — the file exited ${out.code} without reporting tests`);
+        const detail = (out.stderr || out.stdout || '').trim();
+        if (detail) console.error(indent(detail, '  '));
+        failures.push(rel);
+        continue;
+      }
+
+      for (const r of results) {
+        if (r.ok) {
+          passed += 1;
+          console.log(`ok   ${rel} › ${r.name} (${r.ms}ms)`);
+        } else {
+          failed += 1;
+          failures.push(rel);
+          console.log(`FAIL ${rel} › ${r.name}`);
+          console.log(indent(String(r.error || '').split('\n').slice(0, 12).join('\n'), '  '));
+        }
+      }
+      if (out.stderr && out.stderr.trim() && results.every((r) => r.ok)) {
+        // A test can pass and still log. Say so without failing the run.
+        console.log(indent(out.stderr.trim().split('\n').slice(0, 6).join('\n'), '  '));
+      }
+    }
+  } finally {
+    // Read the snapshots the child processes wrote BEFORE removing the directory
+    // they live in. Reading after the `rmSync` meant an empty diff and a
+    // snapshot that was never saved — the kind of bug a green run hides
+    // indefinitely.
+    try {
+      if (fs.existsSync(snapWork)) {
+        const after = JSON.parse(fs.readFileSync(snapWork, 'utf8'));
+        if (JSON.stringify(after) !== JSON.stringify(snapshots)) {
+          writeSnapshots(snapFile, after);
+          const changed = Object.keys(after).filter((k) => snapshots[k] !== after[k]).length;
+          console.log(`[hydra] ${changed} snapshot(s) written to ${path.relative(cwd, snapFile)}`);
+        }
+      }
+    } catch (e) {
+      console.error(`[hydra] could not save snapshots: ${e.message}`);
+    }
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {}
+  }
+
+  console.log(
+    `[hydra] ${passed} passed, ${failed} failed (${files.length} file${files.length === 1 ? '' : 's'})`,
+  );
+  return failed === 0 ? 0 : 1;
+}
+
+/** Indent every line of `text` by `pad`. */
+function indent(text, pad) {
+  return String(text)
+    .split('\n')
+    .map((l) => pad + l)
+    .join('\n');
+}
+
+/**
+ * `hydra lsp` — run the language server on stdio.
+ *
+ * `hydra-lsp` is the same thing under the name the editor configs use; both
+ * spellings dispatch here.
+ */
+export async function runLsp(cwd = process.cwd()) {
+  const { serve } = await import('./lsp.mjs');
+  const config = readConfig(cwd);
+  void config;
+  return await serve(process.stdin, process.stdout, { version: VERSION });
 }
 
 // CLI entrypoint
@@ -2136,6 +2601,35 @@ if (!invokedDirectly) {
     console.error(err.message);
     process.exit(1);
   });
+} else if (cmd === 'run') {
+  const file = argv.slice(1).find((a) => !a.startsWith('-'));
+  if (!file) {
+    console.error('[hydra] run requires a script file (e.g. hydra run script.hys)');
+    process.exit(2);
+  }
+  const at = argv.indexOf(file);
+  const rest = argv.slice(at + 1);
+  runScript(cwd, file, rest)
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      console.error(err && err.message ? err.message : String(err));
+      process.exit(1);
+    });
+} else if (cmd === 'test') {
+  const pattern = argv.slice(1).find((a) => !a.startsWith('-'));
+  runTests(cwd, { pattern })
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      console.error(err && err.message ? err.message : String(err));
+      process.exit(1);
+    });
+} else if (cmd === 'lsp' || cmd === 'hydra-lsp' || cmd === 'language-server') {
+  runLsp(cwd)
+    .then((code) => process.exit(code || 0))
+    .catch((err) => {
+      console.error(err && err.message ? err.message : String(err));
+      process.exit(1);
+    });
 } else if (cmd === 'build') {
   runBuild(cwd).catch((err) => {
     console.error(err);

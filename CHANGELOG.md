@@ -12,6 +12,69 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## 0.8.0 — 2026-11-02
+
+**The rest of the roadmap, in one release: SSR for dynamic routes, loaders that
+re-run on a client navigation, `hydra test`, `hydra lsp`, and an incremental
+compile cache.** Every row that said "not started" is now either shipped or
+named as the honest remainder.
+
+### Added
+- **SSR for dynamic routes.** `dev`, `preview` and `serve` render a route with a
+  parameter per REQUEST from the prebuilt server bundle, so `/blog/hello` is a
+  real page for a crawler and for a reload. Loading and rendering are separate
+  calls and nothing awaits between them, because the runtime's seed is
+  module-global: an await there lets two requests overwrite each other's data.
+- **`GET /__hydra/data?url=…`**, and loaders that re-run on a client-side
+  navigation. The inlined payload now carries `url` as well as `pattern`, since
+  two URLs can match one pattern. A loader that throws is a 500 with its
+  message, not an empty object.
+- **`hydra test`** — `*.test.hys` in tests/, src/ or the root, each bundled with
+  the build's own resolver and run in its own process. `test`, `expect`,
+  `render`, `snapshot` from `hydra/test`. A snapshot is written on first run and
+  compared after; a change is a failure.
+- **`hydra lsp`** — LSP 3.17 over stdio: diagnostics from the compiler's own
+  check, hover, go-to-definition, rename within one file (and a REFUSAL, with
+  the reason, for a name that is imported).
+- **`hydra check --json` and `hydra check -`** (stdin), so a tool consumes
+  diagnostics as data rather than parsing the coloured human output. Hand-built
+  JSON with a real escaper; no new dependency.
+- **An incremental compile cache**, content-addressed by
+  (source, compiler version, filename), under `.hydra/cache/`. A second build of
+  an untouched project compiles nothing and says `N reused, 0 compiled`.
+- **A parallel compile pool** (`worker_threads`), tested and reachable, and OFF
+  below a measured threshold: the compiler is 0.39 ms/file, so at 120 files the
+  pool (124 ms) is slower than serial (47 ms). `benchmarks/compile.mjs` prints
+  the numbers; `shouldPool` is that threshold and not a guess.
+
+### Fixed
+- **`class MyError(Exception)` emitted `extends Exception`**, a name nothing
+  defines, so the module threw `ReferenceError: Exception is not defined` on
+  load. The README documents this exact code. The runtime now provides the
+  Python exception hierarchy as real classes (`KeyError` is a `LookupError` is
+  an `Exception`, so `except LookupError:` catches it), and `TypeError` IS the
+  JS built-in so `except TypeError:` also catches what the engine throws.
+- **`raise ValueError("x")` compiled to `<ValueError>x</ValueError>`** — a React
+  element, not a throw — while README documents `new ValueError("x")`.
+- **`except KeyError:` emitted `instanceof KeyError` with no import**, a
+  ReferenceError at the moment the handler was meant to catch something.
+- **A user's class with a runtime exception's name produced two declarations**
+  (`SyntaxError: Identifier 'ValueError' has already been declared`). Class
+  names are now collected before anything is emitted, so the user's class wins.
+- **`hydra run` could not resolve the `hydra` specifier at all.** The binary
+  piped the compiled JS to `node -`, so any script importing a runtime helper
+  died with `ERR_MODULE_NOT_FOUND: Cannot find package 'hydra'` — in a language
+  whose README documents that import. `run` now bundles through the runner.
+- **`same_path`**: a pre-rendered route at `/about/` concluded the inlined data
+  was for a different URL and rendered without the loader's props, which the
+  server HAD rendered with — React #425/#418 on every such route.
+
+### Changed
+- The roadmap's three remaining rows are now named as remainder (Fast Refresh,
+  cross-file rename, completion), each with the reason it is not done.
+
+---
+
 ## 0.7.2 — 2026-11-02
 
 **The published binary refused to start on the machine it was being deployed

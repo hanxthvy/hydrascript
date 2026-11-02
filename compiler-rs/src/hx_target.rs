@@ -207,7 +207,26 @@ impl JsEmitter {
             Kind::Null => Ok("null".into()),
             // Inside a class method `self` is JS `this`.
             Kind::Name(id) if id == "self" => Ok("this".to_string()),
-            Kind::Name(id) => Ok(id.clone()),
+            Kind::Name(id) => {
+                // A runtime exception class — `raise ValueError("x")`,
+                // `except ValueError:` — is a value that has to be imported.
+                // Emitted bare it named a global nothing defines, and the
+                // module threw ReferenceError on load.
+                //
+                // Only when the name is NOT declared in this file: a user's
+                // `class ValueError(Exception)` must keep its own class, which
+                // is what `class_names` records. Without that guard the emitted
+                // import collided with the class and `hydra run` died with
+                // `SyntaxError: Identifier 'ValidationError' has already been
+                // declared` — from a .hys that ran before.
+                let declared_here = self.class_names.borrow().contains(id);
+                if !declared_here {
+                    if let Some(fix) = crate::emitter::python_base_class(id) {
+                        self.used_helpers.borrow_mut().insert(fix);
+                    }
+                }
+                Ok(id.clone())
+            }
             Kind::Attr { obj, name } => {
                 // `self.x` -> `this.x` (see Kind::Name above) — routed through
                 // the same code path by rewriting the object first.
@@ -468,6 +487,20 @@ impl JsEmitter {
                 Ok(res)
             }
             Kind::Call { func, args, kwargs } => {
+                // A runtime exception class: `new ValueError(...)`, and the
+                // name has to be IMPORTED or the emitted code names a global
+                // nothing defines (`ReferenceError: KeyError is not defined`
+                // from a `.hys` that only did `raise KeyError("x")`).
+                if let Kind::Name(id) = &func.kind {
+                    if !self.class_names.borrow().contains(id) {
+                        if let Some(fix) = crate::emitter::python_base_class(id) {
+                            self.used_helpers.borrow_mut().insert(fix);
+                            let bits: Result<Vec<_>, _> =
+                                args.iter().map(|a| self.js(a)).collect();
+                            return Ok(format!("new {}({})", id, bits?.join(", ")));
+                        }
+                    }
+                }
                 // `Point(1, 2)` constructs in Python; JS needs the `new`.
                 if let Kind::Name(id) = &func.kind {
                     if self.class_names.borrow().contains(id) {
@@ -1128,7 +1161,13 @@ impl JsEmitter {
                 // class in Python constructs an instance.
                 self.class_names.borrow_mut().insert(name.clone());
                 let head = match base {
-                    Some(b) => format!("class {} extends {}", name, b),
+                    Some(b) => match crate::emitter::python_base_class(b) {
+                        Some(fix) if !self.class_names.borrow().contains(b.as_str()) => {
+                            self.used_helpers.borrow_mut().insert(fix.clone());
+                            format!("class {} extends {}", name, fix)
+                        }
+                        _ => format!("class {} extends {}", name, b),
+                    },
                     None => format!("class {}", name),
                 };
                 self.w(&format!("{} {{", head));
@@ -1381,7 +1420,18 @@ impl JsEmitter {
                     let mut first = true;
                     for h in handlers {
                         if let Some(cls) = &h.class {
-                            self.used_helpers.borrow_mut().insert(cls.clone());
+                            // Only a RUNTIME exception class is imported. A
+                            // user's `class ValidationError(Exception)` is a
+                            // declaration in this same file, so importing the
+                            // name as well produced two declarations of it and
+                            // the module did not parse.
+                            let is_catch_all = matches!(cls.as_str(), "Exception" | "BaseException");
+                            let declared_here = self.class_names.borrow().contains(cls);
+                            if !declared_here && !is_catch_all {
+                                if let Some(fix) = crate::emitter::python_base_class(cls) {
+                                    self.used_helpers.borrow_mut().insert(fix);
+                                }
+                            }
                             let cond = format!("{} instanceof {}", catch_var, cls);
                             if first {
                                 self.w(&format!("if ({}) {{", cond));
@@ -1570,6 +1620,18 @@ impl JsEmitter {
                     },
                     _ => {}
                 }
+            }
+        }
+
+        // Register EVERY class in this file first: a class declared after its
+        // first use would otherwise be unknown at that use, and a user's
+        // `class ValidationError(Exception)` collided with the runtime's
+        // exception classes — the import was emitted AND the declaration
+        // followed, which does not parse (`Identifier 'ValidationError' has
+        // already been declared`). The user's class must win.
+        for s in body {
+            if let Kind::Class { name, .. } = &s.kind {
+                self.class_names.borrow_mut().insert(name.clone());
             }
         }
 

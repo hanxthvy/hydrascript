@@ -1502,3 +1502,66 @@ fn keyword_args_on_an_ambiguous_method_are_refused() {
     let e = comp_err(src);
     assert!(e.msg.contains("method"), "{}", e.msg);
 }
+
+/// The README's error-handling example, as an executable contract.
+///
+/// `class MyError(Exception)` and `raise ValueError("x")` are both documented.
+/// They were both broken in the same way: the base class and the raise were
+/// emitted as names nothing defines, so the module threw
+/// `ReferenceError: Exception is not defined` on LOAD and `raise ValueError(...)`
+/// became a JSX element (`<ValueError>bad</ValueError>`). The tests here are on
+/// the EMITTED JS, because both failures compiled cleanly and failed later.
+#[test]
+fn python_exception_classes_are_imported_and_constructed() {
+    let src = "class MyError(Exception):\n    pass\n\ncomponent X():\n    raise MyError(\"bad\")\n";
+    let out = comp(src);
+    assert!(
+        out.contains("import { Exception, raise_ } from 'hydra'"),
+        "the base must be imported, got:\n{out}"
+    );
+    assert!(out.contains("class MyError extends Exception"), "got:\n{out}");
+    assert!(out.contains("new MyError("), "a class call constructs, got:\n{out}");
+}
+
+#[test]
+fn raise_a_builtin_exception_constructs_it() {
+    let src = "component X():\n    raise ValueError(\"bad value\")\n";
+    let out = comp(src);
+    assert!(
+        out.contains("raise_(new ValueError(\"bad value\"))"),
+        "`raise ValueError(\"x\")` must be a construction, not a JSX element, got:\n{out}"
+    );
+    assert!(
+        out.contains("ValueError") && out.contains("from 'hydra'"),
+        "the class must be imported, got:\n{out}"
+    );
+    assert!(
+        !out.contains("<ValueError>"),
+        "it must not be an element, got:\n{out}"
+    );
+}
+
+#[test]
+fn except_a_builtin_exception_names_an_imported_class() {
+    let src = "component X():\n    try:\n        pass\n    except KeyError as e:\n        pass\n";
+    let out = comp(src);
+    assert!(out.contains("KeyError"), "got:\n{out}");
+    assert!(
+        out.contains("from 'hydra'"),
+        "the handler's class must be imported, got:\n{out}"
+    );
+}
+
+#[test]
+fn a_user_class_shadows_the_runtime_exception_of_the_same_name() {
+    // Two declarations of one identifier does not parse. Emitting the import
+    // AND the class declaration produced
+    // `SyntaxError: Identifier 'ValueError' has already been declared`.
+    let src = "class ValueError(Exception):\n    pass\n\ncomponent X():\n    raise ValueError(\"mine\")\n";
+    let out = comp(src);
+    assert!(out.contains("class ValueError extends Exception"), "got:\n{out}");
+    assert!(
+        !out.contains("import { ValueError"),
+        "the user's class wins; it must not also be imported, got:\n{out}"
+    );
+}

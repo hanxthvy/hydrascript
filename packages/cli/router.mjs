@@ -761,30 +761,51 @@ function identFor(file) {
   lines.push('  return null;');
   lines.push('}');
   lines.push('');
-  lines.push('export async function renderFor(pattern, params = {}, url = pattern) {');
+  // LOADING and RENDERING are separate exports, and that is not tidiness.
+  //
+  // The seed is module-global (the runtime has one `ssr_seed`), so a server that
+  // awaited a loader with the seed already set would have two concurrent
+  // requests overwriting each other's data — the second request's page would
+  // render with the first one's props. Splitting them makes the async part end
+  // before any global state is touched:
+  //
+  //   data = await loadFor(...)          // may await a database
+  //   element = renderSync(pattern, params, url, data)   // fully synchronous
+  //
+  // Nothing can interleave between `__seed_for_ssr` and the caller's
+  // `renderToString`, because there is no await in between.
+  lines.push('export async function loadFor(pattern, params = {}, url = pattern, request = null) {');
+  lines.push('  const serverMod = __serverFor(pattern);');
+  lines.push('  const loader = serverMod && typeof serverMod.loader === "function" ? serverMod.loader : null;');
+  lines.push('  if (!loader) return null;');
+  lines.push('  // ONE argument: an event object. Passing three silently handed every');
+  lines.push('  // loader written to the documented shape the wrong first parameter.');
+  lines.push('  return await loader(__event(params, url, request));');
+  lines.push('}');
+  lines.push('');
+  lines.push('export function renderSync(pattern, params = {}, url = pattern, data = null) {');
   lines.push('  const App = __appComponent();');
-  lines.push('  if (!App) return { element: null, data: null };');
+  lines.push('  if (!App) return null;');
   lines.push('  const table = __table();');
+  lines.push('  // The seed carries the loader result: the page is rendered by `Router`');
+  lines.push('  // inside the app and never receives props from here.');
+  lines.push('  __seed_for_ssr({ table, path: pattern, data });');
+  lines.push('  // Render the APP, not the page. Rendering the page produced HTML with');
+  lines.push('  // none of the chrome, and hydrating the full app over it was React #418');
+  lines.push('  // on every pre-rendered route. The app is what the browser mounts.');
+  lines.push('  //');
+  lines.push('  // The seed is NOT cleared here: `renderSync` only BUILDS the element, and');
+  lines.push('  // React renders it afterwards when the caller calls `renderToString`.');
+  lines.push('  // Clearing it in a `finally` before returning wiped it before the render');
+  lines.push('  // ever read it, so every page came out as an empty shell with correct data');
+  lines.push('  // inlined beside it. The caller clears it via `__clear_seed`.');
+  lines.push('  return createElement(App, { params, path: pattern, url });');
+  lines.push('}');
+  lines.push('');
+  lines.push('export async function renderFor(pattern, params = {}, url = pattern, request = null) {');
   lines.push('  try {');
-  lines.push('    const serverMod = __serverFor(pattern);');
-  lines.push('    const loader = serverMod && typeof serverMod.loader === "function" ? serverMod.loader : null;');
-  lines.push('    // ONE argument: an event object. Passing three silently handed every');
-  lines.push('    // loader written to the documented shape the wrong first parameter.');
-  lines.push('    const data = loader ? await loader(__event(params, url)) : null;');
-  lines.push('    // The seed carries the loader result: the page is rendered by `Router`');
-  lines.push('    // inside the app and never receives props from here.');
-  lines.push('    __seed_for_ssr({ table, path: pattern, data });');
-  lines.push('    // Render the APP, not the page. Rendering the page produced HTML with');
-  lines.push('    // none of the chrome, and hydrating the full app over it was React #418');
-  lines.push('    // on every pre-rendered route. The app is what the browser mounts.');
-  lines.push('    // The seed is NOT cleared here.');
-  lines.push('    //');
-  lines.push('    // `renderFor` only BUILDS the element; React renders it afterwards, when');
-  lines.push('    // the runner calls `renderToString`. Clearing the seed in a `finally`');
-  lines.push('    // before returning wiped it before the render ever read it, so every page');
-  lines.push('    // came out as an empty shell with correct data inlined beside it. The');
-  lines.push('    // caller clears it, and `__clear_seed` exists for that.');
-  lines.push('    return { element: createElement(App, { params, path: pattern, url }), data };');
+  lines.push('    const data = await loadFor(pattern, params, url, request);');
+  lines.push('    return { element: renderSync(pattern, params, url, data), data };');
   lines.push('  } catch (err) {');
   lines.push('    __clear_ssr_seed();');
   lines.push('    throw err;');

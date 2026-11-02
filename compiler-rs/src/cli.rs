@@ -118,7 +118,16 @@ pub fn preview_cmd(args: &[String]) -> ExitCode {
 
 pub fn run(args: &[String]) -> ExitCode {
     match args.first().map(|s| s.as_str()) {
-        Some("run") => run_script(&args[1..]),
+        // `run` goes to the Node runner, not to this binary.
+        //
+        // This used to compile the script and pipe the JS to `node -`, which
+        // cannot resolve the `hydra` specifier the compiler emits
+        // (`import { raise_ } from 'hydra'`). The result was
+        // `ERR_MODULE_NOT_FOUND: Cannot find package 'hydra'` for any script
+        // that used a runtime helper, while the README documents doing exactly
+        // that. The runner bundles the script with the same resolver the build
+        // uses, so there is one resolver and not two.
+        Some("run") => forward_to_runner(&args[1..]),
         Some("dev") => dev_cmd(&args[1..]),
         Some("build") => build_cmd(&args[1..]),
         Some("routes") => routes_cmd(&args[1..]),
@@ -144,6 +153,41 @@ pub fn run(args: &[String]) -> ExitCode {
             ExitCode::from(2)
         }
         None => repl(),
+    }
+}
+
+/// Hand a subcommand to `packages/cli/runner.mjs`, which owns the bundler.
+///
+/// `HYDRA_RUNNER` points at it; without that the binary looks beside itself,
+/// which is how the npm package ships (bin/hydra + packages/cli/runner.mjs).
+pub fn forward_to_runner(args: &[String]) -> ExitCode {
+    let runner = std::env::var("HYDRA_RUNNER")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| {
+            let exe = std::env::current_exe().ok()?;
+            let root = exe.parent()?.parent()?;
+            let candidate = root.join("packages").join("cli").join("runner.mjs");
+            candidate.exists().then_some(candidate)
+        });
+    let Some(runner) = runner else {
+        eprintln!(
+            "hydra: cannot find the Node runner (packages/cli/runner.mjs). \
+             Set HYDRA_RUNNER to its path."
+        );
+        return ExitCode::from(1);
+    };
+    let status = std::process::Command::new("node")
+        .arg(&runner)
+        .arg("run")
+        .args(args)
+        .status();
+    match status {
+        Ok(s) => ExitCode::from(s.code().unwrap_or(1) as u8),
+        Err(e) => {
+            eprintln!("hydra: could not start node: {e}");
+            ExitCode::from(1)
+        }
     }
 }
 
@@ -575,7 +619,126 @@ pub fn repl() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Check ONE source text, printing what it finds in either shape.
+///
+/// Shared by the file loop and the stdin path so `hydra check -` cannot drift
+/// from `hydra check file` — the same class of bug that made `hydra routes`
+/// print something different from what the build used.
+fn check_source_text(src: &str, name: &str, as_json: bool, strict: bool) -> ExitCode {
+    let mut errors = 0usize;
+    let warnings: Vec<crate::Warning> = match compile(src, name) {
+        Ok(_) => match check_source(src) {
+            Ok(ws) => ws,
+            Err(e) => {
+                if as_json {
+                    println!("{}", diagnostic_json(&e, name, "error"));
+                } else {
+                    eprintln!("{}\n{}", name, e.pretty());
+                }
+                errors += 1;
+                Vec::new()
+            }
+        },
+        Err(e) => {
+            if as_json {
+                println!("{}", diagnostic_json(&e, name, "error"));
+            } else {
+                eprintln!("{}\n{}", name, e.pretty());
+            }
+            errors += 1;
+            Vec::new()
+        }
+    };
+    if as_json {
+        for w in &warnings {
+            println!("{}", warning_json(w, name));
+        }
+    } else {
+        for w in &warnings {
+            eprintln!("{}", w.render(name));
+        }
+    }
+    if errors > 0 {
+        if !as_json {
+            eprintln!("\n{errors} error(s) found");
+        }
+        return ExitCode::from(1);
+    }
+    if strict && !warnings.is_empty() {
+        return ExitCode::from(1);
+    }
+    ExitCode::SUCCESS
+}
+
+/// One diagnostic as JSON.
+///
+/// Hand-built rather than via a JSON crate: the compiler has no serde
+/// dependency and adding one for four fields is not worth a build-time and
+/// dependency-surface cost. `escape_json` is a real escaper (quotes, backslash,
+/// control characters), so a message containing a quote — an error about a
+/// string literal, which is most of them — does not produce invalid JSON.
+///
+/// `line`/`col` are 1-based, as the compiler reports them. The language server
+/// converts to LSP's 0-based positions, in one place.
+fn diagnostic_json(e: &crate::CompileError, file: &str, severity: &str) -> String {
+    format!(
+        "{{\"file\":{},\"line\":{},\"col\":{},\"severity\":{},\"message\":{}}}",
+        escape_json(file),
+        e.line,
+        e.col,
+        escape_json(severity),
+        escape_json(&e.msg)
+    )
+}
+
+fn warning_json(w: &crate::Warning, file: &str) -> String {
+    format!(
+        "{{\"file\":{},\"line\":{},\"col\":{},\"severity\":\"warning\",\"message\":{}}}",
+        escape_json(file),
+        w.line,
+        w.col,
+        escape_json(&w.message)
+    )
+}
+
+/// A JSON string literal, escapes included.
+fn escape_json(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 fn check(args: &[String]) -> ExitCode {
+    // `--json` — one JSON object per finding, on stdout.
+    //
+    // For the language server, which must publish the COMPILER's diagnostics and
+    // not a second opinion: a server that disagrees with the build teaches a
+    // developer to trust neither. Machine-readable output belongs on this
+    // command rather than in a parser for the coloured human one.
+    let as_json = args.iter().any(|a| a == "--json");
+    // `hydra check -` reads the source from stdin, which is what an editor has
+    // (an unsaved buffer) and a file path cannot express.
+    let from_stdin = args.iter().any(|a| a == "-");
+    if from_stdin {
+        let mut src = String::new();
+        if std::io::Read::read_to_string(&mut std::io::stdin(), &mut src).is_err() {
+            eprintln!("hydra: could not read stdin");
+            return ExitCode::from(1);
+        }
+        return check_source_text(&src, "<stdin>", as_json, false);
+    }
     let files = targets(args);
     // `--strict` promotes the semantic warnings to a failure. The default stays
     // advisory: a build with a warning still produces the right bundle, and a

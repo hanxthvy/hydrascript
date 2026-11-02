@@ -268,6 +268,43 @@ pub static JS_BUILTIN_GLOBALS: &[&str] = &[
     "Performance",
 ];
 
+/// Python's exception bases, and their runtime stand-ins.
+///
+/// `Exception` is the root; the rest exist so `except ValueError:` names
+/// something. They are needed as classes and not as aliases of `Error` because
+/// `except ValueError:` is an `instanceof` test — aliasing them all to `Error`
+/// would make every handler match every error, which is worse than not
+/// compiling.
+pub fn python_base_class(name: &str) -> Option<String> {
+    const KEYS: &[&str] = &[
+        "Exception",
+        "BaseException",
+        "ValueError",
+        "KeyError",
+        "IndexError",
+        "RuntimeError",
+        "ZeroDivisionError",
+        "AttributeError",
+        "StopIteration",
+        "NotImplementedError",
+        "FileNotFoundError",
+        "PermissionError",
+        "OSError",
+        "IOError",
+        "ArithmeticError",
+        "AssertionError",
+        "LookupError",
+        "OverflowError",
+        "RangeError",
+        "UnicodeError",
+    ];
+    if KEYS.contains(&name) {
+        Some(name.to_string())
+    } else {
+        None
+    }
+}
+
 pub fn prop_map(k: &str) -> String {
     if k.starts_with("aria_") || k.starts_with("data_") {
         return k.replace('_', "-");
@@ -1043,6 +1080,14 @@ impl Emitter {
     /// `def`/`export def` and `class_names` every class.
     pub fn is_element_call(&self, func: &Node) -> bool {
         if let Kind::Name(id) = &func.kind {
+            // A Python exception class is called to CONSTRUCT one:
+            // `raise ValueError("bad")` emitted `<ValueError>bad</ValueError>`,
+            // which is a React element and not a throw. README documents both
+            // `raise ValueError("x")` and `class MyError(Exception)`, so this
+            // was a documented feature that silently did the wrong thing.
+            if python_base_class(id).is_some() && !self.class_names.borrow().contains(id) {
+                return false;
+            }
             if self.fn_params.borrow().contains_key(id) {
                 return false;
             }
@@ -1093,6 +1138,9 @@ impl Emitter {
         match &n.kind {
             Kind::Name(id) => {
                 if JS_BUILTIN_GLOBALS.contains(&id.as_str()) {
+                    return false;
+                }
+                if python_base_class(id).is_some() {
                     return false;
                 }
                 HTML_TAGS.contains(&id.as_str())
@@ -1193,7 +1241,15 @@ impl Emitter {
             Kind::Null => Ok("null".into()),
             // Inside a class method `self` is JS `this`.
             Kind::Name(id) if id == "self" => Ok("this".to_string()),
-            Kind::Name(id) => Ok(id.clone()),
+            Kind::Name(id) => {
+                // A bare exception name — `except ValueError:` — resolves to
+                // the runtime class of the same name, so the `instanceof` test
+                // in the emitted catch block names something that exists.
+                if python_base_class(id).is_some() && !self.class_names.borrow().contains(id) {
+                    self.used_helpers.borrow_mut().insert(id.clone());
+                }
+                Ok(id.clone())
+            }
             Kind::Attr { obj, name } => {
                 // `self.x` -> `this.x` (see Kind::Name above) — routed through
                 // the same code path by rewriting the object first.
@@ -1317,6 +1373,16 @@ impl Emitter {
                 Ok(res)
             }
             Kind::Call { func, args, kwargs } => {
+                // A Python exception class: `new ValueError(...)`, imported.
+                // Without the import the emitted code named a global that does
+                // not exist, and the module threw on load.
+                if let Kind::Name(id) = &func.kind {
+                    if python_base_class(id).is_some() && !self.class_names.borrow().contains(id) {
+                        self.used_helpers.borrow_mut().insert(id.clone());
+                        let bits: Result<Vec<_>, _> = args.iter().map(|a| self.js(a)).collect();
+                        return Ok(format!("new {}({})", id, bits?.join(", ")));
+                    }
+                }
                 // `Point(1, 2)` constructs an instance in Python; JS needs
                 // the `new` keyword.
                 if let Kind::Name(id) = &func.kind {
@@ -2546,8 +2612,22 @@ impl Emitter {
                 // Recorded so `Point(1, 2)` emits `new Point(1, 2)`: calling a
                 // class in Python constructs an instance.
                 self.class_names.borrow_mut().insert(name.clone());
+                // A Python exception base has no JS equivalent, so the runtime
+                // provides one per name. `class ValidationError(Exception)`
+                // emitted `extends Exception` — a name nothing defines, so the
+                // module threw `ReferenceError: Exception is not defined` the
+                // moment it loaded, and `except ValidationError:` compiled to
+                // `instanceof ValidationError` against a class that never
+                // existed. README documents this exact code.
                 let head = match base {
-                    Some(b) => format!("class {} extends {}", name, b),
+                    Some(b) => {
+                        if let Some(fix) = python_base_class(b).filter(|_| !self.class_names.borrow().contains(b.as_str())) {
+                            self.used_helpers.borrow_mut().insert(fix.to_string());
+                            format!("class {} extends {}", name, fix)
+                        } else {
+                            format!("class {} extends {}", name, b)
+                        }
+                    }
                     None => format!("class {}", name),
                 };
                 self.w(&format!("{} {{", head));
@@ -2835,6 +2915,18 @@ impl Emitter {
                         );
                         match &h.class {
                             Some(cls) if !is_catch_all => {
+                                // The class must be imported: `except KeyError:`
+                                // emits `__e instanceof KeyError`, and without
+                                // the import that named a global nothing
+                                // defines — a ReferenceError at the very moment
+                                // the handler was meant to catch something.
+                                // A user's own class of the same name is a
+                                // declaration here and must NOT be imported.
+                                if !self.class_names.borrow().contains(cls) {
+                                    if let Some(fix) = python_base_class(cls) {
+                                        self.used_helpers.borrow_mut().insert(fix);
+                                    }
+                                }
                                 let cond = format!("__e instanceof {}", cls);
                                 if first {
                                     self.w(&format!("if (!!({})) {{", cond));
@@ -3271,6 +3363,24 @@ impl Emitter {
                     },
                     _ => {}
                 }
+            }
+        }
+
+        // Register EVERY class declared in this file BEFORE emitting anything.
+        //
+        // `class_names` is filled as each statement is emitted, and a class
+        // declared AFTER its first use is then unknown at that use. That is how
+        // a user's own `class ValidationError(Exception)` collided with the
+        // runtime's exception classes: the earlier `except ValidationError:`
+        // (or a `raise`) had already recorded `ValidationError` as a runtime
+        // helper, the import was emitted, and the class declaration that
+        // followed produced
+        //     SyntaxError: Identifier 'ValidationError' has already been declared
+        // — a module that does not parse. The user's class must win, so the
+        // names are collected first and the shadowing is decided once.
+        for s in body {
+            if let Kind::Class { name, .. } = &s.kind {
+                self.class_names.borrow_mut().insert(name.clone());
             }
         }
 
