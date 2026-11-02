@@ -737,7 +737,16 @@ fn check(args: &[String]) -> ExitCode {
             eprintln!("hydra: could not read stdin");
             return ExitCode::from(1);
         }
-        return check_source_text(&src, "<stdin>", as_json, false);
+        // `--stdin-name <path>`: the editor has the real filename and wants
+        // diagnostics that name IT, not `<stdin>`. A diagnostic pointing at a
+        // file that does not exist is not clickable.
+        let name = args
+            .iter()
+            .position(|a| a == "--stdin-name")
+            .and_then(|i| args.get(i + 1))
+            .map(String::as_str)
+            .unwrap_or("<stdin>");
+        return check_source_text(&src, name, as_json, false);
     }
     let files = targets(args);
     // `--strict` promotes the semantic warnings to a failure. The default stays

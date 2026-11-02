@@ -52,6 +52,7 @@ stop daring to upgrade, not because of missing features.
 - [CLI reference](#cli-reference)
 - [Installation](#installation)
 - [Editor support](#editor-support)
+- [When something fails](#when-something-fails)
 - [Testing](#testing)
 - [Permanent limitations](#permanent-limitations)
 - [Roadmap](#roadmap)
@@ -544,7 +545,7 @@ routes" below.
 ### SSR for dynamic routes
 
 A route with a parameter has no single URL, so the static build cannot write one
-file for it. `hydra dev`, `preview` and `serve` render those routes **per
+file for it. `hydra dev` and `hydra preview` render those routes **per
 request** from the same server bundle the build produces:
 
 ```
@@ -808,9 +809,24 @@ runner loads from the project's own `node_modules`.
 
 ## Editor support
 
-`editors/vscode` provides syntax highlighting and inline compiler diagnostics.
-Copy or symlink it into `~/.vscode/extensions/hydrascript` and reload. It shells
-out to the `hydra` binary for diagnostics; there is no separate language server.
+Two ways to get editing support, and they are different things:
+
+- **`editors/vscode`** — syntax highlighting plus inline diagnostics. It runs
+  `hydra check --json -` and turns the JSON into squiggles, so it reports every
+  finding, not only the first. Copy or symlink it into
+  `~/.vscode/extensions/hydrascript` and reload.
+- **`hydra lsp`** — a real language server, for an editor that speaks LSP:
+  diagnostics, hover, go-to-definition, and rename within one file.
+
+Configure the LSP in VS Code with the `vscode-languageclient` extension of your
+choice, or in any editor that accepts an LSP command:
+
+```json
+{ "command": "hydra", "args": ["lsp"] }
+```
+
+The extension does NOT start the server for you: the two overlap on diagnostics
+and wiring both would double every squiggle.
 
 ---
 
@@ -818,7 +834,7 @@ out to the `hydra` binary for diagnostics; there is no separate language server.
 
 ```bash
 cd compiler-rs && cargo test          # 394 tests: 269 unit + 125 integration
-node --test packages/cli/*.test.mjs   # 96 CLI/runtime tests, some against a real browser
+node --test packages/cli/*.test.mjs   # 115 CLI/runtime tests, some against a real browser
 node benchmarks/measure.mjs           # the numbers quoted above
 node benchmarks/compile.mjs           # what the compile cache and the pool buy
 bash scripts/hx-examples-check.sh     # builds every example/ project
@@ -837,6 +853,69 @@ a bundler regression shows up as a build failure.
 the two options that exist because of what the profile showed, and how to work on
 the runtime gate are in
 [docs/DEVELOPING.md](docs/DEVELOPING.md).
+
+---
+
+## When something fails
+
+Four things can go wrong at run time rather than at build time, and each one has
+a defined answer. This section exists because "why is my page empty" is the
+question that costs a developer an afternoon, and the answer should be in the
+response, not in a terminal they may not have open.
+
+### A loader throws
+
+The route is still served, and the response says what happened, naming the file
+the author actually edits:
+
+```
+HTTP 500
+hydra: the server could not render /blog/x
+
+loader for /blog/:slug (blog/[slug].server.hys) threw: Cannot read properties
+of null (reading 'missing')
+
+TypeError: Cannot read properties of null (reading 'missing')
+    at loader (...)
+```
+
+The `.hys` path and the pattern are in there because the raw stack is not
+actionable on its own: it points into a built server bundle the author has never
+opened. The terminal gets the same message, one line.
+
+`GET /__hydra/data` answers `500` with `{"error": "..."}` for the same failure,
+so a client-side navigation reports it too. It is **never** an empty data object:
+`[]` and "the request failed" look identical in a UI and mean different things.
+
+### A component throws while rendering
+
+React catches it with the route's error boundary (`_error.hyx` for that folder),
+which is what renders the failure. If the render throws before React can, the
+server writes the same notice into the shell and answers `500` — a blank page
+with a `200` and no explanation is what this avoids.
+
+### A page renders nothing
+
+Not fatal, and reported by the build as a warning, because a page legitimately
+rendering nothing until a fetch resolves is a real pattern:
+
+```
+warning: /about/ — root rendered nothing (#root has no children and the body has no text)
+```
+
+The build prints it; the runtime gate distinguishes it from an exception. If you
+see it and did not expect it, the component returned nothing — a missing `return`
+is the usual cause, and `hydra check` will not catch it because the name is
+bound.
+
+### Hydration mismatch
+
+A mismatch is a **build failure**, not a console warning: the runtime gate loads
+every HTML file the build wrote and fails on an uncaught exception, and React
+reports a mismatch by throwing (#418 / #423 / #425). The usual causes are an
+inlined payload for a different URL, or a component reading `window` during the
+first render. Both are fixed in the framework; if you hit one, it is a bug worth
+reporting rather than a caveat worth working around.
 
 ---
 

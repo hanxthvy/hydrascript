@@ -657,6 +657,15 @@ function envDefines(mode, base, ssr = false) {
   };
 }
 
+/** Escape text for interpolation into HTML. */
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -1691,16 +1700,41 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
             );
           }
         } else {
-          const AppComponent =
-            ssgMod.App || ssgMod.default || Object.values(ssgMod).find((v) => typeof v === 'function');
-          if (!AppComponent) {
-            throw new Error('Could not find exported App component in SSR bundle');
-          }
-          const renderedHtml = renderToString(React.createElement(AppComponent));
-          if (sourceHtml) {
-            fs.writeFileSync(htmlOutPath, inject(sourceHtml, renderedHtml), 'utf8');
+          // No STATIC route to pre-render — but that is not the same as "nothing
+          // to do here".
+          //
+          // This branch used to write `dist/index.html` from the raw source
+          // template, which threw away the bundle `<script>` tag the client
+          // build had just injected. A project with only dynamic routes
+          // (`/blog/[slug]` and no index page) shipped an index.html with no
+          // bundle reference at all: the SSR route rendered server-side while
+          // every client-side navigation rendered NOTHING, because no JavaScript
+          // ever loaded. The runtime gate never saw it either — it looks at the
+          // HTML a request returns, and the shell IS blank, which is correct for
+          // a route that has no page.
+          //
+          // So: when there is no static page, `dist/index.html` is left exactly
+          // as the client build wrote it. That file is the shell the server
+          // injects into and the file the client hydrates from.
+          if (!routesTable) {
+            const AppComponent =
+              ssgMod.App ||
+              ssgMod.default ||
+              Object.values(ssgMod).find((v) => typeof v === 'function');
+            if (!AppComponent) {
+              throw new Error('Could not find exported App component in SSR bundle');
+            }
+            const renderedHtml = renderToString(React.createElement(AppComponent));
+            if (sourceHtml) {
+              fs.writeFileSync(htmlOutPath, withBundle(inject(sourceHtml, renderedHtml)), 'utf8');
+              console.log(
+                `[hydra] SSG: Pre-rendered HTML injected into ${path.relative(cwd, htmlOutPath)} (${renderedHtml.length} chars)`,
+              );
+            }
+          } else {
             console.log(
-              `[hydra] SSG: Pre-rendered HTML injected into ${path.relative(cwd, htmlOutPath)} (${renderedHtml.length} chars)`,
+              `[hydra] SSG: no static route to pre-render (${dynamicRoutes.length} dynamic); ` +
+                `dist/index.html is the client shell`,
             );
           }
         }
@@ -2052,10 +2086,36 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
             return;
           }
         } catch (err) {
-          // A page that throws while rendering server-side must still reach the
-          // browser, where React can show the route's error boundary. The
-          // message goes to the terminal, not into the HTML.
-          console.error(`[hydra] SSR failed for ${reqPath}: ${err && err.message ? err.message : err}`);
+          // A page that throws while rendering server-side still reaches the
+          // browser, where React can show the route's error boundary — but the
+          // shell it gets must SAY that, because a bare shell is a blank page
+          // with no explanation anywhere the developer is looking. "Why is my
+          // page empty" is the question this answers.
+          const message = err && err.message ? err.message : String(err);
+          const detail = err && err.loaderStack ? `${message}\n\n${err.loaderStack}` : message;
+          console.error(`[hydra] SSR failed for ${reqPath}: ${message}`);
+          try {
+            const shell = fs.readFileSync(indexPath, 'utf8');
+            const shown = opts.injectHtml
+              ? opts.injectHtml(shell)
+              : shell;
+            const notice =
+              `<div id="__hydra_ssr_error" style="font:14px/1.5 ui-monospace,monospace;` +
+              `padding:16px;margin:16px;border:1px solid #cf2d56;border-radius:8px;` +
+              `background:#fff5f7;color:#3a1a22;white-space:pre-wrap">` +
+              `hydra: the server could not render ${escapeHtml(reqPath)}\n\n${escapeHtml(detail)}` +
+              `</div>`;
+            const withNotice = shown.includes('<div id="root"></div>')
+              ? shown.replace('<div id="root"></div>', `<div id="root">${notice}</div>`)
+              : shown;
+            res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end(withNotice);
+            return;
+          } catch (shellErr) {
+            res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+            res.end(`hydra: SSR failed for ${reqPath}\n\n${detail}`);
+            return;
+          }
         }
       }
 

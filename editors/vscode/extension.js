@@ -29,26 +29,76 @@ function findCompiler(context) {
   return null
 }
 
-/** Run `hydra --check` on a document and turn stderr into diagnostics. */
-function diagnose(doc, bin, collection) {
-  if (!['hyx', 'hys', 'hsx', 'hs'].includes(doc.languageId) || !bin) return
-  execFile(bin, ['--check', '--stdin', doc.fileName], { input: doc.getText() }, (err, _out, stderr) => {
-    collection.clear()
-    if (!err || !stderr) return
-    // Compiler output:  error: <msg>\n  --> line N, col M\n ...
-    const m = /error:\s*(.+)\n\s*-->\s*line\s+(\d+),\s*col\s+(\d+)/.exec(stderr)
-    if (!m) return
-    const line = Math.max(0, parseInt(m[2], 10) - 1)
-    const col = Math.max(0, parseInt(m[3], 10) - 1)
-    const hint = /hint:\s*(.+)/.exec(stderr)
-    const diag = new vscode.Diagnostic(
-      new vscode.Range(line, col, line, col + 1),
-      hint ? `${m[1]}\n${hint[1]}` : m[1],
-      vscode.DiagnosticSeverity.Error,
+/**
+ * Turn `hydra check --json -` output into VS Code diagnostics.
+ *
+ * Was: a regex over the COLOURED stderr, which could only ever report the first
+ * problem and broke whenever the compiler's wording changed. `--json` exists for
+ * exactly this, so the extension reads data instead of prose.
+ *
+ * Pure and exported so it can be tested without VS Code.
+ */
+function parseDiagnostics(jsonText, DocumentRange, Diagnostic, DiagnosticSeverity) {
+  const out = []
+  for (const line of String(jsonText || '').split('\n')) {
+    const t = line.trim()
+    if (!t.startsWith('{')) continue
+    let d
+    try {
+      d = JSON.parse(t)
+    } catch {
+      continue
+    }
+    const lineIdx = Math.max(0, (d.line ?? 1) - 1)
+    const colIdx = Math.max(0, (d.col ?? 1) - 1)
+    const sev =
+      d.severity === 'error' ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning
+    const diag = new Diagnostic(
+      new DocumentRange(lineIdx, colIdx, lineIdx, colIdx + 1),
+      d.message || 'problem',
+      sev,
     )
     diag.source = 'hydra'
-    collection.set(doc.uri, [diag])
-  })
+    out.push(diag)
+  }
+  return out
+}
+
+/** Run `hydra check --json -` on a document and publish EVERY diagnostic. */
+function diagnose(doc, bin, collection, vscode) {
+  if (!['hyx', 'hys', 'hsx', 'hs'].includes(doc.languageId) || !bin) return
+  execFile(
+    bin,
+    ['check', '--json', '-', '--stdin-name', doc.fileName],
+    { input: doc.getText(), maxBuffer: 8 * 1024 * 1024 },
+    (_err, stdout, stderr) => {
+      collection.clear()
+      // `check` exits non-zero for an error, so `_err` is expected and not
+      // itself a finding. Diagnostics come from stdout; a failure to RUN the
+      // compiler is reported as a warning at line 1 so it is visible rather
+      // than silently absent.
+      const diags = parseDiagnostics(
+        stdout,
+        vscode.Range,
+        vscode.Diagnostic,
+        vscode.DiagnosticSeverity,
+      )
+      if (diags.length > 0) {
+        collection.set(doc.uri, diags)
+        return
+      }
+      const ran = stdout && stdout.trim().length > 0
+      if (!ran && stderr && stderr.trim() && !/error\(s\) found/.test(stderr)) {
+        const d = new vscode.Diagnostic(
+          new vscode.Range(0, 0, 0, 1),
+          `hydra could not run: ${stderr.trim().split('\n')[0]}`,
+          vscode.DiagnosticSeverity.Warning,
+        )
+        d.source = 'hydra'
+        collection.set(doc.uri, [d])
+      }
+    },
+  )
 }
 
 function activate(context) {
@@ -58,14 +108,14 @@ function activate(context) {
 
   if (bin) {
     context.subscriptions.push(
-      vscode.workspace.onDidOpenTextDocument((d) => diagnose(d, bin, collection)),
-      vscode.workspace.onDidSaveTextDocument((d) => diagnose(d, bin, collection)),
+      vscode.workspace.onDidOpenTextDocument((d) => diagnose(d, bin, collection, vscode)),
+      vscode.workspace.onDidSaveTextDocument((d) => diagnose(d, bin, collection, vscode)),
       vscode.workspace.onDidCloseTextDocument((d) => collection.delete(d.uri)),
     )
-    for (const d of vscode.workspace.textDocuments) diagnose(d, bin, collection)
+    for (const d of vscode.workspace.textDocuments) diagnose(d, bin, collection, vscode)
   }
 }
 
 function deactivate() {}
 
-module.exports = { activate, deactivate }
+module.exports = { activate, deactivate, parseDiagnostics }

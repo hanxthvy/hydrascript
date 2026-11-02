@@ -200,8 +200,6 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
       const params = hit.params;
       const pattern = hit.route.pattern;
       const data = await mod.loadFor(pattern, params, url, request);
-      // No await from here to the end of this function: the seed is global, and
-      // an await here is what lets a second request overwrite it.
       const element = mod.renderSync(pattern, params, url, data);
       if (!element) return null;
       const rendered = renderToString(element);

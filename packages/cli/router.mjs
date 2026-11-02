@@ -496,7 +496,16 @@ export function routesModuleSource(table, { base = '/' } = {}) {
  * "pre-rendered 0/0" as if it had done something.
  */
 export function writeSsgEntry(cwd, table, { entry, base = '/' } = {}) {
-  if (!table || table.routes.filter((r) => !r.hasParams).length === 0) return null;
+  // NOT `staticRoutes.length === 0 -> null`.
+  //
+  // This generated entry is what defines `loadFor`/`renderSync`, and the SERVER
+  // renders dynamic routes from it per request. Returning null for a project
+  // whose routes are ALL dynamic meant the build silently fell back to
+  // `src/App.hyx`, the server bundle had no `loadFor`/`renderSync` at all, and
+  // `createRenderer` reported "the server bundle predates 0.8" — for a project
+  // built with 0.8. A blog with `/blog/[slug]` and no static pages is not an
+  // edge case; it is the shape the SSR path exists for.
+  if (!table) return null;
   if (!entry) return null;
   const dir = path.join(cwd, GENERATED_DIR);
   fs.mkdirSync(dir, { recursive: true });
@@ -728,6 +737,13 @@ function identFor(file) {
   );
   lines.push('}');
   lines.push('');
+  lines.push('function __sourceFor(pattern) {');
+  for (const [pattern, file] of Object.entries(loaderByPattern)) {
+    lines.push(`  if (pattern === ${JSON.stringify(pattern)}) return ${JSON.stringify(file)};`);
+  }
+  lines.push('  return null;');
+  lines.push('}');
+  lines.push('');
   lines.push('function __serverFor(pattern) {');
   for (const [pattern, file] of Object.entries(loaderByPattern)) {
     lines.push(`  if (pattern === ${JSON.stringify(pattern)}) return ${ident(file)};`);
@@ -780,7 +796,31 @@ function identFor(file) {
   lines.push('  if (!loader) return null;');
   lines.push('  // ONE argument: an event object. Passing three silently handed every');
   lines.push('  // loader written to the documented shape the wrong first parameter.');
-  lines.push('  return await loader(__event(params, url, request));');
+  lines.push('  try {');
+  lines.push('    return await loader(__event(params, url, request));');
+  lines.push('  } catch (err) {');
+  lines.push('    // Name the SOURCE file. The stack of a thrown loader points into the');
+  lines.push('    // built server bundle (`.hydra/server.cjs:7308`), which is not a file');
+  lines.push('    // the author has ever opened and has no line numbers they can use.');
+  lines.push('    // The mapping that matters — pattern to `.hys` path — is right here.');
+  lines.push('    throw __loaderError(err, pattern, url);');
+  lines.push('  }');
+  lines.push('}');
+  lines.push('');
+  lines.push('function __loaderError(err, pattern, url) {');
+  lines.push('  const file = __sourceFor(pattern);');
+  lines.push('  const where = file ? file : pattern;');
+  lines.push('  const message = err && err.message ? err.message : String(err);');
+  lines.push('  const e = new Error(`loader for ${pattern} (${where}) threw: ${message}`);');
+  lines.push('  e.cause = err;');
+  lines.push('  // Keep the original stack as a property rather than appending it: a');
+  lines.push('  // server log line should be readable, and the full trace is still there');
+  lines.push('  // for anyone who wants it.');
+  lines.push('  e.loaderStack = err && err.stack ? err.stack : null;');
+  lines.push('  e.pattern = pattern;');
+  lines.push('  e.url = url;');
+  lines.push('  e.sourceFile = file;');
+  lines.push('  return e;');
   lines.push('}');
   lines.push('');
   lines.push('export function renderSync(pattern, params = {}, url = pattern, data = null) {');

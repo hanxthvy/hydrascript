@@ -119,6 +119,11 @@ export class CompileCache {
   }
 
   set(key, res) {
+    // A FAILURE is never stored. Caching one would make a build fail forever on
+    // a file the developer fixed a second later, and the cache is the only thing
+    // in the pipeline that outlives the process. The invariant lives here rather
+    // than in every caller so it cannot be forgotten at a new call site.
+    if (!res || res.error) return;
     this.memory.set(key, res);
     if (!this.dir) return;
     const file = path.join(this.dir, key.slice(0, 2), key + '.json');

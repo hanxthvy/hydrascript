@@ -12,6 +12,77 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## 0.9.0 — 2026-11-02
+
+**Tests for the features 0.8 shipped, and four silent-failure bugs they found.**
+No new framework surface; the release is mostly the evidence that the previous
+one works.
+
+An analysis pass suggested tests for the LSP and for `hydra test`. Those already
+existed (17 and 6 cases). What follows is what was actually missing, plus what
+writing it turned up — which was more than the tests themselves.
+
+### Fixed
+- **A project whose routes are ALL dynamic shipped `dist/index.html` with no
+  bundle tag.** With no static route to pre-render, the SSG step fell into a
+  branch that rewrote `index.html` from the raw source template, discarding the
+  `<script>` tag the client build had just written. The server rendered
+  `/blog/[slug]` correctly while every CLIENT-side navigation rendered nothing —
+  no JavaScript ever loaded. A blog with only `/blog/[slug]` is not an edge case;
+  it is the shape the SSR path exists for.
+- **`writeSsgEntry` returned null when a project had no static routes**, so the
+  generated pre-render entry was never written, the build fell back to
+  `src/App.hyx`, and the server bundle had no `loadFor`/`renderSync`. The server
+  then refused every dynamic route with "the server bundle predates 0.8" — for a
+  project built with 0.8.
+- **A loader that threw reported a stack pointing into the built bundle**
+  (`.hydra/server.cjs:7308`). The error now names the `.hys` file and the route
+  pattern, in the response body AND in the terminal, because a bundle line number
+  is not a file the author has ever opened.
+- **An SSR failure produced a blank page with a 500 and no explanation.** The
+  same notice is now rendered into the shell, so the page says what failed.
+- **The VS Code extension regexed COLOURED stderr and could report only the
+  first problem.** It reads `hydra check --json` now, so every finding becomes a
+  squiggle, and `--stdin-name` keeps diagnostics pointing at a real path.
+- **`escapeHtml` for the SSR notice**, so a loader error containing `<` or `&`
+  cannot break the page it is being reported on.
+
+### Added
+- **Concurrency tests for SSR.** The runtime seed is module-global, so the rule
+  is that nothing may `await` between `renderSync` writing it and
+  `toString` reading it. The test drives two URLs whose loaders yield a DIFFERENT
+  number of times, so an interleaving is provable rather than theoretical — and
+  it was verified to FAIL when an await was deliberately added to that window.
+- **Static-deploy tests**: with no data endpoint the page reports `error`, still
+  renders, and does not crash; with the endpoint it loads the data.
+- **Route-conflict tests** for a file and a folder index claiming one URL, route
+  groups not changing the URL, and the nearest `_layout`/`_404` winning — the
+  layout chain asserted INNERMOST FIRST, which is the order `wrapInLayouts`
+  consumes and would nest every layout inside out if reversed.
+- **Cache regression tests**: a warm cache must cause ZERO compiles (a spy, not a
+  wall-clock threshold, which is flaky on a busy machine), and an error must never
+  be cached — an invariant now enforced inside `CompileCache.set` rather than at
+  every call site.
+- **Snapshot DIFFS.** A failed snapshot printed both documents; it now marks the
+  changed line with the unchanged ones for context, via an LCS line diff.
+- **`hydra check --stdin-name <path>`**, so an editor's diagnostics name the file
+  the developer has open.
+- **README: "When something fails"** — what happens for a loader that throws, a
+  component that throws, a page that renders nothing, and a hydration mismatch,
+  each with the words the user actually sees.
+- **README: the editor section** now describes `hydra lsp` and the extension as
+  two DIFFERENT things, including that the extension does not start the server.
+
+### Removed
+- **`test-hmr.mjs` at the repo root** — an ad-hoc script that duplicated three
+  checks already covered by `packages/cli/hmr.test.mjs` as real tests. Deleted
+  rather than renamed: a second copy of a test is a second thing to keep in sync.
+- **The claim that `hydra serve` exists.** README mentioned it; the command was
+  never written, and `hydra preview --host` already covers the case it was
+  describing.
+
+---
+
 ## 0.8.0 — 2026-11-02
 
 **The rest of the roadmap, in one release: SSR for dynamic routes, loaders that

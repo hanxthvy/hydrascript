@@ -21,6 +21,7 @@ import {
   routeTable,
   routesJson,
   layoutChainFor,
+  notFoundFor,
 } from './router.mjs';
 
 function fixture(files) {
@@ -274,4 +275,89 @@ test('the generated module carries serverFile per route', () => {
   // JSON.stringify does not escape `/`, so the emitted text has it literally.
   assert.ok(src.includes('"serverFile":"blog/[slug].server.hys"'), src.slice(0, 400));
   assert.ok(src.includes("serverFile"), 'serverFile must travel with the route');
+});
+
+test('a file and a folder index claiming one URL names BOTH files', () => {
+  // README: "Two files that claim the same URL are a build error naming both
+  // files, not a race decided silently." `about.hyx` and `about/index.hyx` are
+  // the same URL and the older scanner picked one and said nothing.
+  const pages = fixture({ 'about.hyx': '', 'about/index.hyx': '' });
+  const table = scanRoutes(pages);
+  assert.equal(table.errors_diagnostics.length, 1, JSON.stringify(table.errors_diagnostics));
+  const msg = table.errors_diagnostics[0];
+  assert.match(msg, /about\.hyx/);
+  assert.match(msg, /about\/index\.hyx/);
+  assert.match(msg, /\/about/);
+});
+
+test('a route group does not change the URL, but does scope its layout', () => {
+  const pages = fixture({
+    '(marketing)/price.hyx': '',
+    '(marketing)/_layout.hyx': '',
+    'product.hyx': '',
+  });
+  const table = scanRoutes(pages);
+  assert.deepEqual(table.errors_diagnostics, []);
+  const patterns = table.routes.map((r) => r.pattern).sort();
+  // The group's parentheses must not appear in the URL, and the file must not
+  // also be reachable under its raw folder name.
+  assert.deepEqual(patterns, ['/price', '/product']);
+
+  // `layouts` is keyed by DIRECTORY, and `layoutChainFor` is what a route ends
+  // up wrapped in. Asserting on the chain is asserting on the thing the router
+  // uses; asserting on the map alone would pass while the chain was wrong.
+  const priceChain = layoutChainFor('(marketing)', table);
+  assert.deepEqual(priceChain, ['(marketing)/_layout.hyx'], 'the group layout must apply to its route');
+  const productChain = layoutChainFor('', table);
+  assert.deepEqual(productChain, [], 'a sibling outside the group must not inherit its layout');
+});
+
+test('a nested route gets the whole chain, outermost first', () => {
+  const pages = fixture({
+    '_layout.hyx': '',
+    'a/_layout.hyx': '',
+    'a/b/_layout.hyx': '',
+    'a/b/page.hyx': '',
+  });
+  const table = scanRoutes(pages);
+  // INNERMOST FIRST, and that order is load-bearing: `wrapInLayouts` walks the
+  // chain backwards, so the array's last entry is the outermost wrapper. Listing
+  // it the other way round would nest every layout inside out — the root layout
+  // rendered inside the page's own.
+  assert.deepEqual(layoutChainFor('a/b', table), [
+    'a/b/_layout.hyx',
+    'a/_layout.hyx',
+    '_layout.hyx',
+  ]);
+});
+
+test('the NEAREST _layout wins, and _layout does not become a route', () => {
+  const pages = fixture({
+    'a/_layout.hyx': '',
+    'a/b/_layout.hyx': '',
+    'a/b/_404.hyx': '',
+    'a/b/page.hyx': '',
+    'a/b/home.hyx': '',
+  });
+  const table = scanRoutes(pages);
+  assert.deepEqual(table.errors_diagnostics, []);
+  assert.deepEqual(
+    table.routes.map((r) => r.pattern).sort(),
+    ['/a/b/home', '/a/b/page'],
+  );
+  // The NEAREST not-found for a route inside `a/b` is `a/b/_404.hyx`, and
+  // `notFoundFor` is what resolves it.
+  assert.equal(notFoundFor('a/b', table), 'a/b/_404.hyx');
+  // ...and the layout chain for that route is the nearest one first.
+  assert.deepEqual(layoutChainFor('a/b', table), ['a/b/_layout.hyx', 'a/_layout.hyx']);
+});
+
+test('a nested catch-all and a sibling param are not a conflict', () => {
+  const pages = fixture({
+    'docs/[...rest].hyx': '',
+    'docs/intro.hyx': '',
+  });
+  const table = scanRoutes(pages);
+  assert.deepEqual(table.errors_diagnostics, []);
+  assert.deepEqual(table.routes.map((r) => r.pattern).sort(), ['/docs/*', '/docs/intro']);
 });

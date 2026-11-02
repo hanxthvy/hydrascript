@@ -159,3 +159,83 @@ test('a syntax error in one file comes back as an error, not as a thrown pool', 
 test('cacheDirFor is under the project, gitignored by convention', () => {
   assert.equal(cacheDirFor('/proj'), path.join('/proj', '.hydra', 'cache'));
 });
+
+test('a warm cache causes ZERO compiles — the regression that matters in the BUILD', () => {
+  // Deliberately not a wall-clock assertion.
+  //
+  // "the warm run must be under 5 ms" fails on a busy CI box and passes on a
+  // fast one while the cache is broken-but-lucky. What must never regress is the
+  // BEHAVIOUR: a second pass over unchanged sources must not call the compiler
+  // at all. A spy proves that deterministically; the benchmark owns the timing.
+  const dir = tmp();
+  const cache = new CompileCache(dir, { version: '1' });
+  let compiles = 0;
+  const fakeCompiler = (source, filename) => {
+    compiles += 1;
+    return { code: `// ${filename}`, map: '{}' };
+  };
+
+  const files = [];
+  for (let i = 0; i < 40; i++) files.push({ filename: `F${i}.hyx`, source: `src ${i}\n` });
+
+  // A stand-in for the esbuild plugin's `compile`: memory map, then disk cache,
+  // then the compiler. This is the exact order the real plugin uses.
+  const memory = new Map();
+  const compile = (file, source) => {
+    const hit = memory.get(file);
+    if (hit !== undefined && hit.source === source) return hit.res;
+    const key = cache.keyFor(file, source);
+    const cached = cache.get(key);
+    if (cached) {
+      memory.set(file, { source, res: cached });
+      return cached;
+    }
+    const res = fakeCompiler(source, file);
+    cache.set(key, res);
+    memory.set(file, { source, res });
+    return res;
+  };
+
+  for (const f of files) compile(f.filename, f.source);
+  assert.equal(compiles, 40, 'the first pass compiles everything once');
+
+  // A SECOND process would start with an empty memory map, so clear it: this is
+  // what "the next hydra build" looks like.
+  memory.clear();
+  cache.memory.clear();
+  compiles = 0;
+  for (const f of files) compile(f.filename, f.source);
+  assert.equal(compiles, 0, `a warm cache must not compile anything, compiled ${compiles}`);
+
+  // And a single changed file compiles exactly once.
+  memory.clear();
+  cache.memory.clear();
+  compiles = 0;
+  const edited = { ...files[7], source: 'edited\n' };
+  for (const f of files) compile(f.filename, f.source);
+  compile(edited.filename, edited.source);
+  assert.equal(compiles, 1, `only the edited file recompiles, compiled ${compiles}`);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('an error is NOT cached, so a fixed file compiles immediately', () => {
+  // Caching a failure would make a build fail forever on a file the developer
+  // has already fixed in the same second.
+  const dir = tmp();
+  const cache = new CompileCache(dir, { version: '1' });
+  const bad = cache.keyFor('x.hyx', 'broken');
+  cache.set(bad, { error: 'syntax error' });
+  assert.equal(cache.get(bad), null, 'the cache must refuse to store an error');
+
+  // The same file, fixed, compiles and IS stored.
+  const good = cache.keyFor('x.hyx', 'fixed');
+  cache.set(good, { code: 'ok' });
+  assert.deepEqual(cache.get(good), { code: 'ok' });
+
+  // A fresh instance too: nothing was written to disk for the failure.
+  const fresh = new CompileCache(dir, { version: '1' });
+  assert.equal(fresh.get(bad), null);
+  assert.deepEqual(fresh.get(good), { code: 'ok' });
+  fs.rmSync(dir, { recursive: true, force: true });
+});

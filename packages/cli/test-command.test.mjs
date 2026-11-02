@@ -189,3 +189,62 @@ test('a corrupt snapshot file is an error, not an empty baseline', async () => {
   assert.throws(() => readSnapshots(dir), /not valid JSON/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('the snapshot diff points at the changed line, not the whole document', async () => {
+  // Driven through the real runner, on a three-line snapshot with ONE line
+  // changed. A naive implementation prints both documents and leaves the reader
+  // to compare them by eye; the assertion is that the changed line is marked,
+  // the unchanged ones are shown for context, and the output is not a dump.
+  const dir = project({
+    testBody: [
+      '# [xihanzu-NR]',
+      'from "hydra/test" import test, snapshot',
+      '',
+      'def snap():',
+      '    snapshot("multi", "one\\ntwo\\nthree")',
+      '',
+      'test("snap", snap)',
+      '',
+    ].join('\n'),
+  });
+  const capture = async () => {
+    const lines = [];
+    const realLog = console.log;
+    const realErr = console.error;
+    console.log = (...a) => lines.push(a.join(' '));
+    console.error = (...a) => lines.push(a.join(' '));
+    try {
+      return { code: await runTests(dir, {}), text: lines.join('\n') };
+    } finally {
+      console.log = realLog;
+      console.error = realErr;
+    }
+  };
+
+  const first = await capture(); // writes the baseline
+  assert.equal(first.code, 0, `the baseline run must pass:\n${first.text}`);
+
+  fs.writeFileSync(
+    path.join(dir, 'tests', 'card.test.hys'),
+    [
+      '# [xihanzu-NR]',
+      'from "hydra/test" import test, snapshot',
+      '',
+      'def snap():',
+      '    snapshot("multi", "one\\nCHANGED\\nthree")',
+      '',
+      'test("snap", snap)',
+      '',
+    ].join('\n'),
+  );
+
+  const second = await capture();
+  assert.equal(second.code, 1, 'a changed snapshot must fail the run');
+  assert.match(second.text, /snapshot "multi" changed/);
+  assert.match(second.text, /^\s*- two$/m, `the removed line must be marked:\n${second.text}`);
+  assert.match(second.text, /^\s*\+ CHANGED$/m, `the added line must be marked:\n${second.text}`);
+  assert.match(second.text, /^\s+one$/m, 'unchanged lines are shown for context');
+  assert.match(second.text, /SNAP_UPDATE=1/, 'the way out is part of the message');
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});

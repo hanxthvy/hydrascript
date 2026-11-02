@@ -194,8 +194,62 @@ export function snapshot(name: string, value: string): void {
   }
   if (existing !== value) {
     throw new Error(
-      `snapshot "${name}" changed.\n--- stored ---\n${existing}\n--- now ---\n${value}` +
+      `snapshot "${name}" changed.\n${diffLines(existing, value)}` +
         `\n= if this is intended: SNAP_UPDATE=1 hydra test`,
     )
   }
+}
+
+/**
+ * A line diff, so a failed snapshot says WHICH line moved.
+ *
+ * Without this the developer compares two long strings by eye, which for a
+ * rendered component of any size is not a thing a person can do. The diff is
+ * line-based and uses the longest common subsequence, so it copes with an
+ * insertion in the middle rather than reporting everything after it as changed.
+ *
+ * Deliberately small: no colours (the runner decides how to present it), no
+ * word-level refinement, and it caps the output so a wholesale rewrite reports
+ * "every line changed" instead of printing both documents.
+ */
+export function diffLines(a: string, b: string, { maxLines = 60 } = {}): string {
+  const A = String(a).split('\n')
+  const B = String(b).split('\n')
+  // LCS table. Component snapshots are tens of lines, so O(n*m) is fine and the
+  // exact answer is worth more than a heuristic one.
+  const m = A.length
+  const n = B.length
+  const lcs: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
+  for (let i = m - 1; i >= 0; i--) {
+    for (let j = n - 1; j >= 0; j--) {
+      lcs[i][j] = A[i] === B[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1])
+    }
+  }
+  const out: string[] = []
+  let i = 0
+  let j = 0
+  while (i < m && j < n) {
+    if (A[i] === B[j]) {
+      out.push(`  ${A[i]}`)
+      i += 1
+      j += 1
+    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+      out.push(`- ${A[i]}`)
+      i += 1
+    } else {
+      out.push(`+ ${B[j]}`)
+      j += 1
+    }
+  }
+  while (i < m) {
+    out.push(`- ${A[i]}`)
+    i += 1
+  }
+  while (j < n) {
+    out.push(`+ ${B[j]}`)
+    j += 1
+  }
+  if (out.length <= maxLines) return out.join('\n')
+  const shown = out.slice(0, maxLines).join('\n')
+  return `${shown}\n... ${out.length - maxLines} more line(s)\n= run with SNAP_UPDATE=1 to see the new value in full`
 }
