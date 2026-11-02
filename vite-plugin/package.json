@@ -1,6 +1,6 @@
 {
   "name": "vite-plugin-hydrascript",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Vite plugin: compile .hsx (Pythonic syntax) to React TSX via the native hydra compiler",
   "type": "module",
   "main": "./index.js",

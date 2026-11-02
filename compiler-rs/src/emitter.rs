@@ -781,6 +781,87 @@ fn import_shapes_as_default(spec: &str, base_dir: Option<&std::path::Path>) -> b
     false
 }
 
+/// The parameter names of `name` defined in another HydraScript file.
+///
+/// Reads the source and finds `def name(a, b=1)` / `export def name(...)`.
+/// Defaults are not returned: they matter for a MISSING argument, and the
+/// compiler only reorders what the caller passed.
+fn imported_fn_params(spec: &str, name: &str, base_dir: Option<&std::path::Path>) -> Option<Vec<String>> {
+    let dir = base_dir?;
+    if !(spec.starts_with("./") || spec.starts_with("../")) {
+        return None;
+    }
+    let base = dir.join(spec);
+    for ext in ["", ".hys", ".hyx", ".hs", ".hsx"] {
+        let candidate = if ext.is_empty() {
+            base.clone()
+        } else {
+            std::path::PathBuf::from(format!("{}{}", base.display(), ext))
+        };
+        let Ok(source) = std::fs::read_to_string(&candidate) else {
+            continue;
+        };
+        // Line-oriented scan: a `def` header is one line, and the compiler has
+        // no cross-file parser. `def name(` at any indentation, optional
+        // `export`, optional `async`.
+        for line in source.lines() {
+            let trimmed = line.trim_start();
+            let trimmed = trimmed.strip_prefix("export ").unwrap_or(trimmed);
+            let trimmed = trimmed.strip_prefix("async ").unwrap_or(trimmed);
+            let Some(rest) = trimmed.strip_prefix("def ") else {
+                continue;
+            };
+            let Some(open) = rest.find('(') else { continue };
+            if rest[..open].trim() != name {
+                continue;
+            }
+            let Some(close) = rest.rfind(')') else { continue };
+            let inner = &rest[open + 1..close];
+            let mut params = Vec::new();
+            for p in inner.split(',') {
+                let p = p.trim();
+                if p.is_empty() {
+                    continue;
+                }
+                // `a: int = 1` -> `a`; `*args` -> `args`.
+                let head = p.split([':', '=']).next().unwrap_or(p).trim();
+                let head = head.trim_start_matches('*').trim();
+                if !head.is_empty() {
+                    params.push(head.to_string());
+                }
+            }
+            return Some(params);
+        }
+    }
+    None
+}
+
+/// The parameter names of a METHOD, looked up by its bare name.
+///
+/// Signatures are recorded as `Class.method`. The receiver's type is not always
+/// known here (`x.greet(...)` where `x` came from a call), so the lookup asks a
+/// weaker question: is there exactly ONE class in this file declaring `greet`?
+/// If there is, that signature is the only candidate and using it is right. If
+/// two classes declare it, the answer is genuinely ambiguous and the caller
+/// falls back to the plain error rather than guessing which class `x` is.
+fn method_params(
+    table: &std::collections::HashMap<String, Vec<String>>,
+    method: &str,
+) -> Option<Vec<String>> {
+    let suffix = format!(".{}", method);
+    let mut found: Option<&Vec<String>> = None;
+    for (key, params) in table {
+        if !key.ends_with(&suffix) {
+            continue;
+        }
+        if found.is_some() {
+            return None; // ambiguous: two classes declare this name
+        }
+        found = Some(params);
+    }
+    found.cloned()
+}
+
 pub struct Emitter {
     pub lines: Vec<String>,
     pub linemap: Vec<usize>,
@@ -818,6 +899,11 @@ pub struct Emitter {
     /// call vanished. Kept separate from `fn_params` because that map also carries
     /// parameter lists used to reorder keyword arguments.
     pub imported_names: std::cell::RefCell<HashSet<String>>,
+    /// name -> the specifier it came from, for relative imports only.
+    ///
+    /// Lets the keyword-argument reordering read a signature from another file
+    /// in the project. Empty for anything imported from a package.
+    pub import_specs: std::cell::RefCell<std::collections::HashMap<String, String>>,
     ///
     /// `export function` is hoisted JavaScript, so the declaration may sit after its
     /// own body text. That is what makes it possible to define one module-level
@@ -872,6 +958,7 @@ impl Emitter {
             class_names: std::cell::RefCell::new(std::collections::HashSet::new()),
             head_lines: Vec::new(),
             imported_names: std::cell::RefCell::new(HashSet::new()),
+            import_specs: std::cell::RefCell::new(std::collections::HashMap::new()),
             exported_decls: std::cell::RefCell::new(Vec::new()),
             scopes: Vec::new(),
             tmp_counter: 0,
@@ -1597,25 +1684,124 @@ impl Emitter {
                         }
                     }
                 }
+                // An IMPORTED function from a relative path: the signature can
+                // be read from the file, so keyword arguments work exactly as
+                // they do for a local `def`. Before this, the list said the
+                // reordering was impossible, which was only true of npm
+                // packages — the compiler simply never looked.
+                if !kwargs.is_empty() {
+                    if let Kind::Name(id) = &func.kind {
+                        if let Some(spec) = self.import_specs.borrow().get(id).cloned() {
+                            if let Some(names) = imported_fn_params(&spec, id, self.base_dir.as_deref()) {
+                                let mut slots: Vec<Option<String>> = vec![None; names.len()];
+                                let mut positional = args.len();
+                                for a in args {
+                                    let js = self.js(a)?;
+                                    if positional < slots.len() {
+                                        slots[positional] = Some(js);
+                                    }
+                                    positional += 1;
+                                }
+                                let mut unknown: Option<String> = None;
+                                for (k, v) in kwargs {
+                                    if let Some(idx) = names.iter().position(|n| n == k) {
+                                        if slots[idx].is_none() {
+                                            slots[idx] = Some(self.js(v)?);
+                                        }
+                                    } else {
+                                        unknown = Some(k.clone());
+                                    }
+                                }
+                                if let Some(k) = unknown {
+                                    return Err(CompileError::new(
+                                        format!("{}() has no parameter named `{}`", id, k),
+                                        n.line,
+                                        n.col,
+                                        Vec::new(),
+                                    )
+                                    .with_hint(format!("{}() takes: {}", id, names.join(", "))));
+                                }
+                                let filled: Vec<String> =
+                                    slots.into_iter().flatten().collect();
+                                return Ok(format!("{}({})", id, filled.join(", ")));
+                            }
+                        }
+                    }
+                }
                 let fn_str = self.js(func)?;
                 let mut all = Vec::new();
                 for a in args {
                     all.push(self.js(a)?);
                 }
-                // No signature available (an imported library function): emit
-                // the call that JS can actually parse, and say so, rather than
-                // producing `f(a: 1)` and reporting success.
+                // Still no signature: a package function, or a specifier that
+                // could not be read. Emit the call JS can parse and say so,
+                // rather than producing `f(a: 1)` and reporting success.
                 if !kwargs.is_empty() {
-                    return Err(CompileError::new(
+                    // A method call: `x.greet(b=2)` or `super().greet(b=2)`.
+                    // The signature is known when exactly one class in this file
+                    // declares the name, which is the common case and the one
+                    // worth supporting. More than one class makes the receiver's
+                    // type decide, and that is genuinely unknown here.
+                    let method_name = match &func.kind {
+                        Kind::Attr { name, .. } => Some(name.clone()),
+                        Kind::SuperMember { member } => Some(member.clone()),
+                        _ => None,
+                    };
+                    if let Some(m) = method_name {
+                        let table = self.fn_params.borrow();
+                        if let Some(names) = method_params(&table, &m) {
+                            drop(table);
+                            let mut slots: Vec<Option<String>> = vec![None; names.len()];
+                            let mut positional = args.len();
+                            for a in args {
+                                let js = self.js(a)?;
+                                if positional < slots.len() {
+                                    slots[positional] = Some(js);
+                                }
+                                positional += 1;
+                            }
+                            let mut unknown: Option<String> = None;
+                            for (k, v) in kwargs {
+                                if let Some(idx) = names.iter().position(|n| n == k) {
+                                    if slots[idx].is_none() {
+                                        slots[idx] = Some(self.js(v)?);
+                                    }
+                                } else {
+                                    unknown = Some(k.clone());
+                                }
+                            }
+                            if let Some(k) = unknown {
+                                return Err(CompileError::new(
+                                    format!("{}() has no parameter named `{}`", m, k),
+                                    n.line,
+                                    n.col,
+                                    Vec::new(),
+                                )
+                                .with_hint(format!("{}() takes: {}", m, names.join(", "))));
+                            }
+                            let filled: Vec<String> = slots.into_iter().flatten().collect();
+                            return Ok(format!("{}({})", self.js(func)?, filled.join(", ")));
+                        }
+                    }
+                    // Two reasons left, and they need different answers: the
+                    // call is on a package (no source to read), or the receiver
+                    // of a method call could not be narrowed. Saying "defined in
+                    // this file" for both sent people looking in the wrong place.
+                    let is_method = matches!(&func.kind, Kind::Attr { .. } | Kind::SuperMember { .. });
+                    let msg = if is_method {
+                        format!("keyword arguments are not supported for method calls (`{}`)", fn_str)
+                    } else {
                         format!(
-                            "keyword arguments are only supported for functions defined in this file (called `{}`)",
+                            "keyword arguments are not supported for `{}`, which is not from a relative .hys/.hyx file (no signature to read)",
                             fn_str
-                        ),
-                        n.line,
-                        n.col,
-                        Vec::new(),
-                    )
-                    .with_hint("pass the argument positionally, or wrap the options in a dict"));
+                        )
+                    };
+                    let hint = if is_method {
+                        "pass the argument positionally, or take a dict of options"
+                    } else {
+                        "pass the argument positionally, or wrap the options in a dict"
+                    };
+                    return Err(CompileError::new(msg, n.line, n.col, Vec::new()).with_hint(hint));
                 }
                 Ok(format!("{}({})", fn_str, all.join(", ")))
             }
@@ -2396,6 +2582,15 @@ impl Emitter {
                             .filter(|p| p.name != "self" && p.name != "cls")
                             .cloned()
                             .collect();
+                        // Methods get a signature entry too, so `x.method(b=2)`
+                        // can be reordered. It is keyed `Class.method`, and the
+                        // call site looks it up by the receiver's inferred class
+                        // when it can, or by the bare method name when there is
+                        // only one class in the file declaring it.
+                        self.fn_params.borrow_mut().insert(
+                            format!("{}.{}", name, mname),
+                            filtered.iter().map(|p| p.name.clone()).collect(),
+                        );
                         let ps = self.format_params(&filtered)?;
                         let keyword = if *is_async { "async " } else { "" };
                         self.w(&format!(
@@ -3012,18 +3207,26 @@ impl Emitter {
                 // "Header() has no parameter named `on_nav`". The only question this
                 // answers is "is this name a callable of this module, rather than a tag",
                 // and that needs a set, not a signature table.
-                if let Kind::Import { names, .. } = &st.kind {
+                if let Kind::Import { from, names } = &st.kind {
                     for n in names {
                         let bare = n.trim_start_matches("* as ").trim();
                         // Only a LOWERCASE imported name is a call. An uppercase one is a
                         // component, and `Header(on_nav=...)` must stay a JSX tag with
-                        // props — registering it as a call made the build reject it with
-                        // "keyword arguments are only supported for functions defined in
-                        // this file". Case is exactly the distinction the language already
-                        // uses everywhere else.
+                        // props — registering it as a call made the build reject its
+                        // `on_nav=...` as an unknown keyword. Case is exactly the
+                        // distinction the language already uses everywhere else.
                         let kecil = bare.chars().next().map_or(false, |c| c.is_lowercase());
                         if !bare.is_empty() && kecil && bare != "default" {
                             self.imported_names.borrow_mut().insert(bare.to_string());
+                            // Remember WHERE it came from. Only a relative
+                            // specifier can be read back at emit time; a package
+                            // name is recorded too so the error message can say
+                            // which one it was.
+                            if let Some(spec) = from {
+                                self.import_specs
+                                    .borrow_mut()
+                                    .insert(bare.to_string(), spec.clone());
+                            }
                         }
                     }
                 }

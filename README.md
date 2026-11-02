@@ -617,7 +617,7 @@ the runtime gate are in
 
 ## Known limitations
 
-Honest list, current as of 0.3.5:
+Honest list, current as of 0.6.1:
 
 - **f-string format specs are translated, not dropped.** `f"{x:.2f}"` compiles to
   a runtime call that rounds the way Python does, `f"{n:,.0f}"` groups the
@@ -637,9 +637,13 @@ Honest list, current as of 0.3.5:
   `isinstance(x, Both)` answers. This is refused by name at parse time, on both
   targets (the hint used to suggest a `.hys` file, which failed identically — a
   bug, fixed in 0.6.1).
-- Keyword arguments work for functions defined in the same file; imported
-  functions must be called positionally (the compiler cannot see their
-  signature).
+- **Keyword arguments work wherever a signature can be read**: a function
+  defined in the file, a function imported from a RELATIVE `.hys`/`.hyx` file,
+  and a method whose name only one class in the file declares. What is left is
+  narrower and named precisely: a call into a package (there is no source to
+  read), and a method whose name two classes both declare (only the receiver's
+  type would decide, and that is not tracked). Both are compile errors, not
+  silent miscompiles.
 - Prebuilt binary is Linux x86_64 only, so macOS/Windows/ARM builds from source.
 - The builtins with no exact JS equivalent are provided, and their differences
   are stated rather than hidden: `any` / `all` short-circuit and answer the

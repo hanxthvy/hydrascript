@@ -773,7 +773,9 @@ impl JsEmitter {
                         }
                     }
                     return Err(CompileError::new(
-                        "keyword arguments are only supported for functions defined in this file".to_string(),
+                        "keyword arguments are not supported here: no signature to read \
+                         (a package import, or a method call)"
+                            .to_string(),
                         n.line,
                         n.col,
                         Vec::new(),

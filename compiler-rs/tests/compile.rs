@@ -1417,3 +1417,88 @@ fn super_method_snake_case_name_is_preserved() {
     let out = comp(src);
     assert_contains(&out, &["super.render_text()"]);
 }
+
+// [xihanzu-NR]
+// ---------------------------------------------- keyword args across files
+
+/// Keyword arguments now work for a function imported from a RELATIVE file.
+///
+/// They used to be refused everywhere except the same file, and the limitation
+/// list said the signature "cannot be seen" — true of a package, and never
+/// checked for a project file, which is the common case.
+#[test]
+fn keyword_args_work_for_a_relative_import() {
+    let dir = std::env::temp_dir().join(format!("hydra-kw-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("lib.hys"),
+        "export def greet(name, loud=False):\n    return name\n",
+    )
+    .unwrap();
+    let main = dir.join("use.hyx");
+    std::fs::write(
+        &main,
+        "from \"./lib.hys\" import greet\ncomponent A():\n    div(): greet(loud=True, name=\"x\")\n",
+    )
+    .unwrap();
+    let src = std::fs::read_to_string(&main).unwrap();
+    // `compile` takes the source and the filename; the filename carries the
+    // directory, which is how a relative specifier is resolved.
+    let (out, _) = hydra::compile(&src, main.to_str().unwrap()).expect("compiles");
+    assert_contains(&out, &["greet(\"x\", true)"]);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A misspelled keyword against an imported function names the parameters that
+/// DO exist, instead of a generic refusal.
+#[test]
+fn unknown_keyword_on_a_relative_import_lists_the_real_parameters() {
+    let dir = std::env::temp_dir().join(format!("hydra-kw-bad-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("lib.hys"), "export def greet(name, loud=False):\n    return name\n").unwrap();
+    let main = dir.join("use.hyx");
+    std::fs::write(&main, "from \"./lib.hys\" import greet\ncomponent A():\n    div(): greet(nama=\"x\")\n").unwrap();
+    let src = std::fs::read_to_string(&main).unwrap();
+    let e = hydra::compile(&src, main.to_str().unwrap()).expect_err("should fail");
+    assert!(e.msg.contains("nama"), "{}", e.msg);
+    let hint = e.hint.clone().unwrap_or_default();
+    assert!(hint.contains("name") && hint.contains("loud"), "{hint}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A package import still cannot be reordered, and says which of the two
+/// reasons applies rather than blaming "this file".
+#[test]
+fn keyword_args_on_a_package_import_say_why() {
+    let src = "from \"some-pkg\" import thing\ncomponent A():\n    div(): thing(a=1)\n";
+    let e = comp_err(src);
+    assert!(e.msg.contains("relative"), "{}", e.msg);
+}
+
+/// A METHOD call with keyword arguments, when exactly one class in the file
+/// declares that name. The receiver's type is not tracked, so the one-candidate
+/// case is what can be resolved honestly.
+#[test]
+fn keyword_args_work_for_a_method_with_one_candidate() {
+    let src = "class Greeter:\n    def greet(self, name, loud=False):\n        return name\ncomponent A():\n    g = Greeter()\n    div(): g.greet(loud=True, name=\"x\")\n";
+    let out = comp(src);
+    assert_contains(&out, &["g.greet(\"x\", true)"]);
+}
+
+/// `super().method(kw=...)` goes through the same lookup.
+#[test]
+fn keyword_args_work_through_super() {
+    let src = "class Base:\n    def greet(self, name, loud=False):\n        return name\nclass Kid(Base):\n    def hi(self):\n        return super().greet(loud=True, name=\"x\")\n";
+    let out = comp(src);
+    assert_contains(&out, &["super.greet(\"x\", true)"]);
+}
+
+/// Two classes declaring the same method name: the receiver decides, and this
+/// compiler does not know it, so the answer is a refusal rather than a guess
+/// that would be right half the time.
+#[test]
+fn keyword_args_on_an_ambiguous_method_are_refused() {
+    let src = "class A:\n    def greet(self, name):\n        return name\nclass B:\n    def greet(self, other):\n        return other\ncomponent C():\n    x = A()\n    div(): x.greet(name=\"y\")\n";
+    let e = comp_err(src);
+    assert!(e.msg.contains("method"), "{}", e.msg);
+}

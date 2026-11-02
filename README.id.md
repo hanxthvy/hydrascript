@@ -610,7 +610,7 @@ yang ada karena temuan profil itu, dan cara mengerjakan runtime gate ada di
 
 ## Keterbatasan yang diketahui
 
-Daftar jujur, per 0.3.5:
+Daftar jujur, per 0.6.1:
 
 - **Format spec f-string diterjemahkan, bukan dibuang.** `f"{x:.2f}"` jadi
   pemanggilan runtime yang membulatkan seperti Python, `f"{n:,.0f}"`
@@ -632,9 +632,12 @@ Daftar jujur, per 0.3.5:
   mengikuti MRO, apa jawaban `isinstance(x, Both)`. Ini ditolak dengan
   menyebut namanya saat parse, di kedua target (hint-nya dulu menyarankan berkas
   `.hys`, yang gagal sama persis — bug, diperbaiki di 0.6.1).
-- Argumen kata kunci bekerja untuk fungsi yang didefinisikan di berkas yang sama;
-  fungsi impor harus dipanggil secara posisional (compiler tidak bisa melihat
-  signature-nya).
+- **Argumen kata kunci bekerja di mana pun signature-nya bisa dibaca**: fungsi
+  di berkas yang sama, fungsi dari impor relatif `.hys`/`.hyx`, dan metode yang
+  namanya hanya dideklarasikan satu kelas di berkas itu. Sisa yang belum:
+  panggilan ke paket (tidak ada sumber untuk dibaca), dan metode yang namanya
+  dideklarasikan dua kelas (hanya tipe receiver yang menentukan, dan itu tidak
+  dilacak). Keduanya error kompilasi, bukan salah-kompilasi diam-diam.
 - Biner prabangun hanya Linux x86_64, jadi macOS/Windows/ARM membangun dari
   sumber.
 - Builtin yang tidak punya padanan JS persis **disediakan**, dan bedanya

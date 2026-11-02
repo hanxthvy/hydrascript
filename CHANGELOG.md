@@ -12,6 +12,40 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## 0.6.2 — 2026-11-02
+
+**Keyword arguments stopped being a file-local feature.** The list said imported
+functions must be called positionally because "the compiler cannot see their
+signature". That was true of a package and was never checked for a project file,
+which is the case people actually hit.
+
+### Added
+- **Keyword arguments for a function imported from a relative `.hys`/`.hyx`.**
+  The emitter reads the `def` header from the file the specifier points at and
+  reorders against it, exactly as it does for a local function. A misspelled
+  keyword now names the parameters that exist: `greet() has no parameter named
+  'nama'` ... `greet() takes: name, loud` — where before it was refused outright
+  with no useful information.
+- **Keyword arguments for a METHOD**, resolved when exactly ONE class in the file
+  declares that name. `x.greet(loud=True)` and `super().greet(loud=True)` both
+  work. When two classes declare the same method name only the receiver's type
+  would decide, which this compiler does not track, so it refuses rather than
+  guessing a signature that would be right half the time.
+
+### Changed
+- The two remaining refusals say which one they are. Before, a method call and a
+  package call produced the same message about "functions defined in this file",
+  which sent people looking in a place that was not the problem.
+- The README's limitations header said 0.3.5 through four releases. It now names
+  the version it was written against, which is the point of printing one.
+
+Verified: cargo test 390 (269 + 121), node --test 48, and each case checked by
+compiling it — the relative import reorders, the unknown keyword lists the real
+parameters, the ambiguous method refuses, and a package import still refuses with
+the narrowed reason.
+
+---
+
 ## 0.6.1 — 2026-11-02
 
 **`1500.5` with `.0f` now prints `1500`, not `1501`.** A patch, because the only
