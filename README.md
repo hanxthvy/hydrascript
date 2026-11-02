@@ -749,9 +749,15 @@ here so it can be argued with rather than guessed at.
   with no default raises `AttributeError` rather than returning `undefined`,
   which is what makes the three-argument form mean anything. `repr` is JSON for
   plain data and `String(x)` elsewhere, because a JS object has no `__repr__`.
-- **Prebuilt binary is Linux x86_64 only.** macOS, Windows and ARM build the
-  compiler from source; the npm package says so and CI has never published a
-  binary it did not build for that target.
+- **Prebuilt binary is Linux x86_64 only, and needs glibc 2.35+.** macOS,
+  Windows and ARM build the compiler from source; the npm package says so and CI
+  has never published a binary it did not build for that target. The glibc floor
+  is Ubuntu 22.04, because that is the runner the release is built on: a binary
+  linked against a newer glibc refuses to *start* on an older system, which is
+  how 0.7.0 shipped a tarball whose `hydra build` worked (it runs the Node
+  runner) while `hydra run` and `hydra check` died with "weak version
+  `GLIBC_2.39' not found". The release workflow now fails if the binary requires
+  a glibc newer than the runner it was built on.
 - **Rounding is Python's, to the tie.** `format(1.5, ".0f")` is `2` and
   `format(0.5, ".0f")` is `0`: ties go to the even digit, judged against the
   value's exact binary expansion. `toFixed` rounds ties away from zero, which is

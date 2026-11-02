@@ -12,6 +12,25 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## 0.7.2 — 2026-11-02
+
+**The published binary refused to start on the machine it was being deployed
+to.** 0.7.1's `hydra build` worked, which is why this got past a release: build
+goes through the Node runner, and the runner never touches the native binary.
+
+### Fixed
+- **`bin/hydra` required glibc 2.39 and could not start on glibc 2.35.**
+  `runs-on: ubuntu-latest` had moved to Ubuntu 24.04, so the released binary
+  carried a `GLIBC_2.39` requirement and every non-build subcommand (`hydra run`,
+  `hydra check`, `hydra init`) died with "weak version `GLIBC_2.39' not found".
+  The release job is pinned to `ubuntu-22.04` (glibc 2.35), the oldest LTS
+  runner, so the artifact runs on 22.04 and anything newer.
+- **The release workflow now checks that**, and fails if the binary needs a
+  newer glibc than the runner provides. `pack-install-check.sh` could not catch
+  this: it builds a scaffolded app, and building does not exercise the binary.
+
+---
+
 ## 0.7.1 — 2026-11-02
 
 **The runtime gate stopped killing the build it was checking.** No change to

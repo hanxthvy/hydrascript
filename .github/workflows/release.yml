@@ -49,7 +49,20 @@ permissions:
 jobs:
   publish:
     name: build, verify, publish
-    runs-on: ubuntu-latest
+    # NOT ubuntu-latest, and this is load-bearing.
+    #
+    # `ubuntu-latest` tracks 24.04, whose glibc is 2.39. A binary linked there
+    # carries a `GLIBC_2.39` symbol requirement and refuses to START on anything
+    # older — on the machine this project is deployed to (glibc 2.35) every
+    # non-build subcommand died with "weak version `GLIBC_2.39' not found".
+    # `hydra build` was unaffected because it runs the Node runner, which is why
+    # the failure reached npm before anyone saw it: the one command that could
+    # not run was the one nobody runs in CI.
+    #
+    # 22.04 (glibc 2.35) is the oldest LTS runner available, so a binary built
+    # here runs on 22.04 and anything newer. Older still means the user builds
+    # from source, which README documents.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -122,6 +135,33 @@ jobs:
       # project, scaffold an app and build it with the installed binary.
       - name: Pack, install, build
         run: bash scripts/pack-install-check.sh
+
+      # The gate that the glibc bug walked straight through.
+      #
+      # `pack-install-check.sh` builds a scaffolded app, and building goes
+      # through the Node runner — so it passed while the shipped native binary
+      # could not start at all. This runs `hydra check`, which is the binary
+      # itself, against the oldest glibc a runner offers... except the runner is
+      # what CI is. So instead it records the glibc the binary requires and
+      # fails if that is newer than the runner it was built on, which is the
+      # condition that makes the artifact unusable downstream.
+      - name: The shipped binary must start, and must not need a newer glibc than the runner has
+        run: |
+          set -euo pipefail
+          ./bin/hydra --version
+          ./bin/hydra check examples/blog/src/App.hyx >/dev/null && echo "binary runs"
+          REQUIRES="$(objdump -T bin/hydra | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
+          RUNNER="GLIBC_$(ldd --version | head -1 | grep -o '[0-9]\+\.[0-9]\+$')"
+          echo "binary requires: $REQUIRES; runner provides: $RUNNER"
+          # `<=`, not `=`: a binary may legitimately need less than the runner
+          # offers. What must never happen is needing MORE — that is the
+          # combination that makes the artifact dead on every older system.
+          NEWEST="$(printf '%s\n%s\n' "$REQUIRES" "$RUNNER" | sort -V | tail -1)"
+          if [ "$NEWEST" != "$RUNNER" ]; then
+            echo "::error::bin/hydra requires $REQUIRES but the runner only provides $RUNNER."
+            echo "Users on an older glibc cannot run it. Keep runs-on pinned to the oldest LTS (ubuntu-22.04), or document the floor in README."
+            exit 1
+          fi
 
       - name: Publish
         if: ${{ !inputs.dry_run }}
