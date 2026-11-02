@@ -43,7 +43,14 @@ export function compareRoutes(a, b) {
 export function pathSegments(urlPath) {
   const raw = String(urlPath ?? '/');
   // A query string or hash is not part of the route.
-  const withoutQuery = raw.split('#')[0].split('?')[0];
+  let withoutQuery = raw.split('#')[0].split('?')[0];
+  // A trailing slash is the same route as no trailing slash. A pre-rendered page
+  // is served at `/notes/` (a directory index), so without this the client
+  // matched nothing on its own HTML and rendered an EMPTY route where the server
+  // had rendered the page: React #418, and only on a pre-rendered route.
+  if (withoutQuery.length > 1 && withoutQuery.endsWith('/')) {
+    withoutQuery = withoutQuery.replace(/\/+$/, '');
+  }
   // Stripping the trailing slashes of `/` leaves the empty string, and
   // `''.split('/')` is `['']` — one empty segment, which matches nothing. The
   // root URL has to become the empty LIST, or `/` stops resolving to `/`.

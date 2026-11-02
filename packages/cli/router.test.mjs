@@ -236,3 +236,42 @@ test('the same folder scanned twice gives the same order', () => {
   assert.equal(matchRoute('/b/zzz', routes).route.pattern, '/b/:x');
   assert.equal(matchRoute('/b/zzz/deeper', routes).route.pattern, '/b/*');
 });
+
+test('a .server file beside a page is adopted by it', () => {
+  const pages = fixture({
+    'blog/[slug].hyx': '',
+    'blog/[slug].server.hys': '',
+    'about.hyx': '',
+  });
+  const table = scanRoutes(pages);
+  const post = table.routes.find((r) => r.pattern === '/blog/:slug');
+  assert.equal(post.serverFile, 'blog/[slug].server.hys');
+  // A page with no server half has none, and that is not an error.
+  const about = table.routes.find((r) => r.pattern === '/about');
+  assert.equal(about.serverFile, null);
+  assert.deepEqual(table.errors_diagnostics, []);
+});
+
+test('a .server file is never itself a route', () => {
+  const pages = fixture({ 'index.hyx': '', 'index.server.hys': '' });
+  const table = scanRoutes(pages);
+  assert.deepEqual(table.routes.map((r) => r.pattern), ['/']);
+});
+
+test('an orphan .server file is reported, naming the page it expected', () => {
+  const pages = fixture({ 'index.hyx': '', 'typo.server.hys': '' });
+  const table = scanRoutes(pages);
+  assert.equal(table.errors_diagnostics.length, 1);
+  const msg = table.errors_diagnostics[0];
+  assert.match(msg, /typo\.server\.hys/);
+  assert.match(msg, /typo\.hys/);
+});
+
+test('the generated module carries serverFile per route', () => {
+  const pages = fixture({ 'blog/[slug].hyx': '', 'blog/[slug].server.hys': '' });
+  const table = scanRoutes(pages);
+  const src = routesModuleSource(table, {});
+  // JSON.stringify does not escape `/`, so the emitted text has it literally.
+  assert.ok(src.includes('"serverFile":"blog/[slug].server.hys"'), src.slice(0, 400));
+  assert.ok(src.includes("serverFile"), 'serverFile must travel with the route');
+});

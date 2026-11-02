@@ -319,10 +319,12 @@ test('a scaffolded app builds, pre-renders every static route, and passes the ga
     /No route matched|is not a page/.test(reachableText),
     `the _404 page must be reachable from the entry; reached: ${[...reachable].join(', ')}`,
   );
-  assert.ok(
-    reachable.size > 1,
-    'the entry must import at least one chunk, or the table is orphaned',
-  );
+  // The table is compiled IN now (a static import), so there may legitimately be
+  // a single reachable file. What must be true is that the table's CONTENT is
+  // reachable — that is the invariant, and it is what the old "at least one
+  // chunk" check was approximating when the table lived in its own chunk.
+  assert.ok(reachableText.includes('No route matched') || reachableText.includes('pages['),
+    `the generated table must be reachable from the entry; reached: ${[...reachable].join(', ')}`);
 
   fs.rmSync(dir, { recursive: true, force: true });
 });

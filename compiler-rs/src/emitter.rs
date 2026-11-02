@@ -3115,7 +3115,27 @@ impl Emitter {
                 pad, inner, pad, pad
             ));
         } else {
-            for s in body {
+            // The LAST statement of a component is its return value when it is an
+            // element — which is what the tree form (`div():`) already does.
+            //
+            // A bare element call was not: `component App(): Router()` emitted
+            // `Router();` and fell off the end of the function, returning
+            // undefined. React rendered nothing, and because nothing failed the
+            // build reported success while every page of the app was blank. A
+            // component whose whole body is a single element is the most natural
+            // way to write a router root, so it has to work.
+            let last_is_element = matches!(
+                body.last().map(|s| &s.kind),
+                Some(Kind::ExprStmt(e)) if matches!(&e.kind, Kind::Call { func, .. } if self.is_element_call(func))
+            );
+            for (i, s) in body.iter().enumerate() {
+                if last_is_element && i + 1 == body.len() {
+                    if let Kind::ExprStmt(e) = &s.kind {
+                        let val = self.js(e)?;
+                        self.w(&format!("return (\n  {}{}\n{});", self.pad(), val, self.pad()));
+                        continue;
+                    }
+                }
                 self.stmt(s)?;
             }
         }

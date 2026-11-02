@@ -11,6 +11,9 @@ import { execFileSync, spawnSync } from 'node:child_process';
 const selfRequire = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
+import { writeActionBundle, bundleActions, loadActions, readBody, requestFor } from './actions.mjs';
+import { attachSocketServer, injectHmrClient } from './hmr.mjs';
+
 import {
   scanRoutes,
   writeRoutesModule,
@@ -183,6 +186,50 @@ function rewriteDynamicImports(code) {
   );
 }
 
+/**
+ * Resolve the runtime specifiers exactly, before anything else can.
+ *
+ * A plugin rather than an `alias` entry because esbuild's alias matches a PREFIX
+ * per path segment: an alias for `hydra` answers `hydra/server` too, rewriting it
+ * to `<hydra.ts>/server`. That produced
+ * `Could not resolve "/…/runtime/hydra.ts/server"`, a confusing way to say "you
+ * are not allowed to import that from here".
+ *
+ * `allow` names what THIS pass may resolve. A `hydra/*` that is not listed is
+ * left alone on purpose, so the bundler reports it and the caller explains the
+ * refusal in the project's own terms.
+ */
+/**
+ * The table used when a project has no pages directory at all.
+ *
+ * Not a special case at the call sites: `hydra:routes` always resolving means
+ * the runtime can import it statically, and a static import is what makes the
+ * route table available on the client's FIRST render — the requirement for
+ * hydration to agree with pre-rendered HTML.
+ */
+const EMPTY_ROUTES = {
+  root: null,
+  routes: [],
+  layouts: {},
+  notFound: [],
+  errors: [],
+  errors_diagnostics: [],
+  serverFiles: [],
+};
+
+function runtimeSpecifierPlugin(allow) {
+  return {
+    name: 'hydra-runtime-specifiers',
+    setup(build) {
+      build.onResolve({ filter: /^hydra(\/[a-z]+)?$/ }, (args) => {
+        const hit = allow[args.path];
+        if (!hit) return null; // deliberately unresolved; the caller explains it
+        return { path: hit };
+      });
+    },
+  };
+}
+
 function createHydraEsbuildPlugin() {
   const native = findNativeAddon();
   // Keyed by path AND source. Keying on path alone was enough for a one-shot
@@ -279,6 +326,58 @@ function appComponentPath(cwd, entryPoint) {
  * (the old, correct-for-that-project behaviour), while a false positive is the
  * hydration bug this prevents.
  */
+/**
+ * Turn a client-build failure into a sentence about the project.
+ *
+ * The one case worth rewriting is `hydra/server` reaching the client bundle.
+ * esbuild reports it as `Could not resolve "node:fs"` inside a file the author
+ * never wrote, which names the symptom and not the cause. The cause is always
+ * one of two things, and both have a different fix, so both are named.
+ */
+/**
+ * Put a route's loader result into the HTML as JSON, where the client can read it.
+ *
+ * `<script type="application/json" id="__hydra_data__">`. A script tag rather
+ * than a data attribute because the payload can be any JSON the loader returned,
+ * and an attribute would mean escaping it into a string that then has to be
+ * parsed anyway. `</script>` inside the JSON is escaped so a loader returning
+ * HTML cannot close the tag early.
+ */
+function injectLoaderData(html, pattern, data) {
+  const payload = JSON.stringify({ pattern, data: data === undefined ? null : data })
+    .replace(/</g, '\\u003c')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+  const tag = `<script type="application/json" id="__hydra_data__">${payload}</script>`;
+  if (html.includes('id="__hydra_data__"')) {
+    return html.replace(/<script type="application\/json" id="__hydra_data__">[\s\S]*?<\/script>/, tag);
+  }
+  return html.includes('</body>') ? html.replace('</body>', `  ${tag}\n  </body>`) : html + `\n${tag}\n`;
+}
+
+function explainClientBuildError(err, cwd) {
+  const errors = err && Array.isArray(err.errors) ? err.errors : [];
+  const text = errors
+    .map((e) => `${e.text || ''} ${(e.location && e.location.file) || ''}`)
+    .join('\n');
+
+  if (/hydra\/server|node:fs|node:path|node:child_process/.test(text)) {
+    const where = errors
+      .map((e) => e.location && e.location.file)
+      .filter(Boolean)
+      .map((f) => path.relative(cwd, f))
+      .filter((f) => !f.includes('node_modules'));
+    const who = where.length > 0 ? `\n  imported from: ${[...new Set(where)].join(', ')}` : '';
+    return (
+      `[hydra] server-only code reached the client bundle.${who}\n` +
+      `= \`hydra/server\` (and \`node:*\`) cannot run in a browser. Two fixes, depending on intent:\n` +
+      `  1. the code IS build-time only — move it into a \`loader\`, which runs during pre-rendering\n` +
+      `  2. the code IS browser code — import from \`hydra/client\` instead, and run it inside an effect`
+    );
+  }
+  return err && err.message ? err.message : String(err);
+}
+
 function renderUsesRouter(cwd) {
   const srcDir = path.join(cwd, 'src');
   const files = [];
@@ -666,7 +765,7 @@ function phaseReport(totalMs) {
  * React stays external as bare specifiers. A second copy would mean a second
  * hook dispatcher and an "invalid hook call" at render time.
  */
-async function buildSsgBundle(esbuild, cwd, pkgRoot, ssgEntry, hydraAlias, config, mode, base, routesTable = null) {
+async function buildSsgBundle(esbuild, cwd, pkgRoot, ssgEntry, runtimeAliases, config, mode, base, routesTable = null) {
   const jsxRuntimePath = resolvePkg('react/jsx-runtime', cwd);
   let jsxDevRuntimePath;
   try {
@@ -688,8 +787,9 @@ async function buildSsgBundle(esbuild, cwd, pkgRoot, ssgEntry, hydraAlias, confi
     jsx: 'automatic',
     target: 'node18',
     plugins: [
+      runtimeSpecifierPlugin({ hydra: runtimeAliases.hydra, 'hydra/server': runtimeAliases.server }),
       createHydraEsbuildPlugin(),
-      ...(routesTable ? [routesEsbuildPlugin(routesTable, { base, cwd })] : []),
+      routesEsbuildPlugin(routesTable || EMPTY_ROUTES, { base, cwd }),
       {
         name: 'hydra-ssg-external-react',
         setup(build) {
@@ -711,10 +811,15 @@ async function buildSsgBundle(esbuild, cwd, pkgRoot, ssgEntry, hydraAlias, confi
     resolveExtensions: ['.hyx', '.hys', '.hsx', '.hs', '.mjs', '.js', '.jsx', '.ts', '.tsx', '.json'],
     nodePaths: [path.join(cwd, 'node_modules'), path.join(pkgRoot, 'node_modules')],
     alias: {
-      // Same runtime specifier as the browser build: missing it here
-      // made the SSG pass fail after a successful client build.
+      // Same runtime specifiers as the browser build: missing them here made the
+      // SSG pass fail after a successful client build.
       ...tsconfigAliases(cwd),
-      hydra: hydraAlias,
+      // Same reasoning as the client build: `hydra`, `hydra/server` and
+      // `hydra/client` are decided by `runtimeSpecifierPlugin`, because an alias
+      // for `hydra` would swallow the other two before the plugin ran.
+      // `hydra/client` is deliberately NOT in this pass's allow-list: a loader
+      // that touches `window` must fail the build, not produce HTML that differs
+      // from what the client renders.
       '@': path.resolve(cwd, 'src'),
     },
     loader: {
@@ -779,6 +884,8 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   // is fatal here rather than a silently missing route later: two files that
   // disagree about a parameter name describe the same URL, and either one being
   // picked is wrong.
+  /** Path to the generated action bundle ENTRY, before bundling. */
+  let actionBundleEntry = null;
   const pagesDir = pagesDirectory(cwd, config);
   let routesTable = null;
   // A `src/pages` directory does not by itself mean the app ROUTES by file. A
@@ -808,6 +915,12 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
       );
     }
     writeRoutesModule(cwd, routesTable, { base });
+    // The action table, for the servers that may call it. Written only when a
+    // route has a server half, so a project without mutations never pays for it.
+    //
+    // The entry is bundled here, at build time, because node cannot load a `.hys`
+    // and the dev server must not carry a second compiler just to answer a POST.
+    actionBundleEntry = writeActionBundle(cwd, routesTable);
     if (routesTable.routes.length > 0) {
       const dynamic = routesTable.routes.filter((r) => r.hasParams);
       console.log(
@@ -822,6 +935,49 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   let _p = phaseStart();
   const { esbuild, postcss, tailwindcss, autoprefixer } = await loadBundlerDeps(cwd);
   phase('1. load bundler deps', _p);
+
+  const pkgRoot = path.resolve(HERE, '../..');
+  // The three runtime specifiers, resolved from one place so the client and the
+  // SSG pass cannot disagree about which file each means.
+  //
+  //   hydra         — universal, safe anywhere
+  //   hydra/server  — refused in the client bundle
+  //   hydra/client  — refused in the pre-render pass
+  //
+  // `hydra/shared` is gone on purpose: it existed in the docs as "safe
+  // everywhere, but distinctly not the runtime", and it was the same as `hydra`
+  // with a second name to keep in sync.
+  const runtimeDir = path.join(pkgRoot, 'runtime');
+  const pick = (env, ...candidates) => {
+    const hit = [process.env[env], ...candidates].find((f) => f && fs.existsSync(f));
+    return hit || candidates[candidates.length - 1];
+  };
+  const hydraAlias = pick(
+    'HYDRA_RUNTIME_PATH',
+    path.join(runtimeDir, 'hydra.ts'),
+    path.join(pkgRoot, 'runtime-js', 'hydra-js.js'),
+  );
+  const serverAlias = pick('HYDRA_SERVER_PATH', path.join(runtimeDir, 'server.ts'));
+  const clientAlias = pick('HYDRA_CLIENT_PATH', path.join(runtimeDir, 'client.ts'));
+
+  // Now that esbuild is loaded, the action entry can become a runnable module.
+  if (actionBundleEntry) {
+    try {
+      await bundleActions(esbuild, actionBundleEntry, {
+        outfile: path.join(cwd, '.hydra', 'actions.cjs'),
+        cwd,
+        pkgRoot,
+        hydraAlias,
+        serverAlias,
+        compilerPlugin: createHydraEsbuildPlugin,
+      });
+    } catch (e) {
+      // A broken loader/action must stop the build: a server that answers 500 to
+      // every form because one `.hys` did not compile is worse than a build that
+      // says which file.
+      throw new Error(`[hydra] could not build the action table: ${e.message}`);
+    }
+  }
 
   // 1. Discover entrypoint
   //
@@ -899,13 +1055,7 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   // `list_remove`, ...), and pointing the specifier at it produced
   // "No matching export in src/hydra.hys for import len_of". Import a project
   // runtime by relative path instead.
-  const pkgRoot = path.resolve(HERE, '../..');
-  const hydraAlias =
-    [
-      process.env.HYDRA_RUNTIME_PATH,
-      path.join(pkgRoot, 'runtime', 'hydra.ts'),
-      path.join(pkgRoot, 'runtime-js', 'hydra-js.js'),
-    ].find((f) => f && fs.existsSync(f)) || path.join(pkgRoot, 'runtime', 'hydra.ts');
+
 
   // 8. Pre-render (SSG) — started here, awaited at step 8 below.
   //
@@ -924,7 +1074,7 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     // shell. The generated entry imports the pages statically instead.
     ...(routesTable
       ? [
-          writeSsgEntry(cwd, routesTable, { entry: appComponentPath(cwd, entryPoint) }),
+          writeSsgEntry(cwd, routesTable, { entry: appComponentPath(cwd, entryPoint), base }),
         ].filter(Boolean)
       : []),
     path.join(cwd, 'src/App.hyx'),
@@ -937,10 +1087,21 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   // Pre-render exists for crawlers, not for the person looking at the page, and
   // `hydra dev` rebuilds on every save. Skipping it in dev is where the loop
   // gets noticeably shorter; `hydra build` still pre-renders.
+  // A.2: the default flipped. Pre-rendering is ON for a project that routes by
+  // file, because that is the case where it is right and where the reader would
+  // expect it; it stays off for a project that does not (nothing to pre-render
+  // per route) and for `dev`.
+  //
+  // The three ways to turn it off, in the order they win:
+  //   `"rendering": { "ssg": false }`  — the project
+  //   `rendering = "csr"` in a page    — that route only
+  //   HYDRA_NO_SSG=1                   — this build
+  const projectWantsSsg = config.rendering?.ssg !== false;
+  const routesHaveSsg = routesTable
+    ? routesTable.routes.some((r) => r.rendering !== 'csr')
+    : false;
   const ssgWanted =
-    config.rendering?.ssg !== false &&
-    !opts.dev &&
-    process.env.HYDRA_NO_SSG !== '1';
+    projectWantsSsg && (routesHaveSsg || Boolean(routesTable)) && !opts.dev && process.env.HYDRA_NO_SSG !== '1';
   // Runtime gate: on by default for a production build, never during `dev`
   // (a browser per rebuild would make the loop unusable), and skippable.
   const gateWanted = !opts.dev && process.env.HYDRA_NO_GATE !== '1';
@@ -950,7 +1111,17 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
 
   let ssgPromise = null;
   if (ssgEntry) {
-    ssgPromise = buildSsgBundle(esbuild, cwd, pkgRoot, ssgEntry, hydraAlias, config, mode, base, routesTable)
+    ssgPromise = buildSsgBundle(
+      esbuild,
+      cwd,
+      pkgRoot,
+      ssgEntry,
+      { hydra: hydraAlias, server: serverAlias },
+      config,
+      mode,
+      base,
+      routesTable,
+    )
       .then((result) => ({ result }))
       .catch((err) => ({ err }));
   }
@@ -1014,10 +1185,15 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     publicPath: assetsPublicPath,
     metafile: true,
     plugins: [
+      runtimeSpecifierPlugin({ hydra: hydraAlias, 'hydra/client': clientAlias }),
       createHydraEsbuildPlugin(),
-      // `hydra:routes` resolves from the table scanned at step 0. In a project
-      // with no pages directory the plugin simply never matches.
-      ...(routesTable ? [routesEsbuildPlugin(routesTable, { base, cwd })] : []),
+      // `hydra:routes` ALWAYS resolves, with an empty table when the project has
+      // no pages directory. That is what lets the runtime import it statically:
+      // a synchronous table is required for the client's first paint to match
+      // the pre-rendered HTML, and a conditional module would mean a lazy path
+      // that renders nothing once and then fills in — a hydration mismatch on
+      // every page that was correctly pre-rendered.
+      routesEsbuildPlugin(routesTable || EMPTY_ROUTES, { base, cwd }),
     ],
     // The runtime file lives in this package, but it imports 'react' and
     // 'react-dom/client'. esbuild resolves those relative to the IMPORTING
@@ -1036,9 +1212,11 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     alias: {
       ...tsconfigAliases(cwd),
       '@': path.resolve(cwd, 'src'),
-      // The runtime specifier: every helper the compiler emits, plus the
-      // React batteries application code imports.
-      hydra: hydraAlias,
+      // NO alias for `hydra` itself. esbuild applies `alias` BEFORE plugins and
+      // matches a prefix per path segment, so an alias for `hydra` answers
+      // `hydra/server` too and rewrites it to `<hydra.ts>/server` — it never
+      // reaches `runtimeSpecifierPlugin`, which is the thing that must decide.
+      // All three specifiers are the plugin's job now, exactly.
     },
     loader: {
       ...ASSET_LOADERS,
@@ -1073,10 +1251,14 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
         try { await devEsbuildContext.dispose(); } catch {}
       }
       devEsbuildContext = null;
-      throw err;
+      throw new Error(explainClientBuildError(err, cwd));
     }
   } else {
-    clientResult = await esbuild.build(clientBuildOptions);
+    // A failure here is rewritten in the project's terms before it propagates,
+    // because the raw one names the symptom (`Could not resolve "node:fs"`).
+    clientResult = await esbuild.build(clientBuildOptions).catch((err) => {
+      throw new Error(explainClientBuildError(err, cwd));
+    });
   }
 
   phase('2. esbuild client bundle', _p);
@@ -1276,10 +1458,43 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
         // single URL to render, so it is skipped and SAID OUT LOUD: a project
         // that ships a `/blog/:slug` and finds an empty shell in the served HTML
         // has to be able to read why, not infer it.
-        const staticRoutes = routesTable ? routesTable.routes.filter((r) => !r.hasParams) : [];
+        const preRenderable = routesTable
+          ? routesTable.routes.filter((r) => !r.hasParams && r.rendering !== 'csr')
+          : [];
+        const csrRoutes = routesTable ? routesTable.routes.filter((r) => r.rendering === 'csr') : [];
+        const staticRoutes = preRenderable;
         const dynamicRoutes = routesTable ? routesTable.routes.filter((r) => r.hasParams) : [];
 
-        const sourceHtml = fs.existsSync(htmlOutPath) ? fs.readFileSync(htmlOutPath, 'utf8') : null;
+        // The SOURCE template, not the emitted file.
+        //
+        // `dist/index.html` is written by the client build with the bundle tag
+        // already in it, and using it here meant the first render replaced its
+        // `<div id="root">` while every later route got a template whose root was
+        // no longer empty — so `inject` matched nothing and those pages shipped
+        // an EMPTY root with correct data inlined beside it. Re-reading the
+        // project's own `index.html` is what makes every route start from the
+        // same blank template.
+        const sourceHtml = fs.existsSync(htmlInPath) ? fs.readFileSync(htmlInPath, 'utf8') : null;
+        // The bundle tag the client build computed, so the pre-rendered pages
+        // point at the same entry as `dist/index.html` does.
+        const entryTag = (() => {
+          if (!sourceHtml) return '';
+          const m = /<script[^>]*src=["']([^"']*assets\/index-[^"']+)["'][^>]*><\/script>/i.exec(
+            fs.existsSync(htmlOutPath) ? fs.readFileSync(htmlOutPath, 'utf8') : '',
+          );
+          return m ? m[0] : '';
+        })();
+        const withBundle = (html) => {
+          if (!entryTag) return html;
+          // The source template points at `src/main.hyx`; swap in the real bundle.
+          const src = path.relative(cwd, entryPoint).split(path.sep).join('/');
+          const re = new RegExp(
+            `<script[^>]*src=["'][^"']*${escapeRegExp(src)}["'][^>]*>\\s*</script>`,
+            'i',
+          );
+          if (re.test(html)) return html.replace(re, entryTag);
+          return html.includes('</body>') ? html.replace('</body>', `  ${entryTag}\n  </body>`) : html + entryTag;
+        };
         const inject = (html, rendered) =>
           html.replace(/<div\s+id=["']root["']\s*>\s*<\/div>/i, `<div id="root">${rendered}</div>`);
 
@@ -1297,13 +1512,30 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
         if (sourceHtml && routesTable && staticRoutes.length > 0 && typeof ssgMod.renderFor === 'function') {
           for (const route of staticRoutes) {
             try {
-              const element = ssgMod.renderFor(route.pattern, {});
+              // Always `{ element, data }`. There is no fallback to the raw
+              // return value: an earlier version fell back when `element` was
+              // null, which handed React the wrapper object and produced
+              // "Objects are not valid as a React child" instead of the reason.
+              const out = await ssgMod.renderFor(route.pattern, {}, route.pattern);
+              const element = out ? out.element : null;
               if (!element) {
                 console.warn(`[hydra] SSG: ${route.pattern} (src/pages/${route.file}) exports no component; skipped`);
                 continue;
               }
               const rendered = renderToString(element);
-              fs.writeFileSync(htmlPathForPattern(route.pattern), inject(sourceHtml, rendered), 'utf8');
+              // The seed outlives `renderFor` on purpose (see the generated
+              // entry), so it is cleared here, once the render has read it.
+              if (typeof ssgMod.__clear_seed === 'function') ssgMod.__clear_seed();
+              // The loader's result travels with the HTML so the client's first
+              // paint has the same data the server rendered from. Without it the
+              // client fetches again and the two frames disagree — React says so
+              // as a hydration mismatch, which is how this was found.
+              const html = injectLoaderData(
+                withBundle(inject(sourceHtml, rendered)),
+                route.pattern,
+                out && out.data,
+              );
+              fs.writeFileSync(htmlPathForPattern(route.pattern), html, 'utf8');
               renderedCount += 1;
             } catch (err) {
               // One page that throws must not cost the other pages their HTML.
@@ -1313,6 +1545,12 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
           console.log(
             `[hydra] SSG: pre-rendered ${renderedCount}/${staticRoutes.length} static route(s) into ${path.relative(cwd, outDir)}/`,
           );
+          if (csrRoutes.length > 0) {
+            console.log(
+              `[hydra] render: ${csrRoutes.length} route(s) marked csr and left to the client ` +
+                `(${csrRoutes.map((r) => r.pattern).join(', ')})`,
+            );
+          }
           if (dynamicRoutes.length > 0) {
             console.log(
               `[hydra] SSG: ${dynamicRoutes.length} dynamic route(s) left as the client shell ` +
@@ -1480,6 +1718,77 @@ function proxyRequest(req, res, target, rawPath, rawUrl) {
   req.pipe(proxyReq);
 }
 
+/**
+ * Serve a mutation: find the route's `action`, run it, and answer with what it
+ * returned.
+ *
+ * `redirect` becomes a real 303 with a `Location`, so a browser follows it and a
+ * refresh does not repost. Data becomes JSON, which is what a client-side
+ * `use_action` reads.
+ */
+/**
+ * Where the generated action bundle is, if this project has one.
+ *
+ * Read from disk rather than carried in memory, because `hydra preview` is a
+ * separate process from the build that produced it.
+ */
+function readActionBundle(cwd) {
+  const f = path.join(cwd, '.hydra', 'actions.cjs');
+  return fs.existsSync(f) ? f : null;
+}
+
+async function handleAction(req, res, reqPath, rawUrl, bundlePath) {
+  let mod;
+  try {
+    mod = await loadActions(bundlePath);
+  } catch (e) {
+    res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: `could not load actions: ${e.message}` }));
+    return;
+  }
+  const hit = mod && mod.actionFor ? mod.actionFor(reqPath) : null;
+  if (!hit) {
+    res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(
+      JSON.stringify({
+        error: `no action for ${req.method} ${reqPath}`,
+        hint: 'a route accepts a mutation only if a .server.hys beside it exports `action`',
+      }),
+    );
+    return;
+  }
+
+  let rawBody = '';
+  try {
+    rawBody = await readBody(req);
+  } catch (e) {
+    res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: e.message }));
+    return;
+  }
+
+  try {
+    const out = await hit.fn({
+      params: hit.params,
+      url: reqPath,
+      request: requestFor(req, rawUrl, rawBody),
+    });
+    if (out && typeof out === 'object' && out.redirect) {
+      res.writeHead(out.status || 303, { Location: out.redirect });
+      res.end();
+      return;
+    }
+    const status = out && typeof out === 'object' && out.status ? out.status : 200;
+    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify(out === undefined ? null : out));
+  } catch (e) {
+    // An action that throws is a bug in the action, and the browser deserves to
+    // know rather than receiving a 200 with an empty body.
+    res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: e && e.message ? e.message : String(e) }));
+  }
+}
+
 export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts = {}) {
   const base = normalizeBase(opts.base || '/');
   const proxy = opts.proxy && typeof opts.proxy === 'object' ? opts.proxy : {};
@@ -1514,6 +1823,14 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
     const target = matchProxy(proxy, reqPath);
     if (target) {
       proxyRequest(req, res, target, reqPath, rawUrl);
+      return;
+    }
+
+    // A form POST to a route with an `action`. Answered before the static
+    // handler, because the alternative is serving index.html to a POST, which
+    // "succeeds" and does nothing.
+    if ((req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE') && opts.actions) {
+      handleAction(req, res, reqPath, rawUrl, opts.actions);
       return;
     }
 
@@ -1579,6 +1896,17 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
 
     const ext = path.extname(filePath).toLowerCase();
     const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+
+    // An HTML file gets the dev-only transform, if the caller asked for one.
+    // `hydra dev` uses it for the live-reload client; `preview` does not, because
+    // a preview should be what production serves.
+    if (opts.injectHtml && ext === '.html') {
+      const html = opts.injectHtml(fs.readFileSync(filePath, 'utf8'));
+      res.writeHead(200, { 'Content-Type': contentType });
+      res.end(html);
+      return;
+    }
+
     res.writeHead(200, { 'Content-Type': contentType });
     fs.createReadStream(filePath).pipe(res);
   });
@@ -1654,6 +1982,7 @@ export async function runPreview(cwd = process.cwd(), opts = {}) {
   await serveDirectory(outDir, port, host, {
     base: normalizeBase(config.base),
     proxy: config.server?.proxy,
+    actions: readActionBundle(cwd),
     version: opts.version,
     sha: opts.sha,
     configPath: path.join(cwd, 'hydraconfig.json'),
@@ -1680,9 +2009,14 @@ export async function runDev(cwd = process.cwd(), opts = {}) {
   const host = opts.host || config.server?.host || '127.0.0.1';
 
   console.log('[hydra] Development mode active.');
-  await serveDirectory(outDir, port, host, {
+  const served = await serveDirectory(outDir, port, host, {
     base: normalizeBase(config.base),
     proxy: config.server?.proxy,
+    // Re-read on every dev build, because the bundle is regenerated per build.
+    actions: readActionBundle(cwd),
+    // The dev server injects the HMR client into every HTML response, because
+    // the build wrote the file and the page has to reach the browser with it.
+    injectHtml: (html) => injectHmrClient(html),
     // A dev server is meant to be reachable; a taken port is normal and the
     // right answer is the next one, not a dead terminal.
     portFallback: true,
@@ -1691,20 +2025,35 @@ export async function runDev(cwd = process.cwd(), opts = {}) {
     configPath: path.join(cwd, 'hydraconfig.json'),
   });
 
+  // Live reload. The rebuild already happened on every save; this is the part
+  // that tells the browser, and the overlay for the case where it did not.
+  const hmr = served && served.server ? attachSocketServer(served.server) : null;
+
   // Watch src/ directory for changes
   const srcDir = path.join(cwd, 'src');
   if (fs.existsSync(srcDir)) {
     let building = false;
-    fs.watch(srcDir, { recursive: true }, async () => {
-      if (building) return;
-      building = true;
-      try {
-        await runBuild(cwd, { dev: true });
-      } catch (err) {
-        console.error('[hydra] Build error:', err.message);
-      } finally {
-        building = false;
-      }
+    // A save fires several watch events; the last one is the one that matters,
+    // so the rebuild is debounced rather than run per event.
+    let timer = null;
+    fs.watch(srcDir, { recursive: true }, () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(async () => {
+        if (building) return;
+        building = true;
+        try {
+          await runBuild(cwd, { dev: true });
+          if (hmr) hmr.broadcast(JSON.stringify({ type: 'ok' }));
+        } catch (err) {
+          const message = err && err.message ? err.message : String(err);
+          console.error('[hydra] Build error:', message);
+          // The last good build stays. Reloading into a broken bundle would take
+          // away the working page the developer was looking at.
+          if (hmr) hmr.broadcast(JSON.stringify({ type: 'error', message }));
+        } finally {
+          building = false;
+        }
+      }, 60);
     });
   }
 }

@@ -270,6 +270,28 @@ Run one directly with `hydra run script.hys`.
 Both the compiler's helpers and the React adapters come from a single
 specifier, `hydra`, which resolves to `runtime/hydra.ts`.
 
+**Three specifiers, and the compiler enforces which one you may use where:**
+
+| import from | holds | allowed in |
+|---|---|---|
+| `hydra` | universal helpers (`state`, `fetch_json`, `mount`, `Router`) | any module |
+| `hydra/server` | `env`, `read_text`, `write_text`, `redirect`, `action_flow` | a `.server.hys` only |
+| `hydra/client` | `window_size`, `scroll_to`, `local_storage`, `clipboard` | a `.hyx`/`.tsx` only |
+
+Importing `hydra/server` from a page is a **build error that names the file and
+says why**, not a stack trace at run time:
+
+```
+[hydra] src/pages/index.hyx imports "hydra/server".
+        A page is bundled for the browser, so a server-only module cannot be
+        reached from it. Move the code into src/pages/index.server.hys and read
+        the value from a loader instead.
+```
+
+The reverse is checked too: `hydra/client` in a `.server.hys` fails, because
+there is no `window` there. This is the compiler refusing an import it can prove
+is wrong, which is the only kind of import it refuses.
+
 | Function | React API |
 |---|---|
 | `v, set_v = state(init)` | `useState` |
@@ -369,15 +391,20 @@ Autoprefixer and Tailwind are driven programmatically, so a project needs no
 
 | Command | Does |
 |---|---|
-| `hydra dev` | Builds, serves, and rebuilds on file change |
+| `hydra dev` | Builds, serves, rebuilds on change, live-reloads the browser |
 | `hydra build` | Production build: hashed assets, minified CSS, SSG |
 | `hydra preview` | Serves `dist/` (builds first if it is missing) |
 | `hydra run <file.hys>` | Executes a script in-process |
 
-**On "HMR":** `hydra dev` watches `src/` and rebuilds, and the rebuild is visible
-within about 10 seconds. It does **not** push updates to the browser — there is
-no websocket, no hot-module protocol. You refresh the page. Calling that HMR
-would be wrong, so this README does not.
+**On "HMR":** `hydra dev` watches `src/`, rebuilds, and **reloads the page in the
+browser over a websocket** — no dependency, no browser extension, ~10 seconds
+from save to reload. What it does *not* do is preserve component state across a
+change: a successful edit reloads, it does not hot-swap the module. Calling that
+React Fast Refresh would be wrong, so this README calls it live reload.
+
+**A failed rebuild does not reload.** It sends the error to the page instead, so
+the console shows the compiler's message with the file and line, and you keep the
+last working page until the code compiles again.
 
 ### File-based routing
 
@@ -424,19 +451,95 @@ The runtime gate now loads **every** `index.html` the build produced, not only t
 root one: with per-route HTML, checking one page leaves every other route
 unchecked, which is exactly where a route bug lives.
 
-**On SSG, and why the examples turn it off.** Pre-rendering is opt-in per project
-(`"rendering": { "ssg": true }`), and the four example projects ship with it off:
-their `dist/index.html` is a ~400-byte shell that renders on the client. With
-`ssg: true` the build pre-renders and prints what it did. The examples are off
-because each one is a single-page app exercising the runtime, not a site with
-URLs a crawler would want, so pre-rendering them would demonstrate the feature
-without exercising it. A project with `src/pages` and a `Router()` gets
-pre-rendering per route by default; see "File-based routing" above.
+**SSG is on by default for static routes.** A project with `src/pages` and a
+`Router()` pre-renders every static route without any configuration. Static
+means: no URL parameter, and no `rendering = "csr"` in the page.
 
-**Changing that default is on the roadmap for 0.8** — SSG for static routes, SSR
-for dynamic ones, CSR as an explicit opt-out — and it is not done yet. Saying so
-here is cheaper than letting a reader assume the current default is the
-considered one.
+Two ways to opt out, both without new syntax:
+
+```python
+# src/pages/dashboard.hyx — this page renders on the client only
+rendering = "csr"
+
+component Dashboard():
+    ...
+```
+
+```json
+// hydraconfig.json — the whole project, back to the old behaviour
+{ "rendering": { "ssg": false } }
+```
+
+A **dynamic** route (`[slug]`) has no single page to build, so it is skipped and
+named in the build log. That is deliberate, not a gap: SSR for dynamic routes
+needs a server at request time, and the static build does not have one. The
+four example projects still set `"ssg": false` — each is a single-page app
+exercising the runtime, not a site with URLs a crawler would want, so
+pre-rendering them would demonstrate the feature without exercising it.
+
+If a project has `src/pages` but its `App` never calls `Router()`, nothing is
+pre-rendered: with no router there is no route to pre-render, and the build says
+so instead of writing empty pages.
+
+### Data: `loader` and `action`
+
+A page can have a **server half** in a file beside it — same name, `.server.hys`
+instead of `.hyx`:
+
+```
+src/pages/blog/index.hyx           -> the page (client module: it renders in the browser)
+src/pages/blog/index.server.hys    -> its loader and action (server module: never in the bundle)
+```
+
+```python
+# src/pages/blog/index.server.hys
+from "hydra/server" import env
+
+export async def loader(event):
+    return {"posts": await db.fetch_all(), "region": env("REGION", "local")}
+
+export async def action(event):
+    text = event.request.body.get("text")
+    if not text:
+        return {"ok": False, "reason": "empty"}
+    await db.insert(text)
+    return redirect("/blog?added=1")
+```
+
+```python
+# src/pages/blog/index.hyx — the props ARE the loader's return value
+component BlogIndex(posts: list = [], region: str = "?"):
+    ...
+```
+
+`loader` runs **once per route at build time** (SSG), its result is rendered
+into the HTML *and* inlined as JSON, so the client hydrates with the same values
+instead of re-fetching. `action` runs when the same URL is `POST`ed.
+
+**Why a separate file, and not `export def loader` inside the page.** A page
+module is a client module: it renders in the browser and its imports end up in
+the client bundle. A loader declared there could only be server-only *by
+convention* — one stray `import fs` and the build breaks in a way that is hard to
+read. A `.server.hys` is not reachable from the client at all, so the split is a
+fact about the build rather than a rule to remember. It also means the client
+bundle can never contain the loader even by accident.
+
+`event` is one object, so the signature does not change when the framework adds a
+field:
+
+| field | is |
+|---|---|
+| `event.params` | dict of URL parameters (`{"slug": "hello"}`) |
+| `event.url` | the path (`/blog`) |
+| `event.query` | a `URLSearchParams`, so `.get("q")` |
+| `event.request` | `method`, `headers`, `body` (an action only) |
+
+A `.server.hys` with no page beside it is a **build error naming both files**,
+because a loader nobody calls is almost always a typo in the filename.
+
+**Not done yet:** loaders do not re-run on a *client-side* navigation — the
+inlined JSON is what the client has until you reload. That, and SSR for dynamic
+routes, are the next pieces; see the roadmap.
 
 Build output: `dist/index.html`, `dist/assets/index-<hash>.js`, `dist/assets/index.css`,
 plus chunks for dynamic `import()`.
@@ -604,7 +707,8 @@ out to the `hydra` binary for diagnostics; there is no separate language server.
 ## Testing
 
 ```bash
-cd compiler-rs && cargo test          # 377 tests: 266 unit + 111 integration
+cd compiler-rs && cargo test          # 390 tests: 269 unit + 121 integration
+node --test packages/cli/*.test.mjs   # 57 CLI/runtime tests, some against a real browser
 node benchmarks/measure.mjs           # the numbers quoted above
 bash scripts/hx-examples-check.sh     # builds every example/ project
 ```
@@ -666,8 +770,12 @@ dates; the version numbers are targets and the order is the honest part.
 | 0.6.2 | File-based routing, per-route SSG | shipped |
 | 0.6.2 | `hydra routes`, route table printed and generated | shipped |
 | 0.6.2 | Keyword arguments across files and for methods | shipped |
-| 0.7 | HMR: a websocket push, an error overlay, React Fast Refresh | not started |
-| 0.8 | Rendering defaults: SSG for static routes, SSR for dynamic, CSR opt-out | not started |
+| 0.7 | Live reload: websocket push, in-browser error overlay | shipped |
+| 0.7 | `loader` / `action` (`.server.hys` beside a page) | shipped |
+| 0.7 | `hydra/server` and `hydra/client`, enforced per module | shipped |
+| 0.7 | SSG by default for static routes, `rendering = "csr"` opt-out | shipped |
+| 0.7 | React Fast Refresh (state preserved across an edit) | not started |
+| 0.8 | SSR for dynamic routes; loaders re-run on client navigation | not started |
 | 0.9 | `hydra-lsp`: hover, go-to-definition, rename | not started |
 | 0.9 | `hydra test`: unit, route and snapshot tests for components | not started |
 | 1.0 | Incremental build cache, parallel compilation | not started |

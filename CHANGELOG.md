@@ -12,6 +12,67 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## 0.7.0 — 2026-11-02
+
+**The meta-framework half of the roadmap, in one release: loaders, per-module
+server/client enforcement, live reload, and SSG on by default.** Four of the
+items that were "not started" in the 0.6.3 roadmap now ship. Two things a
+developer had to write by hand — fetching data before render, and pushing an
+edit to the browser — are the framework's job now.
+
+### Added
+- **`loader` and `action`, in a `.server.hys` beside the page.** A `loader` runs
+  once per route at build time; its result renders into the HTML *and* is
+  inlined as JSON so the client hydrates with the same values. An `action`
+  answers a `POST` to the same URL and may return `redirect(path)`, which is a
+  real `303` so a refresh does not repost.
+- **`hydra/server` and `hydra/client`.** `env`, `read_text`, `write_text`,
+  `redirect` on one side; `scroll_to`, `local_storage`, `clipboard` on the
+  other; `hydra` stays universal. The compiler refuses `hydra/server` in a page
+  and `hydra/client` in a `.server.hys`, and the error names the file and says
+  which of the two fixes applies.
+- **Live reload in `hydra dev`.** A websocket and an injected client, no
+  dependency. A successful rebuild reloads the page; a *failed* one does not,
+  it sends the compiler's message to the console and leaves the last working
+  page in place. State is not preserved across a change — that is Fast Refresh,
+  and it is not this.
+- **SSG on by default for static routes.** A project with `src/pages` and a
+  `Router()` pre-renders every static route with no configuration. Opt out per
+  page with `rendering = "csr"`, or per project with `"rendering": { "ssg": false }`.
+- **A `.server.hys` with no page beside it is a build error** naming both
+  files, not a loader that never runs.
+
+### Fixed
+- **A component whose whole body is one element did not return it.**
+  `component App():` / `Router()` emitted `Router();` and fell off the end,
+  returning `undefined`: React rendered an empty app, no error anywhere, and a
+  green build. The single most natural way to write a router root was the one
+  shape that silently rendered nothing. Caught by the loader test, not by
+  reading the code.
+- **`routes` in the generated table had lost `segments`.** Matching reads them,
+  and the field was dropped when the map was regenerated for `serverFile` — so
+  every route matched nothing, the server rendered a full page and the client
+  rendered an empty one: React #418 on a route that was pre-rendered.
+- **Only the first pre-rendered route got a rendered page.** The SSG pass read
+  the already-written `dist/index.html` as its template; that file's
+  `<div id="root">` was no longer empty after the first render, so `inject`
+  matched nothing for every route after it and those pages shipped an empty root
+  with correct data beside it. Each route is built from the project's own
+  `index.html` now.
+- **A pre-rendered route threw React #418 on its own HTML.** A page is served at
+  `/notes/` and `pathSegments` did not treat a trailing slash as the same route,
+  so the client matched nothing where the server had matched the page.
+- **The seed was cleared before the render used it**, so a loader's data reached
+  the page as an empty object.
+
+### Changed
+- **`hydra build` prints what SSG did**, including the dynamic routes it left as
+  a client shell and why.
+- The runtime gate loads **every** HTML file a build produced, not only the root
+  one, and treats a blank root on a route that has a component as a failure.
+
+---
+
 ## 0.6.3 — 2026-11-02
 
 **Every compiler error names its file now, and the docs stopped mixing two

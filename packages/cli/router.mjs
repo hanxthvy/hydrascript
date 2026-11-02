@@ -52,6 +52,30 @@ export const GENERATED_FILE = 'routes.generated.js';
 /** The pre-render entry, generated only when there are routes to pre-render. */
 export const SSG_ENTRY_FILE = 'ssg-entry.js';
 
+/**
+ * A page's server half: `blog/[slug].server.hys` beside `blog/[slug].hyx`.
+ *
+ * Separate FILES rather than an `export def loader` inside the page, and that is
+ * the whole design. A page module is a client module — it renders in the browser
+ * and its imports end up in the client bundle — so a loader declared in it could
+ * only be server-only by convention, enforced nowhere. A `.server.hys` file is
+ * not reachable from the client at all: the client bundle has no import to it,
+ * and `hydra/server` is refused there by name. The split makes the boundary a
+ * fact about the module graph instead of a rule in a document.
+ */
+export const SERVER_SUFFIX = '.server';
+
+/** `blog/[slug]` + `.server.hys` -> `blog/[slug].server.hys`. */
+function serverFileFor(pageRel) {
+  const dot = pageRel.lastIndexOf('.');
+  if (dot === -1) return null;
+  // A loader is `.hys` (plain JS, runs in node) or `.hyx` if the author had a
+  // reason. Both are tried, in that order, because `.hys` is the convention the
+  // docs use and the one that reads correctly at the top of the file.
+  const stem = pageRel.slice(0, dot);
+  return [`${stem}${SERVER_SUFFIX}.hys`, `${stem}${SERVER_SUFFIX}.hyx`];
+}
+
 const LAYOUT_BASENAME = '_layout';
 const NOT_FOUND_BASENAME = '_404';
 const ERROR_BASENAME = '_error';
@@ -112,7 +136,10 @@ function walk(dir, out = []) {
     if (entry.isDirectory()) {
       if (entry.name === 'node_modules' || entry.name === '.git') continue;
       walk(full, out);
-    } else if (/\.(hyx|hsx)$/.test(entry.name)) {
+    } else if (/\.(hyx|hsx|hys|hs)$/.test(entry.name)) {
+      // `.hys` too: a page's server half is plain JavaScript by convention
+      // (it runs in node, never in a browser), so the walk has to see it or the
+      // pairing silently finds nothing.
       out.push(full);
     }
   }
@@ -129,7 +156,16 @@ function walk(dir, out = []) {
  */
 export function scanRoutes(pagesDir) {
   const root = path.resolve(pagesDir);
-  const result = { root, routes: [], layouts: {}, notFound: [], errors: [], errors_diagnostics: [] };
+  const result = {
+    root,
+    routes: [],
+    layouts: {},
+    notFound: [],
+    errors: [],
+    errors_diagnostics: [],
+    /** Every `.server.hys` found, so an orphan can be named. */
+    serverFiles: [],
+  };
 
   // No pages directory is not an error: a project with a mount point and no
   // routes is a legitimate HydraScript app.
@@ -142,7 +178,7 @@ export function scanRoutes(pagesDir) {
 
   for (const file of walk(root)) {
     const rel = path.relative(root, file).split(path.sep).join('/');
-    const noExt = rel.replace(/\.(hyx|hsx)$/, '');
+    const noExt = rel.replace(/\.(hyx|hsx|hys|hs)$/, '');
     const dirSegments = noExt.split('/').slice(0, -1);
     const basename = noExt.split('/').pop();
     const folder = dirSegments.join('/');
@@ -153,6 +189,15 @@ export function scanRoutes(pagesDir) {
       else result.errors.push({ folder, file: rel });
       continue;
     }
+
+    // A `.server.hys` is never a page; it is a page's server half, adopted by
+    // the page it sits beside. Collected so an orphan can be named.
+    if (noExt.endsWith(SERVER_SUFFIX)) {
+      result.serverFiles.push(rel);
+      continue;
+    }
+    // A `.hys`/`.hs` that is NOT a server half is a plain script, not a page.
+    if (/\.(hys|hs)$/.test(rel)) continue;
 
     // A private segment anywhere above, or a private filename, makes the file
     // non-routable — and legitimately so, not an error.
@@ -212,9 +257,35 @@ export function scanRoutes(pagesDir) {
     }
     patternOwners.set(pattern, rel);
 
+    // Per-route rendering mode, declared as a plain module-level assignment:
+    //
+    //   rendering = "csr"
+    //
+    // Read from the SOURCE at scan time rather than from an import at runtime,
+    // because the decision changes what the BUILD does — a `csr` route is not
+    // pre-rendered at all. Convention over keyword: it is a name, not syntax.
+    let rendering = null;
+    try {
+      const text = fs.readFileSync(path.join(root, rel), 'utf8');
+      const m = /^\s*rendering\s*=\s*["'](ssg|csr|ssr)["']/m.exec(text);
+      if (m) rendering = m[1];
+    } catch {
+      /* unreadable is not fatal here; the compiler will say so */
+    }
+
+    const serverCandidates = serverFileFor(rel) || [];
+    const serverFile =
+      serverCandidates.find((c) => fs.existsSync(path.join(root, c))) || null;
+
     result.routes.push({
       pattern,
       file: rel,
+      // The page's server half, or null. Existence is decided HERE, at scan
+      // time, so a `.server.hys` with no page beside it is reported below rather
+      // than silently doing nothing.
+      serverFile,
+      /** `ssg` (pre-render), `csr` (client only), or null (decided by the project). */
+      rendering,
       params: urlParts
         .filter((p) => p.kind === 'param' || p.kind === 'catchall')
         .map((p) => p.name),
@@ -222,6 +293,31 @@ export function scanRoutes(pagesDir) {
       hasParams: urlParts.some((p) => p.kind === 'param' || p.kind === 'catchall'),
       dir: folder,
     });
+  }
+
+  // A rendering value that is neither of the two the build knows is a typo that
+  // would otherwise silently fall back to the project default.
+  for (const r of result.routes) {
+    if (r.rendering && !['ssg', 'csr', 'ssr'].includes(r.rendering)) {
+      result.errors_diagnostics.push(
+        `${r.file}: rendering = "${r.rendering}" is not a mode this build knows. ` +
+          `Use "ssg" (pre-render) or "csr" (client only).`,
+      );
+    }
+  }
+
+  // A `.server.hys` with no page beside it does nothing, and "does nothing" is
+  // the failure mode this project refuses everywhere else. The pairing is by
+  // filename, so a typo in either half is worth a sentence.
+  const paired = new Set(result.routes.map((r) => r.serverFile).filter(Boolean));
+  for (const f of result.serverFiles) {
+    if (!paired.has(f)) {
+      const page = f.replace(/\.server(\.[a-z]+)$/, '$1');
+      result.errors_diagnostics.push(
+        `${f}: this is a page's server half, but there is no ${page} beside it. ` +
+          `A loader is adopted by the page with the same name; rename one of them.`,
+      );
+    }
   }
 
   result.routes.sort(compareRoutes);
@@ -339,38 +435,49 @@ export function routesModuleSource(table, { base = '/' } = {}) {
   lines.push('  return null;');
   lines.push('}');
   lines.push('');
+  // `serverFile` travels with the route so the build knows which pages have a
+  // loader, without re-deriving the filename and getting it subtly wrong.
+  // `segments` MUST be here. Matching is done against them, and they were the
+  // one field this map omitted: `routes` was regenerated for `serverFile` and
+  // lost the shape the matcher reads, so every route matched nothing. The
+  // pre-rendered HTML looked perfect and the client rendered an empty tree —
+  // React #418 on the client's own page.
   lines.push('export const routes = ' + JSON.stringify(
-    table.routes.map((r) => ({ pattern: r.pattern, file: r.file, params: r.params })),
+    table.routes.map((r) => ({
+      pattern: r.pattern,
+      file: r.file,
+      params: r.params,
+      segments: r.segments,
+      serverFile: r.serverFile || null,
+    })),
   ) + ';');
   lines.push('');
+  // COMPONENTS, not loaders. `() => Promise.resolve(mod)` was the earlier shape
+  // and it survived here after the runtime moved on: the client then had a
+  // function where a component belonged, React rendered the Promise it returned,
+  // and every page threw #31 — after a pre-render that produced perfect HTML.
   lines.push('export const pages = {');
   for (const r of table.routes) {
-    lines.push(`  ${JSON.stringify(r.pattern)}: () => Promise.resolve(${ref.get(r.file)}),`);
+    lines.push(`  ${JSON.stringify(r.pattern)}: pick(${ref.get(r.file)}),`);
   }
   lines.push('};');
   lines.push('');
   lines.push('export const pageLayouts = {');
   for (const r of table.routes) {
-    const list = layoutChainFor(r.dir, table)
-      .map((f) => `() => Promise.resolve(${ref.get(f)})`)
-      .join(', ');
-    lines.push(`  ${JSON.stringify(r.pattern)}: [${list}],`);
+    const list = layoutChainFor(r.dir, table).map((f) => `pick(${ref.get(f)})`).join(', ');
+    lines.push(`  ${JSON.stringify(r.pattern)}: [${list}].filter(Boolean),`);
   }
   lines.push('};');
   lines.push('');
   lines.push('export const pageErrors = {');
   for (const r of table.routes) {
     const e = errorFor(r.dir, table);
-    lines.push(
-      `  ${JSON.stringify(r.pattern)}: ${e ? `() => Promise.resolve(${ref.get(e)})` : 'null'},`,
-    );
+    lines.push(`  ${JSON.stringify(r.pattern)}: ${e ? `pick(${ref.get(e)})` : 'null'},`);
   }
   lines.push('};');
   lines.push('');
   lines.push(
-    `export const notFound = ${
-      rootNotFound ? `() => Promise.resolve(${ref.get(rootNotFound)})` : 'null'
-    };`,
+    `export const notFound = ${rootNotFound ? `pick(${ref.get(rootNotFound)})` : 'null'};`,
   );
   lines.push(`export const hasNotFound = ${rootNotFound ? 'true' : 'false'};`);
   lines.push(`export const base = ${JSON.stringify(base)};`);
@@ -388,13 +495,13 @@ export function routesModuleSource(table, { base = '/' } = {}) {
  * would build an SSR bundle that renders nothing, and the build would then report
  * "pre-rendered 0/0" as if it had done something.
  */
-export function writeSsgEntry(cwd, table, { entry } = {}) {
+export function writeSsgEntry(cwd, table, { entry, base = '/' } = {}) {
   if (!table || table.routes.filter((r) => !r.hasParams).length === 0) return null;
   if (!entry) return null;
   const dir = path.join(cwd, GENERATED_DIR);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, SSG_ENTRY_FILE);
-  fs.writeFileSync(file, ssgEntrySource(table, { cwd, entry }), 'utf8');
+  fs.writeFileSync(file, ssgEntrySource(table, { cwd, entry, base }), 'utf8');
   return file;
 }
 
@@ -467,6 +574,7 @@ export function routesJson(table) {
       file: r.file,
       params: r.params,
       dynamic: r.hasParams,
+      serverFile: r.serverFile || null,
       layouts: layoutChainFor(r.dir, table),
       error: errorFor(r.dir, table),
     })),
@@ -527,8 +635,7 @@ function identFor(file) {
  * patterns exist, and `renderFor(pattern)`, which returns a React element.
  * Every import is static and literal, which is what makes the element tree real
  * rather than a promise.
- */
-export function ssgEntrySource(table, { cwd, entry }) {
+ */export function ssgEntrySource(table, { cwd, entry, base = '/' }) {
   const pagesMap = {};
   const layoutsMap = {};
   const errorsMap = {};
@@ -540,13 +647,29 @@ export function ssgEntrySource(table, { cwd, entry }) {
   }
   const rootNotFound = notFoundFor('', table);
 
-  // Every file that needs a namespace import, deduplicated.
+  // Every file that needs a namespace import. Includes the `.server` halves,
+  // which this pass may touch and the client may not.
   const files = new Set(Object.values(pagesMap));
   for (const list of Object.values(layoutsMap)) for (const f of list) files.add(f);
   for (const f of Object.values(errorsMap)) files.add(f);
   if (rootNotFound) files.add(rootNotFound);
 
+  const loaderByPattern = {};
+  for (const r of table.routes) {
+    if (r.serverFile) {
+      files.add(r.serverFile);
+      loaderByPattern[r.pattern] = r.serverFile;
+    }
+  }
+
   const ref = new Map();
+  const ident = (f) => {
+    if (ref.has(f)) return ref.get(f);
+    const id = `__m_${identFor(f)}`;
+    ref.set(f, id);
+    return id;
+  };
+
   const lines = [
     '// [xihanzu-NR]',
     '// GENERATED by `hydra build` — pre-render entry, never shipped.',
@@ -556,14 +679,10 @@ export function ssgEntrySource(table, { cwd, entry }) {
     '',
   ];
   for (const f of files) {
-    const id = `__m_${identFor(f)}`;
-    ref.set(f, id);
-    lines.push(`import * as ${id} from ${JSON.stringify(absoluteSpecifier(table.root, f))};`);
+    lines.push(`import * as ${ident(f)} from ${JSON.stringify(absoluteSpecifier(table.root, f))};`);
   }
 
   lines.push('');
-  // `hydra types`-generated modules and hand-written ones disagree about
-  // whether the component is `default` or a named export, so both are tried.
   lines.push('function pick(mod) {');
   lines.push('  if (!mod) return null;');
   lines.push('  if (typeof mod.default === "function") return mod.default;');
@@ -573,37 +692,63 @@ export function ssgEntrySource(table, { cwd, entry }) {
   lines.push('  return null;');
   lines.push('}');
   lines.push('');
+  // `segments` MUST travel with each route: matching is done against them, and
+  // without them every URL fails to match — which is exactly how this was
+  // found, as a pre-rendered page with an empty <main> and correct data beside
+  // it. The client's table carries them; this one has to as well.
   lines.push('export const routes = ' + JSON.stringify(
-    table.routes.map((r) => ({ pattern: r.pattern, file: r.file, params: r.params })),
+    table.routes.map((r) => ({
+      pattern: r.pattern,
+      file: r.file,
+      params: r.params,
+      segments: r.segments,
+    })),
   ) + ';');
   lines.push('');
-  // Components, not loaders — the same shape the client table has, so the
-  // seeded pre-render and the browser resolve a route identically.
   lines.push('function __table() {');
   lines.push('  const pages = {};');
   for (const [pattern, file] of Object.entries(pagesMap)) {
-    lines.push(`  pages[${JSON.stringify(pattern)}] = pick(${ref.get(file)});`);
+    lines.push(`  pages[${JSON.stringify(pattern)}] = pick(${ident(file)});`);
   }
   lines.push('  const pageLayouts = {};');
   for (const [pattern, list] of Object.entries(layoutsMap)) {
-    const inner = list.map((f) => `pick(${ref.get(f)})`).join(', ');
-    lines.push(`  pageLayouts[${JSON.stringify(pattern)}] = [${inner}];`);
+    const inner = list.map((f) => `pick(${ident(f)})`).join(', ');
+    lines.push(`  pageLayouts[${JSON.stringify(pattern)}] = [${inner}].filter(Boolean);`);
   }
   lines.push('  const pageErrors = {};');
   for (const pattern of Object.keys(pagesMap)) {
     const f = errorsMap[pattern];
-    lines.push(
-      `  pageErrors[${JSON.stringify(pattern)}] = ${f ? `pick(${ref.get(f)})` : 'null'};`,
-    );
+    lines.push(`  pageErrors[${JSON.stringify(pattern)}] = ${f ? `pick(${ident(f)})` : 'null'};`);
   }
-  lines.push(
-    `  const notFound = ${rootNotFound ? `pick(${ref.get(rootNotFound)})` : 'null'};`,
-  );
+  lines.push(`  const notFound = ${rootNotFound ? `pick(${ident(rootNotFound)})` : 'null'};`);
   lines.push(
     `  return { routes, pages, pageLayouts, pageErrors, notFound, hasNotFound: ${
       rootNotFound ? 'true' : 'false'
-    }, base: "/" };`,
+    }, base: ${JSON.stringify(base)} };`,
   );
+  lines.push('}');
+  lines.push('');
+  lines.push('function __serverFor(pattern) {');
+  for (const [pattern, file] of Object.entries(loaderByPattern)) {
+    lines.push(`  if (pattern === ${JSON.stringify(pattern)}) return ${ident(file)};`);
+  }
+  lines.push('  return null;');
+  lines.push('}');
+  lines.push('');
+  lines.push('function __event(params, url, request) {');
+  lines.push('  const search = new URLSearchParams(String(url || "").split("?")[1] || "");');
+  lines.push('  const query = Object.fromEntries(search);');
+  lines.push('  query.get = (k, fallback = null) => (search.has(k) ? search.get(k) : fallback);');
+  lines.push('  query.has = (k) => search.has(k);');
+  lines.push('  return {');
+  lines.push('    params,');
+  lines.push('    url,');
+  lines.push('    query,');
+  lines.push('    request: request || {');
+  lines.push('      method: "GET", url, headers: {}, body: null,');
+  lines.push('      json: async () => null, text: async () => "",');
+  lines.push('    },');
+  lines.push('  };');
   lines.push('}');
   lines.push('');
   lines.push('function __appComponent() {');
@@ -616,18 +761,37 @@ export function ssgEntrySource(table, { cwd, entry }) {
   lines.push('  return null;');
   lines.push('}');
   lines.push('');
-  lines.push('export function renderFor(pattern, params = {}) {');
+  lines.push('export async function renderFor(pattern, params = {}, url = pattern) {');
   lines.push('  const App = __appComponent();');
-  lines.push('  if (!App) return null;');
-  lines.push('  __seed_for_ssr({ table: __table(), path: pattern });');
+  lines.push('  if (!App) return { element: null, data: null };');
+  lines.push('  const table = __table();');
   lines.push('  try {');
-  lines.push('    return createElement(App, { params, path: pattern });');
-  lines.push('  } finally {');
+  lines.push('    const serverMod = __serverFor(pattern);');
+  lines.push('    const loader = serverMod && typeof serverMod.loader === "function" ? serverMod.loader : null;');
+  lines.push('    // ONE argument: an event object. Passing three silently handed every');
+  lines.push('    // loader written to the documented shape the wrong first parameter.');
+  lines.push('    const data = loader ? await loader(__event(params, url)) : null;');
+  lines.push('    // The seed carries the loader result: the page is rendered by `Router`');
+  lines.push('    // inside the app and never receives props from here.');
+  lines.push('    __seed_for_ssr({ table, path: pattern, data });');
+  lines.push('    // Render the APP, not the page. Rendering the page produced HTML with');
+  lines.push('    // none of the chrome, and hydrating the full app over it was React #418');
+  lines.push('    // on every pre-rendered route. The app is what the browser mounts.');
+  lines.push('    // The seed is NOT cleared here.');
+  lines.push('    //');
+  lines.push('    // `renderFor` only BUILDS the element; React renders it afterwards, when');
+  lines.push('    // the runner calls `renderToString`. Clearing the seed in a `finally`');
+  lines.push('    // before returning wiped it before the render ever read it, so every page');
+  lines.push('    // came out as an empty shell with correct data inlined beside it. The');
+  lines.push('    // caller clears it, and `__clear_seed` exists for that.');
+  lines.push('    return { element: createElement(App, { params, path: pattern, url }), data };');
+  lines.push('  } catch (err) {');
   lines.push('    __clear_ssr_seed();');
+  lines.push('    throw err;');
   lines.push('  }');
   lines.push('}');
   lines.push('');
+  lines.push('export const __clear_seed = __clear_ssr_seed;');
+  lines.push('');
   return lines.join('\n');
 }
-
-

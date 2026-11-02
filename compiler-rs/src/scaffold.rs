@@ -457,16 +457,46 @@ component Home(greeting: str = "Hello", samples = []):
 const ABOUT_HYX_TEMPLATE: &str = r#"# [xihanzu-NR]
 from "../components/Card.hyx" import Card
 
-component About(version: str = "0.1.0"):
+component About(version: str = "0.1.0", built_on: str = "?"):
     features = ["Pythonic syntax", "Two targets: .hyx and .hys", "SSG on by default"]
 
     div(className="space-y-6"):
         Card(title="About", subtitle=f"version {version}"):
             p(className="text-sm text-slate-600"):
                 "src/pages/about.hyx, so the router serves it at /about."
+            p(className="text-sm text-slate-600"):
+                f"`version` and `built_on` came from about.server.hys, at build time ({built_on})."
             ul(className="list-disc space-y-1 pl-5 text-sm text-slate-600"):
                 for index, feature in enumerate(features):
                     li(key=index): feature
+"#;
+
+/// A page's server half: the loader, and the shape of an action.
+///
+/// Two things this teaches by existing: a loader runs at build time and its
+/// result reaches the page as props, and `hydra/server` is only importable from
+/// a `.server.hys`.
+const ABOUT_SERVER_HYS_TEMPLATE: &str = r#"# [xihanzu-NR]
+# The server half of src/pages/about.hyx.
+#
+# Separate FILE, not an `export def loader` inside the page, and that is the
+# design: a page module is a CLIENT module (it renders in the browser, its
+# imports end up in the client bundle), so a loader declared there could only be
+# server-only by convention. This file is not reachable from the client at all.
+#
+# Called with ONE argument, an event object:
+#     event.params   dict of URL parameters
+#     event.url      the path
+#     event.query    the query string, with .get()
+#     event.request  method / headers / body (an action)
+
+from "hydra/server" import env
+
+export async def loader(event):
+    return {
+        "version": "0.1.0",
+        "built_on": env("HYDRA_BUILD_HOST", "this machine"),
+    }
 "#;
 
 /// A `_404.hyx` so a wrong URL says so, instead of rendering nothing.
@@ -769,6 +799,10 @@ pub fn init(args: &[String]) -> ExitCode {
         (
             root.join("src").join("pages").join("_404.hyx"),
             NOTFOUND_HYX_TEMPLATE.to_string(),
+        ),
+        (
+            root.join("src").join("pages").join("about.server.hys"),
+            ABOUT_SERVER_HYS_TEMPLATE.to_string(),
         ),
     ];
 
@@ -1348,10 +1382,10 @@ export component Badge(label: str):
             }
             checked += 1;
         }
-        // 7 .hyx (main, App, Header, Card, Button, Home, About, _404 is 8) plus
-        // the two .hys. The count is asserted so a template that stops being
-        // written is a test failure and not a silently smaller scaffold.
-        assert_eq!(checked, 9, "expected 7 .hyx + 2 .hys sources");
+        // The count is asserted so a template that stops being written is a test
+        // failure and not a silently smaller scaffold: 8 .hyx/.hsx plus 3 .hys
+        // (main's stats, and the about page's server half).
+        assert_eq!(checked, 10, "expected 8 .hyx/.hsx + 3 .hys sources");
     }
 
     #[test]

@@ -20,6 +20,15 @@ import {
   pickPageComponent as core_pick_page,
 } from './router-core.js'
 
+// A STATIC import, so the route table is present on the first render.
+//
+// It used to be `import('hydra:routes')` inside an effect, which is the shape
+// everyone reaches for and which cannot work here: the first paint has no table,
+// renders nothing, and then fills in — while the server's HTML for the same URL
+// has content. React reports that as a hydration mismatch (#418), and the runtime
+// gate caught it on the very case this is for: a correctly pre-rendered page.
+import * as generated_routes from 'hydra:routes'
+
 /* ------------------------------------------------- f-string number format
  *
  * Python's `format(1.5, ":.0f")` is `2`, and `format(0.5, ":.0f")` is `0`:
@@ -1003,23 +1012,18 @@ export interface RouteTable {
   base: string
 }
 
-let route_table_cache: RouteTable | null | undefined = undefined
-let route_table_promise: Promise<RouteTable | null> | null = null
-
 /**
  * What the pre-render pass is currently rendering.
  *
- * `renderToString` runs no effects, so the lazy `import('hydra:routes')` below
- * cannot resolve during SSG — and a `Router()` that renders nothing is exactly
- * the hydration mismatch the runtime gate reports as React #418. The build
- * therefore SEEDS the runtime with the table and the URL it is rendering, and
- * both hooks below prefer the seed. One router, one path resolution, no second
- * implementation that can disagree with the first.
+ * `renderToString` runs no effects, and the build walks several URLs with one
+ * module instance, so the seed is how a synchronous renderer learns which route
+ * it is on. In the browser the seed is always null.
  */
 export interface SsrSeed {
   table: RouteTable
-  /** The URL path being pre-rendered. */
   path?: string
+  /** What the route's loader returned, for the page it renders. */
+  data?: Record<string, any> | null
 }
 
 let ssr_seed: SsrSeed | null = null
@@ -1030,81 +1034,48 @@ export function __seed_for_ssr(seed: SsrSeed): void {
   if (seed.table) route_table_cache = seed.table
 }
 
-/** Clear the seed. Called after pre-rendering so nothing leaks into an import. */
+/** Clear the seed. Called after pre-rendering so nothing leaks into a later call. */
 export function __clear_ssr_seed(): void {
   ssr_seed = null
   route_table_cache = undefined
-  route_table_promise = null
+}
+
+let route_table_cache: RouteTable | undefined = undefined
+
+/** Whatever `hydra:routes` gave us. Never null: the module always resolves. */
+function readGeneratedTable(): RouteTable {
+  const m: any = generated_routes
+  return {
+    routes: m.routes || [],
+    pages: m.pages || {},
+    pageLayouts: m.pageLayouts || {},
+    pageErrors: m.pageErrors || {},
+    notFound: m.notFound || null,
+    hasNotFound: Boolean(m.hasNotFound),
+    base: m.base || '/',
+  }
 }
 
 /**
- * The route table, synchronously when it is known.
+ * The route table, SYNCHRONOUSLY.
  *
- * Returns `null` when there is none, and the seeded table during a pre-render —
- * so `Router` renders real content in the HTML instead of an empty shell.
+ * Not a hook. There is nothing to wait for: the module is imported statically, so
+ * the table exists before the first render, in the browser and during
+ * pre-rendering alike. That is the whole reason the import is static — see the
+ * note at the top — and it is what makes a hook pointless here.
+ *
+ * During a pre-render the build's seed wins, because that pass renders several
+ * URLs with one module instance.
  */
-export function get_route_table_sync(): RouteTable | null {
+export function get_route_table_sync(): RouteTable {
   if (ssr_seed) return ssr_seed.table
-  return route_table_cache ?? null
+  if (route_table_cache === undefined) route_table_cache = readGeneratedTable()
+  return route_table_cache
 }
 
-/**
- * The generated route table, or `null` in a project without one.
- *
- * One module load, cached at module scope: the table, the page importers and
- * the layout importers all come from the same generated file, so the browser
- * cannot see a table that disagrees with the importers beside it.
- */
-export function use_route_table(): RouteTable | null | undefined {
-  const seeded = ssr_seed ? ssr_seed.table : undefined
-  const [table, setTable] = useState<RouteTable | null | undefined>(
-    seeded !== undefined ? seeded : route_table_cache,
-  )
-
-  useEffect(() => {
-    // A seeded table is final: this is a pre-render, not a browser, and there is
-    // no module to import.
-    if (ssr_seed) {
-      if (table !== ssr_seed.table) setTable(ssr_seed.table)
-      return
-    }
-    if (route_table_cache !== undefined) {
-      if (table !== route_table_cache) setTable(route_table_cache)
-      return
-    }
-    let alive = true
-    if (!route_table_promise) {
-      route_table_promise = import('hydra:routes')
-        .then((m: any) => {
-          route_table_cache = {
-            routes: m.routes || [],
-            pages: m.pages || {},
-            pageLayouts: m.pageLayouts || {},
-            pageErrors: m.pageErrors || {},
-            notFound: m.notFound || null,
-            hasNotFound: Boolean(m.hasNotFound),
-            base: m.base || '/',
-          }
-          return route_table_cache
-        })
-        .catch(() => {
-          // Not a failure: this project has no pages directory, so it wires its
-          // own routes and never asked for this module.
-          route_table_cache = null
-          return null
-        })
-    }
-    route_table_promise.then((t) => {
-      if (alive) setTable(t)
-    })
-    return () => {
-      alive = false
-    }
-    // The table is deliberately absent from the deps: this effect must not
-    // re-run because of the state it sets.
-  }, [])
-
-  return table
+/** Kept for callers written against the old name; same synchronous value. */
+export function use_route_table(): RouteTable {
+  return get_route_table_sync()
 }
 
 /**
@@ -1176,7 +1147,7 @@ export function navigate_to(
   opts: { replace?: boolean; query?: Record<string, string | number | boolean | null | undefined> } = {},
 ): void {
   if (typeof window === 'undefined') return
-  const base = route_table_cache?.base || '/'
+  const base = get_route_table_sync().base || '/'
   let url = to
   if (base !== '/' && url.startsWith('/') && !url.startsWith(base)) {
     url = base.replace(/\/$/, '') + url
@@ -1197,6 +1168,30 @@ export function navigate_to(
   }
 }
 
+/**
+ * `use_loader_data(pattern)` — what the route's `loader` returned at build time.
+ *
+ * Read from the JSON the pre-render pass inlined. Returns `null` in a browser
+ * that navigated client-side to a route whose HTML was never pre-rendered, which
+ * is the honest answer: there is no data because no loader ran, and a page that
+ * needs it should say so rather than render with empty props.
+ */
+export function use_loader_data(pattern: string | null): Record<string, any> | null {
+  return useMemo(() => {
+    if (!pattern) return null
+    if (typeof document === 'undefined') return null
+    const el = document.getElementById('__hydra_data__')
+    if (!el || !el.textContent) return null
+    try {
+      const parsed = JSON.parse(el.textContent)
+      if (parsed && parsed.pattern === pattern) return parsed.data || null
+      return null
+    } catch {
+      return null
+    }
+  }, [pattern])
+}
+
 /** Wrap `inner` in a layout chain, outermost first. */
 
 /**
@@ -1207,6 +1202,22 @@ export function navigate_to(
  * gets the same behaviour, and so the fallback contract (`error`, `path` props)
  * is documented in one place.
  */
+/**
+ * Wrap `page` in its layout chain.
+ *
+ * `chain` is nearest-first and layouts nest outermost-first, so it is walked
+ * backwards: for `[dashboard, root]`, root wraps dashboard wraps the page. One
+ * function, used by the browser and by the pre-render pass, so a page cannot
+ * render inside its layout in the HTML and outside it after hydration.
+ */
+export function wrapInLayouts(page: React.ReactNode, chain: any[]): React.ReactNode {
+  let el = page
+  for (let i = chain.length - 1; i >= 0; i--) {
+    if (chain[i]) el = React.createElement(chain[i], null, el)
+  }
+  return el
+}
+
 export class RouteErrorBoundary extends React.Component<
   { fallback?: any; path?: string; children?: React.ReactNode },
   { error: Error | null }
@@ -1289,8 +1300,20 @@ export function Router(props: RouterProps) {
   const page = useMemo(() => {
     if (!pattern) return null
     if (components && components[pattern]) return components[pattern]
-    return table && table.pages[pattern] ? core_pick_page(table.pages[pattern]) : null
+    // Already the component: the generated table resolves `default` / named
+    // exports when it builds the map. Calling `pick` again here asked a
+    // COMPONENT for a default export and got null, so every pre-rendered page
+    // rendered an empty `<main>` while its data sat correctly beside it.
+    return (table && table.pages[pattern]) || null
   }, [pattern, components, table])
+
+  // The pre-render pass inlines what the loader returned, so the first paint
+  // uses the SAME data the server rendered from. Re-fetching here would be a
+  // second source of truth and a hydration mismatch the moment they differ.
+  // The loader result: in the browser it comes from the JSON the pre-render pass
+  // inlined; during a pre-render it is already in the seed, because there is no
+  // document to read and no second render to wait for.
+  const loaderData = ssr_seed && ssr_seed.path === pattern ? ssr_seed.data : use_loader_data(pattern)
 
   const layoutChain = useMemo(() => {
     if (!pattern || !table) return []
@@ -1300,14 +1323,10 @@ export function Router(props: RouterProps) {
 
   const errorComponent = useMemo(() => {
     if (!pattern || !table) return null
-    const imp = table.pageErrors[pattern]
-    return imp ? core_pick_page(imp) : null
+    return table.pageErrors[pattern] || null
   }, [pattern, table])
 
-  const notFoundComponent = useMemo(() => {
-    if (!table || !table.notFound) return null
-    return core_pick_page(table.notFound)
-  }, [table])
+  const notFoundComponent = useMemo(() => (table ? table.notFound || null : null), [table])
 
   if (!match) {
     if (notFoundComponent) {
@@ -1322,7 +1341,15 @@ export function Router(props: RouterProps) {
   }
 
   const body = page
-    ? wrapInLayouts(React.createElement(page, { params: match.params, path, route: match.route }), layoutChain)
+    ? wrapInLayouts(
+        React.createElement(page, {
+          ...(loaderData || {}),
+          params: match.params,
+          path,
+          route: match.route,
+        }),
+        layoutChain,
+      )
     : ((loading as any) ?? null)
 
   return React.createElement(
