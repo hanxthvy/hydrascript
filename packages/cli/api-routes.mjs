@@ -1,0 +1,482 @@
+// [xihanzu-NR]
+/**
+ * API routes (`src/api/*.hys`) and middleware (`src/middleware.hys`).
+ *
+ * A `.hys` file in `src/api` is a URL: `hello.hys` answers `/api/hello`. It
+ * exports one function per HTTP method and each is called as `handler(req)`
+ * for GET and `handler(req, body)` for the rest. That is the whole convention —
+ * no decorators, no router object, no manifest. The file IS the route, exactly
+ * like `src/pages`, because a project that already learned one naming rule
+ * should not have to learn a second.
+ *
+ * Why a separate folder instead of `src/pages/api`: a page module is a CLIENT
+ * module. Its imports end up in the browser and it renders there. An API route
+ * is the opposite of that, and putting both under one folder makes the
+ * distinction a convention inside the folder rather than a fact of the layout.
+ * `src/api` is scanned by this file alone and is never reachable from the
+ * client entry.
+ *
+ * Like page server halves, the sources are bundled ahead of time into one
+ * CommonJS module in `.hydra/`, because node cannot load a `.hys` and the dev
+ * server must not carry a second compiler.
+ *
+ * Deliberately absent: nested folders (`src/api/admin/users.hys`), route
+ * parameters, and per-method files. Each of those is a second naming rule with
+ * a second matcher, and none of them is needed to answer "GET and POST over
+ * HTTP". A subdirectory is REPORTED rather than ignored in silence, which is
+ * the rule this repository keeps for every dropped thing.
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+
+import { readBody, requestFor } from './actions.mjs';
+import { routesEsbuildPlugin } from './router.mjs';
+
+const require = createRequire(import.meta.url);
+
+/** The HTTP methods a route may export. `OPTIONS` is answered by the server. */
+export const API_METHODS = ['get', 'post', 'put', 'patch', 'delete'];
+
+/** The middleware file, relative to the project root. */
+export const MIDDLEWARE_FILE = path.join('src', 'middleware.hys');
+
+/** The bundled artifact both the server commands and a node deploy load. */
+export const API_BUNDLE = path.join('.hydra', 'api.cjs');
+
+/** `src/api` for a project, or null when it has none. */
+export function apiDirectory(cwd) {
+  const dir = path.join(cwd, 'src', 'api');
+  return fs.existsSync(dir) ? dir : null;
+}
+
+/**
+ * Scan `src/api` into a route table.
+ *
+ * `index.hys` answers `/api` itself, so a project can have an API root without
+ * a file named after nothing. Everything else is `/api/<basename>`.
+ *
+ * Nothing here throws: a project with an unusable file is told which file and
+ * why, and the build decides what to do about it.
+ */
+export function scanApiRoutes(cwd) {
+  const dir = apiDirectory(cwd);
+  const result = { dir, routes: [], ignored: [], errors: [] };
+  if (!dir) return result;
+
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      // Named, not skipped: a folder here is the first thing an author tries
+      // when the API grows, and "my route 404s" with a silent folder is a
+      // half-hour nobody gets back.
+      result.ignored.push({
+        file: path.join('src', 'api', entry.name),
+        reason: 'subdirectories are not routed; only files directly in src/api are',
+      });
+      continue;
+    }
+    if (!/\.(hys|hs)$/.test(entry.name)) continue;
+    const base = entry.name.replace(/\.(hys|hs)$/, '');
+    if (base.startsWith('_') || base.startsWith('.')) {
+      result.ignored.push({
+        file: path.join('src', 'api', entry.name),
+        reason: 'a leading _ marks a private file, which is not a route',
+      });
+      continue;
+    }
+    const url = base === 'index' ? '/api' : `/api/${base}`;
+    result.routes.push({
+      pattern: url,
+      file: path.join('src', 'api', entry.name).split(path.sep).join('/'),
+      abs: path.join(dir, entry.name),
+      segments: url === '/api' ? [{ kind: 'literal', value: 'api' }] : [
+        { kind: 'literal', value: 'api' },
+        { kind: 'literal', value: base },
+      ],
+    });
+  }
+
+  // Stable order so the printed table and the build log do not shuffle between
+  // runs: `readdirSync` order is the filesystem's, not the project's.
+  result.routes.sort((a, b) => a.pattern.localeCompare(b.pattern));
+  return result;
+}
+
+/** `src/middleware.hys`, or null. */
+export function middlewarePath(cwd) {
+  const file = path.join(cwd, MIDDLEWARE_FILE);
+  return fs.existsSync(file) ? file : null;
+}
+
+/**
+ * The bundle source for the API table and the middleware.
+ *
+ * Exported as data, not as behaviour: the server asks this module for a table
+ * and dispatches. There is no second router here — matching is `matchRoute`
+ * from `runtime/router-core.js`, the same one the browser uses.
+ */
+export function apiBundleSource(table, middlewareAbs) {
+  const lines = [
+    '// [xihanzu-NR]',
+    '// GENERATED by `hydra build` — the API table for `hydra dev`, `preview` and',
+    '// the node target. Edit the .hys files, not this one.',
+    '',
+  ];
+  const ids = new Map();
+  table.routes.forEach((r, i) => {
+    const id = `__api_${i}`;
+    ids.set(r.file, id);
+    lines.push(`import * as ${id} from ${JSON.stringify(r.abs)};`);
+  });
+  let mwId = null;
+  if (middlewareAbs) {
+    mwId = '__middleware';
+    lines.push(`import * as ${mwId} from ${JSON.stringify(middlewareAbs)};`);
+  }
+  lines.push('');
+  lines.push(`export const methods = ${JSON.stringify(API_METHODS)};`);
+  lines.push('');
+  lines.push('export const routes = [');
+  for (const r of table.routes) {
+    const id = ids.get(r.file);
+    const handlers = API_METHODS.map((m) => `${m}: ${id}.${m} || null`).join(', ');
+    lines.push(
+      `  { pattern: ${JSON.stringify(r.pattern)}, file: ${JSON.stringify(r.file)}, segments: ${JSON.stringify(r.segments)}, handlers: { ${handlers} } },`,
+    );
+  }
+  lines.push('];');
+  lines.push('');
+  if (mwId) {
+    lines.push(`export const middleware = ${mwId}.handle || null;`);
+  } else {
+    lines.push('export const middleware = null;');
+  }
+  lines.push('');
+  lines.push('/** The route for a URL, or null. */');
+  lines.push('export function match(url) {');
+  lines.push('  for (const route of routes) {');
+  lines.push('    const params = matchSegments(split(url), route.segments);');
+  lines.push('    if (params) return { route, params };');
+  lines.push('  }');
+  lines.push('  return null;');
+  lines.push('}');
+  lines.push('function split(url) {');
+  lines.push('  const clean = ("/" + String(url || "/").replace(/^\\/+/, "")).replace(/\\/+$/, "");');
+  lines.push('  return clean === "/" ? [] : clean.slice(1).split("/");');
+  lines.push('}');
+  lines.push('function matchSegments(parts, pattern) {');
+  lines.push('  if (parts.length !== pattern.length) return null;');
+  lines.push('  for (let i = 0; i < pattern.length; i++) {');
+  lines.push('    if (pattern[i].value !== parts[i]) return null;');
+  lines.push('  }');
+  lines.push('  return {};');
+  lines.push('}');
+  lines.push('');
+  return lines.join('\n');
+}
+
+/**
+ * Write the API bundle entry, and say whether there was anything to write.
+ *
+ * `--target static` calls this only to know what it is dropping; the file is
+ * still written because `dev` and `preview` build with the same code path and a
+ * target-specific hole in `.hydra/` would make `preview` after a static build
+ * answer 404 for routes the project has.
+ */
+export function writeApiBundle(cwd, table) {
+  const middlewareAbs = middlewarePath(cwd);
+  if (table.routes.length === 0 && !middlewareAbs) return null;
+  const dir = path.join(cwd, '.hydra');
+  fs.mkdirSync(dir, { recursive: true });
+  const entry = path.join(dir, 'api.entry.mjs');
+  const mwAbs = middlewareAbs ? middlewareAbs.split(path.sep).join('/') : null;
+  fs.writeFileSync(entry, apiBundleSource(table, mwAbs), 'utf8');
+  return entry;
+}
+
+/**
+ * Bundle the API entry into a module node can load.
+ *
+ * Same esbuild options and the same plugins as `bundleActions`, because the
+ * failure mode of two server bundles drifting apart is a project where an
+ * `action` compiles and an API route does not.
+ */
+export async function bundleApi(esbuild, entry, { outfile, cwd, pkgRoot, hydraAlias, serverAlias, compilerPlugin }) {
+  if (!entry) return null;
+  await esbuild.build({
+    entryPoints: [entry],
+    bundle: true,
+    write: true,
+    // CommonJS for the same reason as the action bundle: the server loads it
+    // with `require`, which needs no loader and no cache-busting query.
+    format: 'cjs',
+    platform: 'node',
+    target: 'node18',
+    outfile,
+    jsx: 'automatic',
+    logLevel: 'silent',
+    nodePaths: [path.join(cwd, 'node_modules'), path.join(pkgRoot, 'node_modules')],
+    resolveExtensions: ['.hyx', '.hys', '.hsx', '.hs', '.mjs', '.js', '.jsx', '.ts', '.tsx', '.json'],
+    plugins: [
+      {
+        name: 'hydra-runtime-specifiers',
+        setup(build) {
+          build.onResolve({ filter: /^hydra(\/[a-z]+)?$/ }, (args) => {
+            if (args.path === 'hydra') return { path: hydraAlias };
+            if (args.path === 'hydra/server') return { path: serverAlias };
+            return null;
+          });
+        },
+      },
+      // A server bundle may read ANY variable — that is the point of the split
+      // — so this plugin is created WITHOUT the client-only env guard.
+      compilerPlugin(),
+      routesEsbuildPlugin(
+        { root: cwd, routes: [], layouts: {}, notFound: [], errors: [], errors_diagnostics: [], serverFiles: [] },
+        { base: '/', cwd },
+      ),
+    ],
+  });
+  return outfile;
+}
+
+/** Load the generated API bundle, with a fresh copy on every call in dev. */
+export function loadApi(file) {
+  if (!file || !fs.existsSync(file)) return null;
+  try {
+    // The cache entry is dropped first: `hydra dev` rewrites this file on save,
+    // and a cache keyed by path would answer the previous build's handlers for
+    // the rest of the session.
+    delete require.cache[require.resolve(file)];
+    return require(file);
+  } catch (e) {
+    console.error(`[hydra] could not load the API bundle: ${e.message}`);
+    return null;
+  }
+}
+
+/**
+ * Route files that export none of the method names.
+ *
+ * A `def get(req)` without `export` compiles, bundles, and answers 405 to every
+ * request — a build that succeeds and a feature that does not exist. The
+ * compiled output is the only honest place to look, because `export` is what
+ * the emitter writes and what the runtime reads.
+ */
+export function missingMethodExports(routes, compile) {
+  const out = [];
+  for (const r of routes) {
+    let res;
+    try {
+      res = compile(r.abs);
+    } catch {
+      continue; // a compile error is reported by the bundle step, with its own message
+    }
+    if (!res || res.error) continue;
+    const code = String(res.code || '');
+    const has = API_METHODS.some((m) =>
+      new RegExp(`\\bexport\\s+(?:async\\s+)?function\\s+${m}\\b`).test(code) ||
+      new RegExp(`\\bexport\\s*\\{[^}]*\\b${m}\\b`).test(code),
+    );
+    if (!has) out.push(r.file);
+  }
+  return out;
+}
+
+/** Where the API bundle is, if this project has one. Read from disk, not memory. */
+export function readApiBundle(cwd) {
+  const f = path.join(cwd, API_BUNDLE);
+  return fs.existsSync(f) ? f : null;
+}
+
+/**
+ * The record `runBuild` leaves in `.hydra/build.json`.
+ *
+ * `preview` is a separate process from the build, so the only honest way to
+ * know whether the artifact on disk contains the server half is for the build
+ * to have written it down. An absent record means "built before this existed",
+ * and the answer for that is the old behaviour: static.
+ */
+export function readBuildRecord(cwd) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(cwd, '.hydra', 'build.json'), 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Turn a handler's return value into `{ status, body }`.
+ *
+ * Two shapes, both of which the language already produces:
+ *
+ *   `return {"ok": True}`          -> 200 with that object
+ *   `return {"id": 1}, 201`        -> 201 with the object (a tuple is an array)
+ *
+ * And `None` is 204: a handler that has nothing to say should not have to say
+ * `{}`. An explicit `{"status": ..., "body": ...}` is also accepted, because an
+ * action already returns that shape and one idea in two spellings is worse than
+ * the two lines this costs.
+ */
+export function apiResult(out) {
+  if (out === undefined || out === null) return { status: 204, body: null };
+  if (Array.isArray(out)) {
+    const [body, status] = out;
+    return {
+      status: Number.isInteger(status) ? status : 200,
+      body: body === undefined ? null : body,
+    };
+  }
+  if (typeof out === 'object' && ('status' in out || 'headers' in out) && 'body' in out) {
+    return {
+      status: Number.isInteger(out.status) ? out.status : 200,
+      body: out.body === undefined ? null : out.body,
+      headers: out.headers,
+    };
+  }
+  return { status: 200, body: out };
+}
+
+/** The JSON answer for an API route, or a plain body when the value is a string. */
+function sendResult(res, { status, body, headers }) {
+  const head = { ...(headers || {}) };
+  if (body === null || body === undefined) {
+    res.writeHead(status, head);
+    res.end();
+    return;
+  }
+  if (typeof body === 'string') {
+    if (!head['Content-Type']) head['Content-Type'] = 'text/plain; charset=utf-8';
+    res.writeHead(status, head);
+    res.end(body);
+    return;
+  }
+  if (!head['Content-Type']) head['Content-Type'] = 'application/json; charset=utf-8';
+  res.writeHead(status, head);
+  res.end(JSON.stringify(body));
+}
+
+/**
+ * Answer an API request, middleware included.
+ *
+ * Order, and it matters: middleware runs for EVERY request the API layer sees
+ * (including a path that turns out to be no route), because "block /api/admin"
+ * has to work whether or not `/api/admin` exists. A middleware reply stops the
+ * request where it is.
+ *
+ * `@returns {Promise<boolean>} true when this answered the request`
+ */
+export async function handleApiRequest(req, res, url, bundlePath) {
+  const rawPath = url.split('?')[0];
+  const mod = loadApi(bundlePath);
+  if (!mod) {
+    res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: 'the API bundle is missing; run `hydra build` again' }));
+    return true;
+  }
+
+  let rawBody = '';
+  try {
+    rawBody = await readBody(req);
+  } catch (e) {
+    res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: e.message }));
+    return true;
+  }
+
+  // ONE request object, handed to middleware and then to the handler. Mutation
+  // by reference is how middleware "changes" a request: a copy would mean the
+  // handler sees the original and the feature silently does nothing.
+  const request = {
+    ...requestFor(req, url, rawBody),
+    path: rawPath,
+  };
+
+  const hit = mod.match(rawPath);
+
+  if (typeof mod.middleware === 'function') {
+    let verdict;
+    try {
+      verdict = await mod.middleware(request);
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: `middleware threw: ${e && e.message ? e.message : e}` }));
+      return true;
+    }
+    if (verdict !== undefined && verdict !== null && verdict !== false) {
+      sendResult(res, apiResult(verdict));
+      return true;
+    }
+  }
+
+  if (!hit) return false;
+
+  const allowed = API_METHODS.filter((m) => typeof hit.route.handlers[m] === 'function');
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, { Allow: allowed.map((m) => m.toUpperCase()).join(', ') });
+    res.end();
+    return true;
+  }
+
+  const fn = hit.route.handlers[String(req.method || '').toLowerCase()];
+  if (typeof fn !== 'function') {
+    res.writeHead(405, {
+      'Content-Type': 'application/json; charset=utf-8',
+      Allow: allowed.map((m) => m.toUpperCase()).join(', '),
+    });
+    res.end(
+      JSON.stringify({
+        error: `${req.method} is not handled by ${hit.route.file}`,
+        allow: allowed.map((m) => m.toUpperCase()),
+      }),
+    );
+    return true;
+  }
+
+  try {
+    const out =
+      req.method === 'GET' || req.method === 'HEAD'
+        ? await fn(request)
+        : await fn(request, request.body);
+    sendResult(res, apiResult(out));
+  } catch (e) {
+    // A handler that throws is a bug in the handler, and the answer says which
+    // file, because a bare 500 leaves the author reading server logs for a path.
+    const message = e && e.message ? e.message : String(e);
+    console.error(`[hydra] API ${req.method} ${hit.route.pattern} threw: ${message}`);
+    res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: message, route: hit.route.pattern, file: hit.route.file }));
+  }
+  return true;
+}
+
+/**
+ * What a static build is throwing away, in the words of the person who has to
+ * explain it later.
+ *
+ * Deliberately noisy. An API route that builds "successfully" and 404s in
+ * production is the failure this text exists to prevent, and a one-line note at
+ * the top of a build log is the kind of thing that scrolls past.
+ */
+export function droppedForStatic(cwd, table) {
+  const middleware = middlewarePath(cwd);
+  const lines = [];
+  if (table.routes.length === 0 && !middleware) return lines;
+  lines.push('');
+  lines.push('  ============================================================');
+  lines.push('  --target static: the server half is NOT in this build');
+  lines.push('  ============================================================');
+  for (const r of table.routes) {
+    lines.push(`  dropped  ${r.pattern.padEnd(24)} ${r.file}`);
+  }
+  if (middleware) {
+    lines.push(`  dropped  (middleware)             ${MIDDLEWARE_FILE.split(path.sep).join('/')}`);
+  }
+  for (const ig of table.ignored) lines.push(`  ignored  ${ig.file} — ${ig.reason}`);
+  lines.push('');
+  lines.push('  A static host has no server, so these cannot answer. Deploy with');
+  lines.push('  `hydra build --target node` to keep them, or delete the files.');
+  lines.push('');
+  return lines;
+}

@@ -542,6 +542,108 @@ Loaders **do** re-run on a client-side navigation now (0.8): a URL that was neve
 server-rendered fetches its data from `/__hydra/data`. See "SSR for dynamic
 routes" below.
 
+### API routes: `src/api/*.hys`
+
+`src/api/hello.hys` answers `/api/hello`. One file is one URL, and it exports
+one function per HTTP method:
+
+```python
+# src/api/hello.hys
+from "hydra/server" import env
+
+export def get(req):
+    return {"ok": True, "at": env("BUILD_REGION", "local")}
+
+export def post(req, body):
+    return {"created": body["name"]}, 201
+```
+
+```bash
+curl /api/hello            -> 200 {"ok": true, "at": "local"}
+curl -X POST /api/hello    -> 201 {"created": "..."}
+```
+
+- `req` is the same request object an action sees (`method`, `url`, `headers`,
+  `body`, `json()`, `text()`), plus `path`.
+- `get(req)` takes one argument; every other method takes `(req, body)` with the
+  body **already parsed** (JSON, form fields, or the raw string).
+- Return a dict/string for `200`, or `(value, status)` for anything else.
+  `None` is `204`. A dict with `status`/`body`/`headers` also works, which is the
+  shape an `action` already returns.
+- A method the file does not export is `405` with an `Allow` header listing the
+  ones it does. A URL with no file is a **JSON `404`**, never `index.html`.
+- `index.hys` answers `/api` itself. Subdirectories are **not** routed, and they
+  are printed as ignored at build time rather than skipped in silence.
+
+`hydra dev` and `hydra preview` serve these. A `--target static` build cannot,
+and says so with every dropped route named — an endpoint that builds
+"successfully" and 404s in production is the failure that report prevents.
+
+### Middleware: `src/middleware.hys`
+
+One file, one exported `handle(req)`. It runs for every request that reaches the
+API layer (`/api` and below), before routing:
+
+```python
+# src/middleware.hys
+export def handle(req):
+    if req.path.startswith("/api/admin"):
+        return {"error": "forbidden"}, 403   # replies, and the request stops here
+    req.headers["x-seen"] = "1"              # mutates; the handler sees the change
+    return None                              # passes through
+```
+
+Scope is `/api` on purpose: a static file has no middleware on any host, so
+running it for `/about` would make `dev` and production disagree about a page.
+Returning `None` (or `undefined`, or `false`) continues; anything else is
+treated as the response.
+
+### `.env`, and the `PUBLIC_` split
+
+`.env` in the project root, `KEY=VALUE`, `#` comments, no interpolation and no
+dependency doing it:
+
+```bash
+PUBLIC_SITE_URL=https://example.com   # inlined into the client bundle
+DATABASE_URL=postgres://...           # server only
+```
+
+- `PUBLIC_*` is the only part of `.env` that reaches the browser. It is inlined
+  at build time, so `process.env.PUBLIC_SITE_URL` is a literal string by the time
+  the bundle runs.
+- Everything else stays on the server. `env("NAME")` from `hydra/server` reads it
+  in a loader, an API route, or middleware.
+- **Using a non-`PUBLIC_` variable from a client file is a build error**, naming
+  the variable and the file:
+
+```
+✘ [ERROR] src/lib/api.hys: STRIPE_KEY is not available in the browser. Only names
+  starting with PUBLIC_ are inlined into the client bundle; STRIPE_KEY stays on
+  the server. Read it in a loader (*.server.hys), an API route, or middleware —
+  or rename it to PUBLIC_STRIPE_KEY if the value really is public.
+```
+
+  The rule covers every module reachable from the entry, `.hys` included — a
+  `.hyx`-only check would miss the case a secret actually leaks through.
+- A computed key (`process.env[name]`) is also refused: it cannot be checked or
+  inlined, so it would be a silent `undefined` in the browser.
+- A variable already set in the real environment wins over `.env`, so a deploy's
+  secrets are never overridden by a file that shipped in the tarball.
+
+### `hydra build --target node|static`
+
+Two targets, and the list is closed.
+
+| target | contains |
+|---|---|
+| `static` (default) | HTML, JS, CSS. `src/api` and middleware are **not** served |
+| `node` | the same client build, plus the API routes, middleware, loaders and actions that `hydra preview` and `hydra serve` answer from |
+
+`static` is the default because it is what every release before this one
+produced; switching the default would turn a deployed API into a 404 for anyone
+who upgrades without reading the changelog. An adapter per host is a maintenance
+cost with no reader yet, so there are deliberately no presets.
+
 ### SSR for dynamic routes
 
 A route with a parameter has no single URL, so the static build cannot write one
@@ -722,6 +824,8 @@ hydra clean [--all]          remove build output
 hydra analyze [dir]          bundle size report
 hydra dev | build | preview  the meta-framework commands
 ```
+
+`hydra build` takes `--target node|static`; see "`hydra build --target`" above.
 
 Run `hydra doctor` first when a build misbehaves — it reports node, npm, bun,
 config discovery and source counts. `hydra watch` writes to `watch-out/`,

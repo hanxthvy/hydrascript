@@ -160,7 +160,7 @@ menyebut kedua berkasnya.
 Tiga fitur di bawah ini hanya boleh dikirim bersama. API route tanpa pemisahan
 rahasia adalah jebakan, bukan fitur.
 
-### F9. `.env` dengan pemisahan rahasia `BARU`
+### F9. `.env` dengan pemisahan rahasia `SELESAI`
 
 - `PUBLIC_*` boleh masuk bundel klien.
 - Selain itu hanya ada di server, dan dipakai lewat `import.meta.env` (yang
@@ -171,7 +171,21 @@ rahasia adalah jebakan, bukan fitur.
 Diverifikasi kalau: sengaja memakai kunci rahasia di komponen klien
 menggagalkan build dengan pesan yang menyebut nama variabelnya.
 
-### F10. API routes `BARU`
+**Bukti (0.10.0):** `packages/cli/env.mjs`; cek berjalan pada output
+TERKOMPILASI tiap modul di graf klien, jadi `.hys` yang diimpor komponen ikut
+terperiksa. `src/lib/leaky.hys` berisi `process.env.SECRET_KEY`:
+
+```
+✘ [ERROR] src/lib/leaky.hys:5:32: SECRET_KEY is not available in the browser.
+  Only names starting with PUBLIC_ are inlined into the client bundle;
+  SECRET_KEY stays on the server. ...
+```
+
+Uji: `api-routes.test.mjs` — "a non-PUBLIC_ variable in a client file FAILS the
+build, naming it", dan pasangannya yang membuktikan `PUBLIC_*` benar-benar
+di-inline sementara rahasianya tidak ada di `dist/`.
+
+### F10. API routes `SELESAI`
 
 `src/api/*.hys` yang mengekspor fungsi per metode.
 
@@ -191,12 +205,45 @@ dengan sengaja berisik, bukan hilang tanpa kabar.
 Diverifikasi kalau: `curl` ke endpoint dev mengembalikan JSON benar untuk GET dan
 POST; build statis memberi peringatan yang menyebut route yang dibuang.
 
-### F11. Middleware `BARU`
+**Bukti (0.10.0):** `packages/cli/api-routes.mjs`. GET/POST atas `hydra dev`:
+
+```
+GET  /api/hello  -> 200 {"ok":true,"service":"probe-api","secret_len":19}
+POST /api/hello  -> 201 {"created":"xihanzu","echo":{"name":"xihanzu"}}
+```
+
+Build statis:
+
+```
+  --target static: the server half is NOT in this build
+  dropped  /api/hello               src/api/hello.hys
+  dropped  (middleware)             src/middleware.hys
+```
+
+Satu penyimpangan dari sketsa di atas, dan alasannya: berkas contoh menulis
+`def get(req)`, padahal teks fiturnya menuntut "mengekspor". Tanpa `export`
+fungsinya lokal, build tetap hijau, dan tiap request dapat 405 — jadi itu
+sekarang error build yang menyebut berkasnya, bukan kegagalan diam.
+
+### F11. Middleware `SELESAI`
 
 Satu `src/middleware.hys` yang mengekspor `handle(req)` dan bisa membalas,
 mengubah, atau meneruskan. Bergantung pada F10.
 
 Diverifikasi kalau: middleware bisa memblokir satu path dan meneruskan sisanya.
+
+**Bukti (0.10.0):** `handleApiRequest` di `packages/cli/api-routes.mjs`, satu
+objek `req` yang dipakai middleware lalu handler (menyalin akan membuat mutasi
+tidak terlihat handler). Satu berkas, satu path diblokir, sisanya lewat:
+
+```
+GET  /api/admin/users -> 403 {"error":"blocked by middleware","path":"/api/admin/users"}
+POST /api/hello       -> 201 {"created":"again"}
+```
+
+Cakupan ditulis terang: `/api` dan ke bawah. Middleware TIDAK jalan untuk berkas
+statis, karena host statis tidak punya middleware — menjalankannya di dev akan
+membuat dev dan produksi berbeda pendapat soal `/about`.
 
 ### F12. Loader per-route `BARU`
 
@@ -214,10 +261,23 @@ navigasi klien, dan tidak ada request ganda di Network tab.
 
 ## Fase 4 — Pilihan, setelah semua di atas terbukti
 
-### F13. `hydra build --target node|static` `BARU`
+### F13. `hydra build --target node|static` `SELESAI`
 
 Dua target saja. Adapter multi-platform ala Nitro baru masuk akal kalau ada
 pengguna lain; sebelum itu jumlah target adalah biaya tanpa pembaca.
+
+**Bukti (0.10.0):** `--target` divalidasi di `packages/cli/runner.mjs`, build
+mencatat `.hydra/build.json` (`{target, mode, api}`), dan `preview` membaca
+catatan itu untuk memutuskan apakah API dipasang — bukan menebak dari ada/
+tidaknya `src/api`. Nilai ketiga ditolak sebelum apa pun di-bundle:
+
+```
+[hydra] --target must be "node" or "static", got "edge". There are deliberately only two.
+```
+
+Default tetap `static`, karena itulah yang dihasilkan semua rilis sebelumnya;
+mengubahnya akan mengubah API yang sudah ter-deploy jadi 404 untuk siapa pun
+yang upgrade tanpa membaca changelog.
 
 ---
 

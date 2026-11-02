@@ -135,9 +135,11 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
   }
   const requireFrom = createRequire(pathToFileURL(bundlePath).href);
   let mod;
+  let loadedAt = -1;
   try {
     delete requireFrom.cache[requireFrom.resolve(bundlePath)];
     mod = requireFrom(bundlePath);
+    loadedAt = fs.statSync(bundlePath).mtimeMs;
   } catch (e) {
     return { available: false, reason: `could not load the server bundle: ${e.message}` };
   }
@@ -154,6 +156,52 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
   const { renderToString } = await import(pathToFileURL(reactDomServerPath).href);
   const reactMod = await import(pathToFileURL(reactPath).href);
   const React = reactMod.default || reactMod;
+
+  /**
+   * Re-read the shell, and the bundle when it is newer than what was loaded.
+   *
+   * `hydra dev` calls this once and then rebuilds on every save, so a renderer
+   * that loaded the bundle at startup kept rendering the FIRST build for the
+   * rest of the session: an edit to a loader or a component was invisible on a
+   * dynamic route, and the only symptom was "some pages never update". Same for
+   * the shell, whose bundle `<script>` hash changes on every rebuild.
+   *
+   * Synchronous on purpose: the caller must not be able to `await` between this
+   * and `renderSync`, or two requests interleave and share the loader seed.
+   */
+  const readShell = () => {
+    let next = fs.existsSync(srcShell) ? fs.readFileSync(srcShell, 'utf8') : null;
+    if (!next) next = fs.existsSync(shellPath) ? fs.readFileSync(shellPath, 'utf8') : null;
+    if (next && fs.existsSync(builtPath)) {
+      const built = fs.readFileSync(builtPath, 'utf8');
+      const tag = /<script[^>]*src=["']([^"']*assets\/index-[^"']+)["'][^>]*>\s*<\/script>/i.exec(built);
+      if (tag && !next.includes(tag[1])) {
+        next = next.includes('</body>')
+          ? next.replace('</body>', `  ${tag[0]}\n  </body>`)
+          : next + `\n${tag[0]}\n`;
+      }
+    }
+    return next;
+  };
+
+  const ensureFresh = () => {
+    let mtime = loadedAt;
+    try {
+      mtime = fs.statSync(bundlePath).mtimeMs;
+    } catch {
+      /* the bundle is gone; keep the one in memory rather than crash a request */
+    }
+    if (mtime !== loadedAt) {
+      try {
+        delete requireFrom.cache[requireFrom.resolve(bundlePath)];
+        mod = requireFrom(bundlePath);
+        loadedAt = mtime;
+      } catch {
+        /* a half-written bundle: the previous one is still the better answer */
+      }
+    }
+    shell = readShell() || shell;
+  };
 
   // The SOURCE shell, not `dist/index.html`.
   //
@@ -180,26 +228,32 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
     }
   }
 
-  const routes = Array.isArray(mod.routes) ? mod.routes : [];
+  const routes = () => (Array.isArray(mod.routes) ? mod.routes : []);
 
   return {
     available: true,
-    routes,
+    get routes() {
+      return routes();
+    },
     /** The match for a URL, or null. */
     match(url) {
       const clean = String(url || '/').split('#')[0].split('?')[0];
-      return matchRoute(clean, routes);
+      return matchRoute(clean, routes());
     },
     /**
      * Render one URL. `request` is passed through to the loader for an SSR of a
      * POST-shaped flow; a GET passes null and the loader sees a GET event.
      */
     async render(url, { request = null } = {}) {
+      ensureFresh();
       const hit = this.match(url);
       if (!hit) return null;
       const params = hit.params;
       const pattern = hit.route.pattern;
       const data = await mod.loadFor(pattern, params, url, request);
+      // No `await` from here to `renderToString`: the loader seed is
+      // module-global, and an interleaved request would render this page with
+      // the other one's data. `ensureFresh` is synchronous for that reason.
       const element = mod.renderSync(pattern, params, url, data);
       if (!element) return null;
       const rendered = renderToString(element);
@@ -216,6 +270,7 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
     },
     /** Run just the loader, for the data endpoint. */
     async load(url, { request = null } = {}) {
+      ensureFresh();
       const hit = this.match(url);
       if (!hit) return null;
       const pattern = hit.route.pattern;

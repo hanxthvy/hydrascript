@@ -12,6 +12,20 @@ const selfRequire = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 import { writeActionBundle, bundleActions, loadActions, readBody, requestFor } from './actions.mjs';
+import { loadProjectEnv, publicEnvValues, clientEnvViolations, describeClientEnvViolation } from './env.mjs';
+import {
+  API_BUNDLE,
+  MIDDLEWARE_FILE,
+  scanApiRoutes,
+  writeApiBundle,
+  bundleApi,
+  readApiBundle,
+  readBuildRecord,
+  missingMethodExports,
+  middlewarePath,
+  handleApiRequest,
+  droppedForStatic,
+} from './api-routes.mjs';
 import { attachSocketServer, injectHmrClient } from './hmr.mjs';
 import { CompileCache, CompilePool, cacheDirFor, shouldPool, sourceFilesUnder } from './compile-cache.mjs';
 import { handleDataRequest, createRenderer, SERVER_BUNDLE } from './ssr.mjs';
@@ -83,6 +97,10 @@ const bundlerDepsCache = new Map();
 // context keeps the graph and re-resolves only what changed. Cleared when a
 // build throws, so a broken option cannot wedge the dev loop forever.
 let devEsbuildContext = null;
+// The `define` map that context was created with. A context freezes it, and
+// `PUBLIC_*` values live in it, so a `.env` edit means the context is stale and
+// must be rebuilt rather than reused.
+let devEsbuildDefineKey = null;
 
 
 async function loadBundlerDeps(cwd) {
@@ -281,15 +299,45 @@ function createHydraEsbuildPlugin(options = {}) {
     return res;
   }
 
-  return {
+  const plugin = {
     name: 'hydra-compiler-plugin',
     setup(build) {
+      // The COMPILED output is what gets checked, not the source: a comment or
+      // a doc string that mentions `process.env.API_KEY` is not a read of one,
+      // and failing on it would make the check something authors route around.
+      //
+      // The hook lives here rather than in a second `onLoad` because esbuild
+      // runs only the FIRST plugin's `onLoad` for a path, so a separate guard
+      // plugin would either shadow the compiler or have to compile again.
+      //
+      // `errors` is returned TOGETHER WITH the contents, never instead of them.
+      // An `onLoad` that returns only errors leaves the module with no exports,
+      // and esbuild then adds a second, misleading warning ("will always be
+      // undefined because the file has no exports") on top of the real one.
+      const guard = (file, res, source, loader) => {
+        if (!options.onCompiled || res.error) return null;
+        const problems = options.onCompiled(file, res.code);
+        if (!problems || problems.length === 0) return null;
+        const at = sourceLocation(source, problems[0].name);
+        return {
+          contents: rewriteDynamicImports(res.code),
+          loader,
+          resolveDir: path.dirname(file),
+          errors: problems.map((p) => ({
+            text: p.text,
+            location: at ? { file, line: at.line, column: at.column, lineText: at.lineText } : { file },
+          })),
+        };
+      };
+
       build.onLoad({ filter: /\.(hyx|hsx)$/ }, async (args) => {
         const source = await fs.promises.readFile(args.path, 'utf8');
         const res = compile(args.path, source);
         if (res.error) {
           return { errors: [{ text: res.error }] };
         }
+        const blocked = guard(args.path, res, source, 'tsx');
+        if (blocked) return blocked;
         return { contents: rewriteDynamicImports(res.code), loader: 'tsx', resolveDir: path.dirname(args.path) };
       });
 
@@ -299,10 +347,17 @@ function createHydraEsbuildPlugin(options = {}) {
         if (res.error) {
           return { errors: [{ text: res.error }] };
         }
+        const blocked = guard(args.path, res, source, 'js');
+        if (blocked) return blocked;
         return { contents: rewriteDynamicImports(res.code), loader: 'js', resolveDir: path.dirname(args.path) };
       });
     },
   };
+  // A NON-ENUMERABLE extra, so esbuild's plugin validation (which rejects
+  // unknown keys) does not see it, while a build-time check can still ask
+  // "what does this file emit?" without executing the module.
+  Object.defineProperty(plugin, 'compile', { value: compile, enumerable: false });
+  return plugin;
 }
 
 function copyDirRecursive(src, dest) {
@@ -389,6 +444,89 @@ function injectLoaderData(html, pattern, data, url = pattern) {
     return html.replace(/<script type="application\/json" id="__hydra_data__">[\s\S]*?<\/script>/, tag);
   }
   return html.includes('</body>') ? html.replace('</body>', `  ${tag}\n  </body>`) : html + `\n${tag}\n`;
+}
+
+/**
+ * Drop `process` "never bound" warnings that are only environment reads.
+ *
+ * `process.env.NAME` is now the documented way for a client to read a
+ * `PUBLIC_` variable and for a server file to read any variable, but the
+ * semantic checker has no concept of environment access — it sees a bare name
+ * and reports it as unbound, which is fatal under `--strict`. Left alone, that
+ * makes `.env` unusable and teaches authors to set `HYDRA_NO_CHECK=1`, which
+ * turns off every OTHER check as well.
+ *
+ * The filter is per-WARNING and reads the source at the reported position, so a
+ * genuine `process.exit()` in a component keeps its warning: there is no
+ * `process` object in a browser, and that line is a real crash waiting.
+ */
+function withoutEnvOnlyProcessWarnings(text, cwd = process.cwd()) {
+  if (!text) return '';
+  const kept = [];
+  for (const line of text.split('\n')) {
+    const m = /^(.+?):(\d+):(\d+): warning: `process` is used but never bound/.exec(line);
+    if (m) {
+      const file = path.isAbsolute(m[1]) ? m[1] : path.resolve(cwd, m[1]);
+      let src = null;
+      try {
+        src = fs.readFileSync(file, 'utf8');
+      } catch {
+        src = null;
+      }
+      // Per FILE, not per reported line: the checker anchors a `.hyx` warning
+      // at the enclosing `component`, so the reported position is often not
+      // where `process` appears. What matters is whether EVERY use in this file
+      // is an environment read — one bare `process.exit()` and the warning is
+      // real, because there is no `process` object in a browser.
+      if (src !== null) {
+        const uses = [...src.matchAll(/\bprocess\b/g)];
+        const allEnv = uses.length > 0 && uses.every((u) =>
+          /^\s*(\.\s*env\b|\[\s*["']env["']\s*\])/.test(src.slice(u.index + 7)),
+        );
+        if (allEnv) continue;
+      }
+    }
+    kept.push(line);
+  }
+  const out = kept.join('\n').trim();
+  // A summary line that now describes zero findings is not a failure. The
+  // first line of the block IS a summary ("2 warning(s), and --strict is on"),
+  // so it has to go when the per-file lines above it were all filtered out.
+  if (/^\d+ warning\(s\)/.test(out) || /^0 warning/.test(out)) {
+    return out.split('\n').slice(1).join('\n').trim();
+  }
+  return out;
+}
+
+/**
+ * The line a violation's variable is read on, in the SOURCE file.
+ *
+ * esbuild reports an error location against what `onLoad` returned, which is
+ * compiled output — a `.hyx` that runs through the emitter is not the file the
+ * author opens, so "line 12" would point at the wrong line. The source is
+ * searched for the name instead. Not found (a computed access, or a name that
+ * only exists after rewriting) means no location is reported at all, which is
+ * still a build failure and still names the file and the variable.
+ */
+function sourceLocation(source, name) {
+  if (!name) return null;
+  const lines = String(source || '').split('\n');
+  const hit = (text) =>
+    text.includes(`process.env.${name}`) ||
+    text.includes(`process.env["${name}"]`) ||
+    text.includes(`import.meta.env.${name}`);
+  // A line that mentions the name AND an env access first: the comment above a
+  // read is not the read, and pointing at it makes the author look one line off.
+  for (let i = 0; i < lines.length; i++) {
+    if (hit(lines[i])) {
+      return { line: i + 1, column: lines[i].indexOf(name), lineText: lines[i] };
+    }
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const at = lines[i].indexOf(name);
+    if (at !== -1) return { line: i + 1, column: at, lineText: lines[i] };
+  }
+  return null;
 }
 
 function explainClientBuildError(err, cwd) {
@@ -647,7 +785,7 @@ function tsconfigAliases(cwd) {
  */
 function envDefines(mode, base, ssr = false) {
   const isProd = mode === 'production';
-  return {
+  const defines = {
     'process.env.NODE_ENV': JSON.stringify(isProd ? 'production' : 'development'),
     'import.meta.env.MODE': JSON.stringify(mode),
     'import.meta.env.DEV': String(!isProd),
@@ -655,6 +793,18 @@ function envDefines(mode, base, ssr = false) {
     'import.meta.env.SSR': String(ssr),
     'import.meta.env.BASE_URL': JSON.stringify(base),
   };
+  // `PUBLIC_*` is the ONLY part of `.env` that becomes a value here.
+  //
+  // Inlined as literal member defines rather than as one `import.meta.env`
+  // object, because esbuild refuses an object literal as a define value — and
+  // because a literal is what makes an inlined secret visible in a diff of the
+  // output. Everything else stays in `process.env` on the server, and a client
+  // file that reads one fails the build (see `clientEnvViolations`).
+  for (const [k, v] of Object.entries(publicEnvValues())) {
+    defines[`process.env.${k}`] = JSON.stringify(v);
+    defines[`import.meta.env.${k}`] = JSON.stringify(v);
+  }
+  return defines;
 }
 
 /** Escape text for interpolation into HTML. */
@@ -913,7 +1063,39 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   const mode = opts.mode || config.mode || (opts.dev ? 'development' : 'production');
   if (mode === 'development') process.env.NODE_ENV = 'development';
 
+  // 0a. `.env`, loaded BEFORE anything is compiled.
+  //
+  // Before, specifically, because the client bundle inlines `PUBLIC_*` at
+  // define time: loading the file after the bundle is built would leave the
+  // first build of a fresh checkout with empty values, and the second one
+  // correct. `dev` reloads it on every rebuild too, so editing `.env` behaves
+  // like editing a source file — the server reads a fresh process.env because
+  // `hydra/server`'s `env()` reads it at call time, not at import time.
+  const envLoad = loadProjectEnv(cwd);
+  if (envLoad.applied.length > 0) {
+    console.log(`[hydra] .env: ${envLoad.applied.length} variable(s) loaded`);
+  }
+
+  // 0b. The build target. Two, and the list is closed.
+  //
+  //   node   — the client bundle plus a runnable server (`hydra serve`): SSR,
+  //            loaders, actions and every `src/api` route answer.
+  //   static — HTML, JS and CSS only. The server half is NOT in the artifact,
+  //            and the routes it would have served are printed as dropped.
+  //
+  // `static` is the default because that is what every previous release
+  // produced; changing the default would silently turn a deployed API into a
+  // 404 for everyone who upgrades without reading the changelog.
+  const target = opts.target || (opts.dev ? 'node' : config.build?.target) || 'static';
+  if (target !== 'node' && target !== 'static') {
+    throw new Error(
+      `[hydra] --target must be "node" or "static", got "${target}". ` +
+        `There are deliberately only two: an adapter per host is a maintenance cost with no reader.`,
+    );
+  }
+
   console.log(`[hydra] Building for ${mode} (Hydra native bundler)...`);
+  if (target === 'node') console.log('[hydra] target: node — server routes are included');
 
   const outDir = path.resolve(cwd, config.outputDir || 'dist');
   const assetsDir = path.join(outDir, 'assets');
@@ -1003,6 +1185,31 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   const { esbuild, postcss, tailwindcss, autoprefixer } = await loadBundlerDeps(cwd);
   phase('1. load bundler deps', _p);
 
+  // 0c. `src/api` and `src/middleware.hys`, bundled into `.hydra/api.cjs`.
+  //
+  // Scanned before the client bundle for the same reason the action table is:
+  // node cannot load a `.hys`, and the dev server must not carry a second
+  // compiler just to answer a POST. Written for BOTH targets even though a
+  // static build will not serve them, because `hydra preview` after a static
+  // build should still behave like the project, and because a scan that only
+  // runs sometimes is a scan that drifts.
+  //
+  // A subdirectory or a private file in `src/api` is REPORTED, never silently
+  // skipped: "my route 404s" with no message is the failure this repository
+  // keeps paying for.
+  const apiTable = scanApiRoutes(cwd);
+  for (const ig of apiTable.ignored) {
+    console.log(`[hydra] src/api: ignoring ${ig.file} — ${ig.reason}`);
+  }
+  if (apiTable.routes.length > 0 || fs.existsSync(path.join(cwd, MIDDLEWARE_FILE))) {
+    console.log(
+      `[hydra] api: ${apiTable.routes.length} route(s)` +
+        (apiTable.routes.length > 0 ? ` (${apiTable.routes.map((r) => r.pattern).join(', ')})` : '') +
+        (fs.existsSync(path.join(cwd, MIDDLEWARE_FILE)) ? ', middleware: src/middleware.hys' : ''),
+    );
+  }
+  const apiEntry = writeApiBundle(cwd, apiTable);
+
   const pkgRoot = path.resolve(HERE, '../..');
   // The three runtime specifiers, resolved from one place so the client and the
   // SSG pass cannot disagree about which file each means.
@@ -1043,6 +1250,62 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
       // every form because one `.hys` did not compile is worse than a build that
       // says which file.
       throw new Error(`[hydra] could not build the action table: ${e.message}`);
+    }
+  }
+
+  // The API table, bundled the same way and for the same reason.
+  //
+  // A compile error in `src/api` stops the build here, before the client
+  // bundle: an API route that silently did not compile would answer 404 for a
+  // URL the author wrote, and the terminal would say the build succeeded.
+  let apiBundlePath = null;
+  if (apiEntry) {
+    try {
+      await bundleApi(esbuild, apiEntry, {
+        outfile: path.join(cwd, API_BUNDLE),
+        cwd,
+        pkgRoot,
+        hydraAlias,
+        serverAlias,
+        compilerPlugin: createHydraEsbuildPlugin,
+      });
+      apiBundlePath = path.join(cwd, API_BUNDLE);
+      // A route file whose method functions were never EXPORTED would bundle
+      // cleanly and then answer 405 to every request. That is a build that
+      // succeeds and a feature that does not exist, so it is caught here while
+      // the file name is still the thing on screen.
+      //
+      // Checked on the COMPILED source rather than by loading the bundle:
+      // requiring it would execute whatever a module does at import time, and a
+      // build step that connects to a database is not a build step.
+      const compileOnly = createHydraEsbuildPlugin();
+      const empty = missingMethodExports(apiTable.routes, (file) =>
+        compileOnly.compile(file, fs.readFileSync(file, 'utf8')),
+      );
+      if (empty.length > 0) {
+        throw new Error(
+          `[hydra] ${empty.join(', ')} exports no HTTP method.\n` +
+            `= src/api files must EXPORT one function per method:\n` +
+            `    export def get(req):\n` +
+            `        return {"ok": True}\n` +
+            `  without \`export\` the function is local to the file and no request can reach it`,
+        );
+      }
+      // The same silence for middleware: `def handle(req)` without `export`
+      // compiles and then does nothing at all, which looks exactly like a
+      // middleware whose conditions never match.
+      const mw = middlewarePath(cwd);
+      if (mw) {
+        const res = compileOnly.compile(mw, fs.readFileSync(mw, 'utf8'));
+        if (!res.error && !/\bexport\s+(?:async\s+)?(?:function\s+handle|const\s+handle)\b/.test(String(res.code))) {
+          throw new Error(
+            `[hydra] ${MIDDLEWARE_FILE} exports no \`handle\`.\n` +
+              `= write \`export def handle(req):\` and return None to pass a request through`,
+          );
+        }
+      }
+    } catch (e) {
+      throw new Error(`[hydra] could not build the API routes: ${e.message}`);
     }
   }
 
@@ -1095,15 +1358,17 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     if (bin && fs.existsSync(srcDir)) {
       const res = spawnSync(bin, ['check', '--strict', srcDir], { encoding: 'utf8' });
       if (res.status === 1) {
-        // Say what is wrong in the words that matter: not "warning", but the
-        // reason a warning is fatal here.
-        const detail = (res.stderr || res.stdout || '').trim();
-        throw new Error(
-          `[hydra] semantic check failed. These are names no runtime provides, so ` +
-            `the bundle would throw in the browser instead of failing here ` +
-            `(the runtime gate cannot see code a render never runs):\n${detail}\n` +
-            `= fix the names above, or set HYDRA_NO_CHECK=1 to build anyway`,
-        );
+        const detail = withoutEnvOnlyProcessWarnings((res.stderr || res.stdout || '').trim(), cwd);
+        if (detail !== '') {
+          // Say what is wrong in the words that matter: not "warning", but the
+          // reason a warning is fatal here.
+          throw new Error(
+            `[hydra] semantic check failed. These are names no runtime provides, so ` +
+              `the bundle would throw in the browser instead of failing here ` +
+              `(the runtime gate cannot see code a render never runs):\n${detail}\n` +
+              `= fix the names above, or set HYDRA_NO_CHECK=1 to build anyway`,
+          );
+        }
       }
     }
   }
@@ -1317,7 +1582,20 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     metafile: true,
     plugins: [
       runtimeSpecifierPlugin({ hydra: hydraAlias, 'hydra/client': clientAlias }),
-      createHydraEsbuildPlugin({ cache: compileCache }),
+      createHydraEsbuildPlugin({
+        cache: compileCache,
+        // The `PUBLIC_` split, enforced where it can actually be enforced: every
+        // compiled module in the client graph. A `.hys` that a component imports
+        // is caught too, which a `.hyx`-only rule would have missed — and that
+        // is exactly the case a secret leaks through.
+        onCompiled: (file, code) => {
+          const rel = path.relative(cwd, file).split(path.sep).join('/');
+          return clientEnvViolations(code).map((v) => ({
+            name: v.name,
+            text: describeClientEnvViolation(file, rel, v),
+          }));
+        },
+      }),
       // `hydra:routes` ALWAYS resolves, with an empty table when the project has
       // no pages directory. That is what lets the runtime import it statically:
       // a synchronous table is required for the client's first paint to match
@@ -1369,9 +1647,20 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   if (opts.dev) {
     // Incremental in dev: the context is created once and every later save is
     // a rebuild(), which reuses the parsed graph of every unchanged file.
+    //
+    // Reused only while it still describes THIS build. The context freezes its
+    // `define` map at creation, and `PUBLIC_*` values are defines — so a `.env`
+    // edit would rebuild every module against the old values and the page would
+    // keep showing them, with the build reporting success. That is why the
+    // defines are compared and the context dropped when they moved.
+    const defineKey = JSON.stringify(clientBuildOptions.define);
     try {
-      if (!devEsbuildContext) {
+      if (!devEsbuildContext || devEsbuildDefineKey !== defineKey) {
+        if (devEsbuildContext) {
+          try { await devEsbuildContext.dispose(); } catch {}
+        }
         devEsbuildContext = await esbuild.context(clientBuildOptions);
+        devEsbuildDefineKey = defineKey;
       }
       clientResult = await devEsbuildContext.rebuild();
     } catch (err) {
@@ -1382,6 +1671,7 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
         try { await devEsbuildContext.dispose(); } catch {}
       }
       devEsbuildContext = null;
+      devEsbuildDefineKey = null;
       throw new Error(explainClientBuildError(err, cwd));
     }
   } else {
@@ -1754,6 +2044,32 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
 
   phase('5. ssg render', _p);
 
+  // The build's own record of what it is. `preview` reads this to decide
+  // whether the API routes it can see in the project are actually in the
+  // artifact: a preview that mounts handlers a static build dropped would show
+  // a working app that 404s the moment it is deployed.
+  try {
+    fs.writeFileSync(
+      path.join(cwd, '.hydra', 'build.json'),
+      JSON.stringify({ target, mode, api: apiTable.routes.map((r) => r.pattern) }, null, 2),
+      'utf8',
+    );
+  } catch (err) {
+    console.error(`[hydra] could not write .hydra/build.json: ${err.message}`);
+  }
+
+  // The static target drops the whole server half, and says so with the names
+  // of the routes rather than a one-line note. An endpoint that builds
+  // "successfully" and 404s in production is the failure this text prevents.
+  if (target === 'static') {
+    const dropped = droppedForStatic(cwd, apiTable);
+    if (dropped.length > 0) console.log(dropped.join('\n'));
+  } else if (apiTable.routes.length > 0) {
+    console.log(
+      `[hydra] api: ${apiTable.routes.length} route(s) in this build — \`hydra preview\` serves them`,
+    );
+  }
+
   const ms = Date.now() - t0;
   console.log(`[hydra] Built successfully in ${ms}ms -> ${path.relative(cwd, outDir)}/`);
   if (compileCache) {
@@ -1991,6 +2307,30 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
       return;
     }
 
+    // The API layer first: `src/api` is part of the project, and the SPA
+    // fallback below would otherwise answer `/api/hello` with index.html and a
+    // 200 — a JSON endpoint that answers HTML is worse than one that is
+    // missing, because the client's `.json()` fails with a parse error that
+    // says nothing about the real problem.
+    //
+    // It is checked BEFORE the proxy because the proxy exists for a backend
+    // this build does not own, and a project that wrote `src/api/hello.hys`
+    // has said it owns `/api/hello`. Overlap between the two is reported at
+    // startup by the caller rather than resolved silently here.
+    //
+    // Scope, stated plainly: middleware runs for requests that reach the API
+    // layer, which is `/api` and below. It does not run for a static file, and
+    // that is not an omission — a static host has no middleware, so pretending
+    // otherwise would make dev and production disagree about `/about`.
+    if (opts.api && (reqPath === '/api' || reqPath.startsWith('/api/'))) {
+      // The return value is load-bearing: `false` means middleware passed and
+      // no handler matched, and the 404 below still has to be written. Calling
+      // this and returning unconditionally left the request hanging with no
+      // response at all — a timeout, which reads as "the server is down".
+      const answered = await handleApiRequest(req, res, rawUrl, opts.api);
+      if (answered) return;
+    }
+
     // Proxy first. `/api/...` is a route the app expects a backend to answer,
     // and the SPA fallback below would otherwise hand it index.html with a 200.
     const target = matchProxy(proxy, reqPath);
@@ -2041,6 +2381,21 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
         res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ error: err && err.message ? err.message : String(err) }));
       });
+      return;
+    }
+
+    // A route the API layer does not have is a 404, not index.html. The layer
+    // above only answers when a handler matched, so `/api/nope` would otherwise
+    // fall through to the SPA shell and return HTML with a 200 to a client that
+    // asked for JSON.
+    if (opts.api && (reqPath === '/api' || reqPath.startsWith('/api/'))) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(
+        JSON.stringify({
+          error: `no API route for ${req.method} ${reqPath}`,
+          hint: 'src/api/*.hys exports one function per HTTP method (get, post, put, patch, delete)',
+        }),
+      );
       return;
     }
 
@@ -2203,6 +2558,9 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
 }
 
 export async function runPreview(cwd = process.cwd(), opts = {}) {
+  // `.env` again, because `preview` is a separate process from the build that
+  // produced the artifact and `env()` reads `process.env` at call time.
+  loadProjectEnv(cwd);
   const config = readConfig(cwd);
   const outDir = path.resolve(cwd, config.outputDir || 'dist');
   const port = opts.port || config.server?.port || 5173;
@@ -2211,7 +2569,10 @@ export async function runPreview(cwd = process.cwd(), opts = {}) {
 
   if (!fs.existsSync(outDir) || !fs.existsSync(indexPath)) {
     console.log('[hydra] Output directory or index.html not found. Running build first...');
-    await runBuild(cwd);
+    // Rebuild with the target this project used last time, so `preview` after
+    // deleting `dist/` does not silently downgrade a node project to static and
+    // then report its own API routes as missing.
+    await runBuild(cwd, { target: opts.target || readBuildRecord(cwd).target });
   }
 
   // The server bundle renders the routes the static build could not write.
@@ -2229,11 +2590,24 @@ export async function runPreview(cwd = process.cwd(), opts = {}) {
   }
 
   console.log('[hydra] Previewing production build:');
+  // The API routes are mounted only when the artifact was built for the node
+  // target. Mounting them from a static build would show a working app here and
+  // a 404 after deploy — the exact gap `--target static` prints a warning
+  // about, and it would be dishonest to paper over it in preview.
+  const buildTarget = readBuildRecord(cwd).target || 'static';
+  const apiForPreview = buildTarget === 'node' ? readApiBundle(cwd) : null;
+  if (buildTarget !== 'node' && (scanApiRoutes(cwd).routes.length > 0 || fs.existsSync(path.join(cwd, MIDDLEWARE_FILE)))) {
+    console.log(
+      '[hydra] preview: this build is `--target static`, so src/api is not served. ' +
+        'Rebuild with `hydra build --target node` to preview the API.',
+    );
+  }
   await serveDirectory(outDir, port, host, {
     base: normalizeBase(config.base),
     proxy: config.server?.proxy,
     actions: readActionBundle(cwd),
     ssr: renderer.available ? renderer : null,
+    api: apiForPreview,
     version: opts.version,
     sha: opts.sha,
     configPath: path.join(cwd, 'hydraconfig.json'),
@@ -2271,6 +2645,10 @@ export async function runDev(cwd = process.cwd(), opts = {}) {
     proxy: config.server?.proxy,
     // Re-read on every dev build, because the bundle is regenerated per build.
     actions: readActionBundle(cwd),
+    // `dev` is always the node target: a dev server that dropped `src/api`
+    // would make the feature impossible to develop. The static target exists
+    // for the artifact, not for the loop.
+    api: readApiBundle(cwd),
     ssr: renderer.available ? renderer : null,
     // The dev server injects the HMR client into every HTML response, because
     // the build wrote the file and the page has to reach the browser with it.
@@ -2294,7 +2672,7 @@ export async function runDev(cwd = process.cwd(), opts = {}) {
     // A save fires several watch events; the last one is the one that matters,
     // so the rebuild is debounced rather than run per event.
     let timer = null;
-    fs.watch(srcDir, { recursive: true }, () => {
+    const rebuild = () => {
       if (timer) clearTimeout(timer);
       timer = setTimeout(async () => {
         if (building) return;
@@ -2312,7 +2690,23 @@ export async function runDev(cwd = process.cwd(), opts = {}) {
           building = false;
         }
       }, 60);
-    });
+    };
+    fs.watch(srcDir, { recursive: true }, rebuild);
+
+    // `.env` is watched too, and separately, because it lives at the project
+    // root: editing it is editing what the client bundle inlines and what the
+    // server reads, and a change that only takes effect after a restart is a
+    // change nobody believes happened. `watchFile` polls the inode, which is
+    // what makes it survive the replace-on-save an editor does — `fs.watch` on
+    // a file stops firing the first time that happens.
+    const envFile = path.join(cwd, '.env');
+    if (fs.existsSync(envFile)) {
+      fs.watchFile(envFile, { interval: 300 }, (cur, prev) => {
+        if (cur.mtimeMs === prev.mtimeMs) return;
+        console.log('[hydra] .env changed — rebuilding');
+        rebuild();
+      });
+    }
   }
 }
 
@@ -2623,6 +3017,22 @@ if (hostIdx !== -1) {
   hostOverride = argv[hostIdx].includes('=') ? argv[hostIdx].split('=')[1] : argv[hostIdx + 1];
 }
 
+// `--target` for `build`. Two values, validated here so the error names the
+// command line rather than surfacing as a confusing path inside the build.
+let targetOverride;
+const targetIdx = argv.findIndex((a) => a === '--target' || a.startsWith('--target='));
+if (targetIdx !== -1) {
+  const raw = argv[targetIdx].includes('=') ? argv[targetIdx].split('=')[1] : argv[targetIdx + 1];
+  if (raw !== 'node' && raw !== 'static') {
+    console.error(
+      `[hydra] --target must be "node" or "static", got ${raw === undefined ? '(nothing)' : `"${raw}"`}. ` +
+        `There are deliberately only two.`,
+    );
+    process.exit(1);
+  }
+  targetOverride = raw;
+}
+
 // Which compiler is actually talking. A supervisor or a person debugging a
 // stray server needs this, and it is the one fact that goes missing when a
 // checkout is stale.
@@ -2646,7 +3056,7 @@ function gitSha() {
 }
 
 const cwd = process.cwd();
-const runOpts = { port: portOverride, host: hostOverride, version: VERSION, sha: gitSha() };
+const runOpts = { port: portOverride, host: hostOverride, version: VERSION, sha: gitSha(), target: targetOverride };
 
 // Only act when this file IS the program. Importing the runner used to start a
 // dev server as a side effect, which made the server behaviour untestable.
@@ -2691,7 +3101,7 @@ if (!invokedDirectly) {
       process.exit(1);
     });
 } else if (cmd === 'build') {
-  runBuild(cwd).catch((err) => {
+  runBuild(cwd, { target: targetOverride }).catch((err) => {
     console.error(err);
     process.exit(1);
   });
