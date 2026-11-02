@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/hanxthvy/hydrascript/main/schema.json",
+  "name": "runtime-semantics",
+  "version": "0.1.0",
+  "root": "./src",
+  "outputDir": "./dist",
+  "base": "/",
+  "entries": {
+    "app": "./src/main.hyx"
+  },
+  "server": {
+    "port": 5173,
+    "host": "127.0.0.1"
+  },
+  "compiler": {
+    "target": "react-19",
+    "strict": true
+  },
+  "rendering": {
+    "ssg": true
+  },
+  "styling": {
+    "tailwind": false
+  }
+}

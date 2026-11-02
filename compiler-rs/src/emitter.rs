@@ -402,7 +402,7 @@ pub fn free_func(m: &str) -> Option<&'static str> {
         "get" => Some("dict_get"),
         "setdefault" => Some("dict_setdefault"),
         "update" => Some("dict_update"),
-        "pop" => Some("dict_pop"),
+        "pop" => Some("pop_of"),
         "popitem" => Some("dict_popitem"),
         "fromkeys" => Some("dict_fromkeys"),
         // list
@@ -426,6 +426,28 @@ pub fn free_func(m: &str) -> Option<&'static str> {
 
 
 // [xihanzu-NR]
+/// Python truthiness for a CONDITION: an empty list, dict or string and 0 are
+/// falsy, where JS calls `[]` and `{}` true.
+///
+/// Only non-trivial tests are wrapped. `if x == 1`, `if not x` and `if fn()` are
+/// already correct in JS, and wrapping them would emit `truthy(x === 1)` — noise
+/// that makes the output harder to read for no behaviour change.
+pub fn py_cond(cond: &str) -> String {
+    // A bare `!expr` is already Python's `not`, because `not` lowers to `!` and
+    // JS `!` agrees with Python for every falsy scalar; the sequence cases are
+    // what differ, and those come through as a bare NAME or a member access.
+    let trimmed = cond.trim();
+    if trimmed.starts_with('!') || trimmed.starts_with("Boolean(") || trimmed.starts_with("truthy(") {
+        return cond.to_string();
+    }
+    if trimmed.contains(" == ") || trimmed.contains(" === ") || trimmed.contains(" != ")
+        || trimmed.contains(" !== ") || trimmed.starts_with("!!(") || trimmed.starts_with("(")
+    {
+        return cond.to_string();
+    }
+    format!("truthy({})", cond)
+}
+
 /// Every name assigned anywhere inside `nodes`, including nested functions.
 ///
 /// Used to tell a closure's captures from its own bindings: a name the body assigns is
@@ -1262,7 +1284,24 @@ impl Emitter {
             }
             Kind::Index { obj, index } => {
                 let o = self.js(obj)?;
+                // A NEGATIVE LITERAL index is Python's count-from-the-end and
+                // JS's missing property: `xs[-1]` returned undefined where the
+                // author meant the last element. Only the literal form is
+                // rewritten — an expression's sign is not known here.
                 let i = self.js(index)?;
+                // `-1` parses as Unary(-, Num(1)), not as a negative literal,
+                // so both shapes name a negative index.
+                let negative_literal = match &index.kind {
+                    Kind::Num(n) => n.starts_with('-'),
+                    Kind::Unary { op, operand } => {
+                        op == "-" && matches!(operand.kind, Kind::Num(_))
+                    }
+                    _ => false,
+                };
+                if negative_literal {
+                    self.used_helpers.borrow_mut().insert("py_at".into());
+                    return Ok(format!("py_at({}, {})", o, i));
+                }
                 Ok(format!("{}[{}]", o, i))
             }
             Kind::OptIndex { obj, index } => {
@@ -1288,12 +1327,41 @@ impl Emitter {
                 // `//` — floor division. JS `/` truncates toward zero, which
                 // disagrees with Python for negatives (-7 // 2 is -4 in Python,
                 // -3 in JS), so the floor is explicit.
+                // `%` in Python takes the sign of the DIVISOR (-7 % 3 is 2,
+                // JS says -1). A ring index or a bucket calculation then lands
+                // one cell off for negative input and nothing throws.
+                if op == "%" {
+                    self.used_helpers.borrow_mut().insert("py_mod".into());
+                    return Ok(format!("py_mod({}, {})", l, r));
+                }
+                // `"ab" * 3` repeats in Python and is NaN in JS; `[0] * 3` is a
+                // number where a list was meant. Only a LITERAL left operand is
+                // rewritten: that is the case the author cannot see is wrong, and
+                // the same bound the `+` case above already accepts. A variable
+                // holding a string still emits `*` — detectable statically is not
+                // the same as detectable at all.
+                if op == "*" && matches!(left.kind, Kind::Str { .. } | Kind::List(_) | Kind::Tuple(_)) {
+                    self.used_helpers.borrow_mut().insert("py_repeat".into());
+                    return Ok(format!("py_repeat({}, {})", l, r));
+                }
                 if op == "floordiv" {
                     return Ok(format!("Math.floor({} / {})", l, r));
                 }
                 // Python's `is` / `is not` are identity tests. JavaScript has no
                 // `is` operator at all — leaving it in produced `(a is b)`, which
                 // is a syntax error. `===` is the closest faithful translation.
+                // `==` on two sequences: Python compares by VALUE, JS by
+                // identity, so `[1, 2] == [1, 2]` was false and the guard took
+                // the wrong branch. Only when an operand is visibly a list,
+                // dict or tuple literal — a scalar comparison must stay `===`,
+                // which is what every `x == 1` in the language relies on.
+                let structural = matches!(left.kind, Kind::List(_) | Kind::Tuple(_) | Kind::Dict(_))
+                    || matches!(right.kind, Kind::List(_) | Kind::Tuple(_) | Kind::Dict(_));
+                if structural && (op == "===" || op == "!==") {
+                    let helper = if op == "===" { "py_eq" } else { "py_ne" };
+                    self.used_helpers.borrow_mut().insert(helper.into());
+                    return Ok(format!("{}({}, {})", helper, l, r));
+                }
                 if op == "is" {
                     return Ok(format!("({} === {})", l, r));
                 }
@@ -1304,6 +1372,20 @@ impl Emitter {
             }
             Kind::Unary { op, operand } => {
                 let v = self.js(operand)?;
+                // `not []` is True in Python: an empty list is falsy. `(![])` is
+                // false, because JS calls every array truthy. A list, dict or
+                // string LITERAL is visible here, so the Python answer is chosen
+                // without a runtime call; anything else keeps JS's `!`, which
+                // agrees with Python for the scalars that use it.
+                if op == "!" {
+                    if let Some(helper) = match &operand.kind {
+                        Kind::List(_) | Kind::Tuple(_) | Kind::Dict(_) => Some("truthy"),
+                        _ => None,
+                    } {
+                        self.used_helpers.borrow_mut().insert(helper.into());
+                        return Ok(format!("(!{}({}))", helper, v));
+                    }
+                }
                 Ok(format!("({}{})", op, v))
             }
             Kind::Ternary { test, body, orelse } => {
@@ -1503,8 +1585,22 @@ impl Emitter {
                         if args.len() == 1 {
                             let arg = self.js(&args[0])?;
                             match id.as_str() {
-                                "max" => return Ok(format!("Math.max(...{})", arg)),
-                                "min" => return Ok(format!("Math.min(...{})", arg)),
+                                // `max(xs)` / `min(xs)` — ONE sequence argument.
+                                // These used to spread it (`Math.max(...xs)`), which
+                                // is right for an array but NaN for anything else,
+                                // and the `args.len() == 1` arm returned
+                                // `Math.max(...xs)` for a LIST too, so a caller with
+                                // a plain array was fine while `max(range(3))`
+                                // depended on the spread of a non-iterable. The
+                                // runtime helper answers for both.
+                                "max" => {
+                                    self.used_helpers.borrow_mut().insert("max_of".into());
+                                    return Ok(format!("max_of({})", arg));
+                                }
+                                "min" => {
+                                    self.used_helpers.borrow_mut().insert("min_of".into());
+                                    return Ok(format!("min_of({})", arg));
+                                }
                                 // `type(x)` -> the constructor; `type(x).__name__`
                                 // then resolves through the `__name__` -> `name` map.
                                 "type" => return Ok(format!("({}).constructor", arg)),
@@ -1660,15 +1756,40 @@ impl Emitter {
                                 return Ok(format!("divmod({})", arg));
                             }
                             "str" => return Ok(format!("String({})", arg)),
-                            "int" => return Ok(format!("parseInt({})", arg)),
-                            "float" => return Ok(format!("parseFloat({})", arg)),
+                            // `parseInt("12px")` is 12 and Python RAISES. The
+                            // runtime constructors do the Python thing; a silent
+                            // 12 from "12px" is a corrupt number that travels.
+                            "int" => {
+                                self.used_helpers.borrow_mut().insert("int".into());
+                                return Ok(format!("int({})", arg));
+                            }
+                            "float" => {
+                                self.used_helpers.borrow_mut().insert("float".into());
+                                return Ok(format!("float({})", arg));
+                            }
                             "abs" => return Ok(format!("Math.abs({})", arg)),
-                            "round" => return Ok(format!("Math.round({})", arg)),
+                            // `round(x)` — Python's tie-to-even, not Math.round.
+                            // `round(2.5)` is 2 in Python and 3 in JS.
+                            "round" => {
+                                self.used_helpers.borrow_mut().insert("round_py".into());
+                                return Ok(format!("round_py({})", arg));
+                            }
                             "sum" => return Ok(format!("{}.reduce((a, b) => a + b, 0)", arg)),
-                            "sorted" => return Ok(format!("{}.slice().sort()", arg)),
+                            // The runtime sorts numbers numerically; the bare
+                            // `.sort()` compares string forms and puts [10,100,9]
+                            // in that order. Silent, green build, wrong list.
+                            "sorted" => {
+                                self.used_helpers.borrow_mut().insert("sorted".into());
+                                return Ok(format!("sorted({})", arg));
+                            }
                             "reversed" => return Ok(format!("{}.slice().reverse()", arg)),
                             "list" => return Ok(format!("{}.slice()", arg)),
-                            "bool" => return Ok(format!("Boolean({})", arg)),
+                            // `bool([])` is False in Python and `Boolean([])` is true in
+                            // JS. The runtime helper is the Python answer.
+                            "bool" => {
+                                self.used_helpers.borrow_mut().insert("truthy".into());
+                                return Ok(format!("truthy({})", arg));
+                            }
                             // Python's print is the obvious debugging verb; a
                             // Python dev reaches for it without thinking.
                             "print" => return Ok(format!("console.log({})", arg)),
@@ -2328,7 +2449,11 @@ impl Emitter {
                 _ => Ok(format!("{{{}}}", self.js(e)?)),
             },
             Kind::If { test, body, orelse } => {
-                let cond = self.js(test)?;
+                let cond0 = self.js(test)?;
+                let cond = crate::emitter::py_cond(&cond0);
+                if cond.starts_with("truthy(") {
+                    self.used_helpers.borrow_mut().insert("truthy".into());
+                }
                 let b = Self::as_expr(&self.frag(body, ind)?);
                 if let Some(ore) = orelse {
                     if ore.len() == 1 && matches!(&ore[0].kind, Kind::If { .. }) {
@@ -2825,6 +2950,10 @@ impl Emitter {
             }
             Kind::If { test, body, orelse } => {
                 let cond = self.js(test)?;
+                let cond = crate::emitter::py_cond(&cond);
+                if cond.starts_with("truthy(") {
+                    self.used_helpers.borrow_mut().insert("truthy".into());
+                }
                 self.w(&format!("if ({}) {{", cond));
                 self.depth += 1;
                 for stmt in body {
@@ -2864,6 +2993,10 @@ impl Emitter {
             // the source, 0 in the emitted JS.
             Kind::While { test, body } => {
                 let cond = self.js(test)?;
+                let cond = crate::emitter::py_cond(&cond);
+                if cond.starts_with("truthy(") {
+                    self.used_helpers.borrow_mut().insert("truthy".into());
+                }
                 self.w(&format!("while ({}) {{", cond));
                 self.depth += 1;
                 if body.is_empty() {
@@ -3409,8 +3542,32 @@ impl Emitter {
         if !helpers.is_empty() {
             let mut h = helpers;
             h.sort();
-            self.imports
-                .insert(format!("import {{ {} }} from 'hydra';", h.join(", ")));
+            // The author may already have imported some of these by hand
+            // (`from "hydra" import sorted`). Emitting a second `import { sorted }`
+            // is a duplicate binding, which esbuild reports as
+            // "The symbol "sorted" has already been declared" — so every helper
+            // already named in a hydra import is dropped from the generated one,
+            // and the generated line is dropped entirely when nothing is left.
+            let already: std::collections::HashSet<String> = self
+                .imports
+                .iter()
+                .filter(|l| l.contains("from 'hydra';"))
+                .flat_map(|l| {
+                    l.trim()
+                        .trim_start_matches("import {")
+                        .split('}')
+                        .next()
+                        .unwrap_or("")
+                        .split(',')
+                        .map(|n| n.trim().to_string())
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            h.retain(|n| !already.contains(n));
+            if !h.is_empty() {
+                self.imports
+                    .insert(format!("import {{ {} }} from 'hydra';", h.join(", ")));
+            }
         }
 
         let mut head = vec![
@@ -3634,16 +3791,21 @@ mod tests {
 
     #[test]
     fn string_number_builtins_map_to_js() {
+        // `int`/`float`/`round`/`bool` call the RUNTIME, not the JS builtin:
+        // `parseInt("12px")` is 12 where Python raises, `Math.round(2.5)` is 3
+        // where Python is 2, and `Boolean([])` is true where Python is False.
+        // Every one of those was a silent wrong value with a green build.
         let out = emit_tsx("component A():\n    a = str(x)\n    b = int(x)\n    c = float(x)\n    d = abs(x)\n    e = round(x)\n    f = bool(x)\n");
         has_all(
             &out,
             &[
                 "String(x)",
-                "parseInt(x)",
-                "parseFloat(x)",
+                "int(x)",
+                "float(x)",
                 "Math.abs(x)",
-                "Math.round(x)",
-                "Boolean(x)",
+                "round_py(x)",
+                "truthy(x)",
+                "import { float, int, round_py, truthy } from 'hydra';",
             ],
         );
     }
@@ -3659,9 +3821,12 @@ mod tests {
         let out = emit_tsx(
             "component A():\n    a = sorted(xs)\n    b = reversed(xs)\n    c = list(xs)\n",
         );
+        // `sorted` goes through the runtime so NUMBERS compare numerically:
+        // the bare `.sort()` compares string forms, so [10, 9, 100] came out
+        // [10, 100, 9] with a green build.
         has_all(
             &out,
-            &["xs.slice().sort()", "xs.slice().reverse()", "xs.slice()"],
+            &["sorted(xs)", "xs.slice().reverse()", "xs.slice()"],
         );
     }
 
@@ -3778,21 +3943,23 @@ mod tests {
 
     #[test]
     fn tree_if_becomes_logical_and() {
+        // A bare NAME in a condition is Python truthiness: an empty list is
+        // falsy in Python and true in JS, so it goes through the runtime.
         let out = emit_tsx("component A():\n    div:\n        if a:\n            p: \"yes\"\n");
-        has_all(&out, &["{a && (", "yes"]);
+        has_all(&out, &["{truthy(a) && (", "yes"]);
     }
 
     #[test]
     fn tree_if_else_becomes_ternary() {
         let out = emit_tsx("component A():\n    div:\n        if a:\n            p: \"yes\"\n        else:\n            p: \"no\"\n");
-        has_all(&out, &["{a ? (<p>yes</p>) : (<p>no</p>)}"]);
+        has_all(&out, &["{truthy(a) ? (<p>yes</p>) : (<p>no</p>)}"]);
     }
 
     #[test]
     fn tree_elif_chain_unwraps_nested_braces() {
         // Bug hunt: must NOT emit `{a ? x : {b ? y : z}}`.
         let out = emit_tsx("component A():\n    div:\n        if a:\n            p: \"1\"\n        elif b:\n            p: \"2\"\n        else:\n            p: \"3\"\n");
-        has_all(&out, &["{a ? (<p>1</p>) : (b ? (<p>2</p>) : (<p>3</p>))}"]);
+        has_all(&out, &["{truthy(a) ? (<p>1</p>) : (truthy(b) ? (<p>2</p>) : (<p>3</p>))}"]);
         lacks(&out, ": {");
     }
 
@@ -3901,7 +4068,7 @@ mod tests {
     fn statement_level_if_and_for_emit_native_blocks() {
         let out =
             emit_tsx("component A():\n    if a:\n        go()\n    for x in xs:\n        run(x)\n");
-        has_all(&out, &["if (a) {", "for (const x of xs) {"]);
+        has_all(&out, &["if (truthy(a)) {", "for (const x of xs) {"]);
     }
 
     #[test]

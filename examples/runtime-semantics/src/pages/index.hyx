@@ -1,0 +1,7 @@
+# [xihanzu-NR]
+from "../components/Badge.hyx" import Badge
+
+component Home():
+    div(className="space-y-4"):
+        Badge(label="runtime semantics")
+        p(): "This example exists to be tested, not to look at: see tests/runtime.test.hys."

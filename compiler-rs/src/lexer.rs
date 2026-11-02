@@ -338,6 +338,26 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
                 while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'.') {
                     end += 1;
                 }
+                // An exponent is part of the literal: `1e3`, `1.5E-2`. Without
+                // this, `1e3` lexed as the number `1` followed by the identifier
+                // `e3`, so `x = 1e3` was a parse error — the one form of a
+                // float literal a scientist types first.
+                if end < bytes.len() && (bytes[end] == b'e' || bytes[end] == b'E') {
+                    let mut p = end + 1;
+                    if p < bytes.len() && (bytes[p] == b'+' || bytes[p] == b'-') {
+                        p += 1;
+                    }
+                    let digits_from = p;
+                    while p < bytes.len() && bytes[p].is_ascii_digit() {
+                        p += 1;
+                    }
+                    // `1e` with no exponent digits is not a number; leave it so
+                    // the reader reports the identifier it actually is.
+                    if p > digits_from {
+                        end = p;
+                    }
+                }
+
                 out.push(Token {
                     ty: TokType::Number,
                     value: raw[start..end].to_string(),

@@ -7,6 +7,7 @@ import https from 'node:https';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 const selfRequire = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -147,6 +148,35 @@ function findCliBinary() {
     if (fs.existsSync(bin)) return bin;
   }
   return null;
+}
+
+/**
+ * What the cache key must include to be honest.
+ *
+ * The disk cache's docstring promises "a compiler change is a miss by
+ * construction", but the key carried the package VERSION — which does not move
+ * when the Rust source is rebuilt at the same version. Rebuilding the compiler
+ * and running `hydra build` then served the previous compiler's output for every
+ * cached file, which is the one failure a compile cache must never have.
+ *
+ * Hashing the two binaries costs one read of ~2 MB once per process and makes
+ * the promise true: a different compiler is a different key.
+ */
+let compilerIdentity = null;
+function compilerIdentityKey() {
+  if (compilerIdentity !== null) return compilerIdentity;
+  try {
+    const h = createHash('sha256');
+    for (const f of ['hydra', 'hydra.node']) {
+      const p = path.join(HERE, '../../bin', f);
+      h.update(fs.existsSync(p) ? createHash('sha256').update(fs.readFileSync(p)).digest('hex') : 'missing');
+      h.update('\0');
+    }
+    compilerIdentity = h.digest('hex').slice(0, 16);
+  } catch {
+    compilerIdentity = 'unknown';
+  }
+  return compilerIdentity;
 }
 
 function cliFallbackCompile(file, source) {
@@ -924,7 +954,7 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   const cacheWanted =
     opts.dev !== true && process.env.HYDRA_NO_CACHE !== '1' && config.build?.cache !== false;
   const compileCache = cacheWanted
-    ? new CompileCache(cacheDirFor(cwd), { version: VERSION })
+    ? new CompileCache(cacheDirFor(cwd), { version: VERSION }).withExtra(compilerIdentityKey())
     : null;
 
   const base = normalizeBase(config.base);

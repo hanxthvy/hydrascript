@@ -1,0 +1,6 @@
+# [xihanzu-NR]
+from hydra import mount
+from "./App.hyx" import App
+import "./index.css"
+
+mount(App, document.getElementById("root"))

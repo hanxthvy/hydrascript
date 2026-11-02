@@ -1,0 +1,5 @@
+# [xihanzu-NR]
+from hydra import Router
+
+component App():
+    Router()

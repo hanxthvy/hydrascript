@@ -172,6 +172,25 @@ for dir in "$EXAMPLES_DIR"/*/; do
   fi
 
   n_assets="${asset_report#ok }"
+  # A `tests/*.test.hys` suite is part of what the example claims. An example
+  # that builds but whose own tests fail is not verified, so it is a failure here.
+  if [[ -d "$dir/tests" ]]; then
+    tout="$(mktemp)"
+    # `test` is a RUNNER command, not a compiler one: the native binary only
+    # knows the compiler verbs, so it must go through bin/hydra.js like the build does.
+    ( cd "$dir" || exit 2; HYDRA_RUNNER="$HYDRA_RUNNER" timeout "$BUILD_TIMEOUT" node "$HYDRA_REPO/bin/hydra.js" test ) >"$tout" 2>&1
+    tcode=$?
+    tsummary="$(grep -E 'passed|failed' "$tout" | tail -1)"
+    if [[ $tcode -ne 0 ]]; then
+      say "FAIL  $name — hydra test exited $tcode: $tsummary"
+      head -30 "$tout" | sed 's/^/        /'
+      FAILED=$((FAILED + 1)); FAILED_NAMES+=("$name (tests exit $tcode)")
+      rm -f "$out" "$tout"; continue
+    fi
+    log "tests: $tsummary"
+    rm -f "$tout"
+  fi
+
   say ""
   say "PASS  $name — exit 0, dist/index.html + ${n_assets} JS asset(s) verified (${elapsed}s)"
   log "HTML asset check: $asset_report"

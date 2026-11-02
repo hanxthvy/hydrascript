@@ -192,6 +192,16 @@ impl JsEmitter {
                                     );
                                     CompileError::new(msg, 0, 0, Vec::new()).with_hint(hint)
                                 })?;
+                                // The translator INVENTS these calls; no AST node
+                                // mentions them, so the helper is recorded here or
+                                // the emitted module names an import that was never
+                                // written. That was `ReferenceError: py_fixed is not
+                                // defined` on every `f"{x:.2f}"` in a .hys.
+                                for helper in ["py_fixed", "py_group"] {
+                                    if e.contains(&format!("{helper}(")) {
+                                        self.used_helpers.borrow_mut().insert(helper.to_string());
+                                    }
+                                }
                             }
                             out.push_str("${");
                             out.push_str(&e);
@@ -249,7 +259,24 @@ impl JsEmitter {
             }
             Kind::Index { obj, index } => {
                 let o = self.js(obj)?;
+                // A NEGATIVE LITERAL index is Python's count-from-the-end and
+                // JS's missing property: `xs[-1]` returned undefined where the
+                // author meant the last element. Only the literal form is
+                // rewritten — an expression's sign is not known here.
                 let i = self.js(index)?;
+                // `-1` parses as Unary(-, Num(1)), not as a negative literal,
+                // so both shapes name a negative index.
+                let negative_literal = match &index.kind {
+                    Kind::Num(n) => n.starts_with('-'),
+                    Kind::Unary { op, operand } => {
+                        op == "-" && matches!(operand.kind, Kind::Num(_))
+                    }
+                    _ => false,
+                };
+                if negative_literal {
+                    self.used_helpers.borrow_mut().insert("py_at".into());
+                    return Ok(format!("py_at({}, {})", o, i));
+                }
                 Ok(format!("{}[{}]", o, i))
             }
             Kind::OptIndex { obj, index } => {
@@ -267,10 +294,39 @@ impl JsEmitter {
                     return Ok(format!("[...{}, ...{}]", l, r));
                 }
                 // `//` is floor division, and JS `/` truncates toward zero.
+                // `%` in Python takes the sign of the DIVISOR (-7 % 3 is 2,
+                // JS says -1). A ring index or a bucket calculation then lands
+                // one cell off for negative input and nothing throws.
+                if op == "%" {
+                    self.used_helpers.borrow_mut().insert("py_mod".into());
+                    return Ok(format!("py_mod({}, {})", l, r));
+                }
+                // `"ab" * 3` repeats in Python and is NaN in JS; `[0] * 3` is a
+                // number where a list was meant. Only a LITERAL left operand is
+                // rewritten: that is the case the author cannot see is wrong, and
+                // the same bound the `+` case above already accepts. A variable
+                // holding a string still emits `*` — detectable statically is not
+                // the same as detectable at all.
+                if op == "*" && matches!(left.kind, Kind::Str { .. } | Kind::List(_) | Kind::Tuple(_)) {
+                    self.used_helpers.borrow_mut().insert("py_repeat".into());
+                    return Ok(format!("py_repeat({}, {})", l, r));
+                }
                 if op == "floordiv" {
                     return Ok(format!("Math.floor({} / {})", l, r));
                 }
                 // `is` / `is not` -> strict identity (JS has no `is` operator).
+                // `==` on two sequences: Python compares by VALUE, JS by
+                // identity, so `[1, 2] == [1, 2]` was false and the guard took
+                // the wrong branch. Only when an operand is visibly a list,
+                // dict or tuple literal — a scalar comparison must stay `===`,
+                // which is what every `x == 1` in the language relies on.
+                let structural = matches!(left.kind, Kind::List(_) | Kind::Tuple(_) | Kind::Dict(_))
+                    || matches!(right.kind, Kind::List(_) | Kind::Tuple(_) | Kind::Dict(_));
+                if structural && (op == "===" || op == "!==") {
+                    let helper = if op == "===" { "py_eq" } else { "py_ne" };
+                    self.used_helpers.borrow_mut().insert(helper.into());
+                    return Ok(format!("{}({}, {})", helper, l, r));
+                }
                 if op == "is" {
                     return Ok(format!("({} === {})", l, r));
                 }
@@ -279,7 +335,24 @@ impl JsEmitter {
                 }
                 Ok(format!("({} {} {})", l, op, r))
             }
-            Kind::Unary { op, operand } => Ok(format!("({}{})", op, self.js(operand)?)),
+            Kind::Unary { op, operand } => {
+                let v = self.js(operand)?;
+                // `not []` is True in Python: an empty list is falsy. `(![])` is
+                // false, because JS calls every array truthy. A list, dict or
+                // string LITERAL is visible here, so the Python answer is chosen
+                // without a runtime call; anything else keeps JS's `!`, which
+                // agrees with Python for the scalars that use it.
+                if op == "!" {
+                    if let Some(helper) = match &operand.kind {
+                        Kind::List(_) | Kind::Tuple(_) | Kind::Dict(_) => Some("truthy"),
+                        _ => None,
+                    } {
+                        self.used_helpers.borrow_mut().insert(helper.into());
+                        return Ok(format!("(!{}({}))", helper, v));
+                    }
+                }
+                Ok(format!("({}{})", op, v))
+            }
             Kind::New(inner) => Ok(format!("new {}", self.js(inner)?)),
             Kind::OptCall { func, args, kwargs } => {
                 let f = self.js(func)?;
@@ -567,15 +640,28 @@ impl JsEmitter {
                             "pow" => return Ok(format!("Math.pow({})", arg)),
                             "str" => return Ok(format!("String({})", arg)),
                             "abs" => return Ok(format!("Math.abs({})", arg)),
-                            "round" => return Ok(format!("Math.round({})", arg)),
+                            // Python's tie-to-even, not Math.round.
+                            "round" => {
+                                self.used_helpers.borrow_mut().insert("round_py".into());
+                                return Ok(format!("round_py({})", arg));
+                            }
                             // `type(x)` -> the constructor; `type(x).__name__`
                             // resolves through the `__name__` -> `name` map.
                             "type" => return Ok(format!("({}).constructor", arg)),
                             "sum" => return Ok(format!("{}.reduce((a, b) => a + b, 0)", arg)),
-                            "sorted" => return Ok(format!("{}.slice().sort()", arg)),
+                            // Numeric comparison, like the runtime helper.
+                            "sorted" => {
+                                self.used_helpers.borrow_mut().insert("sorted".into());
+                                return Ok(format!("sorted({})", arg));
+                            }
                             "reversed" => return Ok(format!("{}.slice().reverse()", arg)),
                             "list" => return Ok(format!("{}.slice()", arg)),
-                            "bool" => return Ok(format!("Boolean({})", arg)),
+                            // `bool([])` is False in Python and `Boolean([])` is true in
+                            // JS. The runtime helper is the Python answer.
+                            "bool" => {
+                                self.used_helpers.borrow_mut().insert("truthy".into());
+                                return Ok(format!("truthy({})", arg));
+                            }
                             // In `.hx` these must RAISE like Python, so they call
                             // the runtime instead of the JS builtin.
                             "int" => {
@@ -601,6 +687,15 @@ impl JsEmitter {
                     if id == "print" && !args.is_empty() {
                         let bits: Result<Vec<_>, _> = args.iter().map(|a| self.js(a)).collect();
                         return Ok(format!("console.log({})", bits?.join(", ")));
+                    }
+                    // `range(...)` — variadic. Without this arm the call emitted
+                    // verbatim and the module threw `ReferenceError: range is not
+                    // defined` even though the checker treats it as a runtime
+                    // import; the one-argument arm below could never see 2 or 3.
+                    if id == "range" && !args.is_empty() {
+                        let bits: Result<Vec<_>, _> = args.iter().map(|a| self.js(a)).collect();
+                        self.used_helpers.borrow_mut().insert("range".into());
+                        return Ok(format!("range({})", bits?.join(", ")));
                     }
                     // `sum(xs, start)` — Python's two-argument form.
                     if id == "sum" && args.len() == 2 {
@@ -636,6 +731,17 @@ impl JsEmitter {
                         self.used_helpers.borrow_mut().insert(id.clone());
                         let bits: Result<Vec<_>, _> = args.iter().map(|a| self.js(a)).collect();
                         return Ok(format!("{}({})", id, bits?.join(", ")));
+                    }
+                    // `round(x, n)` — JS has no digit argument, and
+                    // `round(2.675, 2)` emitted `round(...)` verbatim, which is
+                    // a ReferenceError the moment the file runs.
+                    if id == "round" && args.len() == 2 {
+                        self.used_helpers.borrow_mut().insert("round_to".into());
+                        return Ok(format!(
+                            "round_to({}, {})",
+                            self.js(&args[0])?,
+                            self.js(&args[1])?
+                        ));
                     }
                     // `pow(a, b)`
                     if id == "pow" && args.len() == 2 {
@@ -711,7 +817,17 @@ impl JsEmitter {
                         }
                         return Ok(format!("{}({}{})", helper, src_arg, extra));
                     }
+                    // `max(a, b)` compares arguments; `max(xs)` compares the
+                    // ELEMENTS of one sequence. `Math.max(xs)` with an array is
+                    // NaN, and `Math.max(...xs)` is NaN for anything that is not
+                    // an array. One argument must go through the helper.
                     if (id == "max" || id == "min") && !args.is_empty() && kwargs.is_empty() {
+                        if args.len() == 1 {
+                            let arg = self.js(&args[0])?;
+                            let helper = if id == "max" { "max_of" } else { "min_of" };
+                            self.used_helpers.borrow_mut().insert(helper.into());
+                            return Ok(format!("{}({})", helper, arg));
+                        }
                         let bits: Result<Vec<_>, _> = args.iter().map(|a| self.js(a)).collect();
                         let all = bits?;
                         return Ok(if id == "max" {
@@ -1089,6 +1205,13 @@ impl JsEmitter {
             }
             Kind::If { test, body, orelse } => {
                 let cond = self.js(test)?;
+                // Python truthiness for a bare condition: an empty list or dict is
+                // falsy in Python and true in JS, so `if items:` took the wrong
+                // branch and nothing threw.
+                let cond = crate::emitter::py_cond(&cond);
+                if cond.starts_with("truthy(") {
+                    self.used_helpers.borrow_mut().insert("truthy".into());
+                }
                 self.w(&format!("if ({}) {{", cond));
                 self.depth += 1;
                 for stmt in body {
@@ -1118,6 +1241,10 @@ impl JsEmitter {
             }
             Kind::While { test, body } => {
                 let cond = self.js(test)?;
+                let cond = crate::emitter::py_cond(&cond);
+                if cond.starts_with("truthy(") {
+                    self.used_helpers.borrow_mut().insert("truthy".into());
+                }
                 self.w(&format!("while ({}) {{", cond));
                 self.depth += 1;
                 for stmt in body {
@@ -1676,8 +1803,32 @@ impl JsEmitter {
         if !helpers.is_empty() {
             let mut h = helpers;
             h.sort();
-            self.imports
-                .insert(format!("import {{ {} }} from 'hydra';", h.join(", ")));
+            // The author may already have imported some of these by hand
+            // (`from "hydra" import sorted`). Emitting a second `import { sorted }`
+            // is a duplicate binding, which esbuild reports as
+            // "The symbol "sorted" has already been declared" — so every helper
+            // already named in a hydra import is dropped from the generated one,
+            // and the generated line is dropped entirely when nothing is left.
+            let already: std::collections::HashSet<String> = self
+                .imports
+                .iter()
+                .filter(|l| l.contains("from 'hydra';"))
+                .flat_map(|l| {
+                    l.trim()
+                        .trim_start_matches("import {")
+                        .split('}')
+                        .next()
+                        .unwrap_or("")
+                        .split(',')
+                        .map(|n| n.trim().to_string())
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            h.retain(|n| !already.contains(n));
+            if !h.is_empty() {
+                self.imports
+                    .insert(format!("import {{ {} }} from 'hydra';", h.join(", ")));
+            }
         }
 
         let mut head = vec![

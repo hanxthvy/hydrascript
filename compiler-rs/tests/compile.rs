@@ -168,7 +168,7 @@ fn test_expr_all_arithmetic_and_unary_minus() {
     assert_contains(
         &out,
         &[
-            "const x = ((1 + (2 * 3)) - ((4 / 2) % 3));",
+            "const x = ((1 + (2 * 3)) - py_mod((4 / 2), 3));",
             "const y = (-x);",
             "const z = (-1);",
         ],
@@ -202,15 +202,18 @@ fn test_expr_python_builtins() {
         &[
             "const a = len_of(xs);",
             "const b = String(x);",
-            "const c = parseInt(x);",
-            "const d = parseFloat(x);",
+            // `int`/`float` raise like Python instead of truncating a bad
+            // string, `round` rounds a tie to even, and `bool`/`sorted` use
+            // Python's truthiness and numeric ordering.
+            "const c = int(x);",
+            "const d = float(x);",
             "const e = Math.abs(x);",
-            "const f = Math.round(x);",
+            "const f = round_py(x);",
             "const g = xs.reduce((a, b) => a + b, 0);",
-            "const h = xs.slice().sort();",
+            "const h = sorted(xs);",
             "const i = xs.slice().reverse();",
             "const j = xs.slice();",
-            "const k = Boolean(x);",
+            "const k = truthy(x);",
         ],
     );
 }
@@ -287,20 +290,21 @@ fn test_tree_inline_single_child() {
 #[test]
 fn test_tree_if_to_logical_and() {
     let out = comp("component A():\n    div:\n        if a:\n            p: \"yes\"\n");
-    assert_contains(&out, &["{a && (<p>yes</p>)}"]);
+    // Bare name -> Python truthiness (an empty list is truthy in JS).
+    assert_contains(&out, &["{truthy(a) && (<p>yes</p>)}"]);
 }
 
 #[test]
 fn test_tree_if_else_to_ternary() {
     let out = comp("component A():\n    div:\n        if a:\n            p: \"yes\"\n        else:\n            p: \"no\"\n");
-    assert_contains(&out, &["{a ? (<p>yes</p>) : (<p>no</p>)}"]);
+    assert_contains(&out, &["{truthy(a) ? (<p>yes</p>) : (<p>no</p>)}"]);
 }
 
 #[test]
 fn test_tree_elif_chain_no_nested_braces() {
     let out = comp("component A():\n    div:\n        if a:\n            p: \"1\"\n        elif b:\n            p: \"2\"\n        else:\n            p: \"3\"\n");
     // Must NOT emit nested braces like `{a ? x : {b ? y : z}}`
-    assert_contains(&out, &["{a ? (<p>1</p>) : (b ? (<p>2</p>) : (<p>3</p>))}"]);
+    assert_contains(&out, &["{truthy(a) ? (<p>1</p>) : (truthy(b) ? (<p>2</p>) : (<p>3</p>))}"]);
     assert_not_contains(&out, &[": {"]);
 }
 
@@ -402,7 +406,7 @@ fn test_stmt_level_if_and_for() {
     let out = comp(src);
     assert_contains(
         &out,
-        &["if (a) {", "go();", "for (const x of xs) {", "run(x);"],
+        &["if (truthy(a)) {", "go();", "for (const x of xs) {", "run(x);"],
     );
 }
 
@@ -1565,3 +1569,124 @@ fn a_user_class_shadows_the_runtime_exception_of_the_same_name() {
         "the user's class wins; it must not also be imported, got:\n{out}"
     );
 }
+
+// =========================================================================
+// 12. PYTHON SEMANTICS THE JS BUILTIN GETS WRONG
+//
+// Every case below produced a GREEN build and a wrong value, which is worse
+// than a rejection: nothing threw, so nothing pointed at the source line. They
+// are grouped because they share one cause — an operator or builtin with a
+// near-identical JS spelling that means something else.
+// =========================================================================
+
+#[test]
+fn sorted_goes_through_the_runtime_so_numbers_compare_numerically() {
+    // `.sort()` with no comparator compares STRING forms:
+    // [10, 9, 100] -> [10, 100, 9]. Silent, green, wrong.
+    let out = comp("component A():\n    a = sorted(xs)\n");
+    assert_contains(&out, &["const a = sorted(xs);"]);
+    assert!(
+        !out.contains(".slice().sort()"),
+        "the bare sort must not be emitted, got:\n{out}"
+    );
+}
+
+#[test]
+fn modulo_takes_the_sign_of_the_divisor_like_python() {
+    // Python: -7 % 3 == 2. JS: -1. A ring index lands one cell off, silently.
+    let out = comp("component A():\n    r = a % b\n");
+    assert_contains(&out, &["py_mod(a, b)"]);
+}
+
+#[test]
+fn a_negative_literal_index_counts_from_the_end() {
+    // `xs[-1]` is the last element in Python and `undefined` in JS.
+    let out = comp("component A():\n    a = xs[-1]\n    b = xs[i]\n");
+    assert_contains(&out, &["py_at(xs, (-1))"]);
+    assert_contains(&out, &["xs[i]"]);
+}
+
+#[test]
+fn multiplying_a_literal_string_repeats_it() {
+    // `"ab" * 3` is NaN in JS and "ababab" in Python.
+    let out = comp("component A():\n    a = \"ab\" * 3\n    b = s * 2\n");
+    assert_contains(&out, &["py_repeat(\"ab\", 3)"]);
+    // A VARIABLE on the left is not statically knowable, so it keeps the numeric
+    // meaning. Rewriting it would break every `price * qty` in the language.
+    assert_contains(&out, &["(s * 2)"]);
+}
+
+#[test]
+fn max_and_min_of_one_sequence_do_not_spread_it() {
+    // `max(xs)` spread the argument, so a Set or a generator was NaN.
+    let out = comp("component A():\n    a = max(xs)\n    b = min(xs)\n    c = max(1, 2)\n");
+    assert_contains(&out, &["max_of(xs)", "min_of(xs)", "Math.max(1, 2)"]);
+}
+
+#[test]
+fn int_and_float_raise_instead_of_truncating_a_bad_string() {
+    // parseInt("12px") is 12; Python raises. A corrupt number that travels.
+    let out = comp("component A():\n    a = int(s)\n    b = float(s)\n");
+    assert_contains(&out, &["int(s)", "float(s)"]);
+    assert!(
+        !out.contains("parseInt"),
+        "parseInt truncates silently, got:\n{out}"
+    );
+}
+
+#[test]
+fn bool_uses_python_truthiness_not_js_truthiness() {
+    // Boolean([]) is true; bool([]) is False.
+    let out = comp("component A():\n    a = bool(xs)\n");
+    assert_contains(&out, &["truthy(xs)"]);
+}
+
+#[test]
+fn round_rounds_a_tie_to_even() {
+    // Math.round(2.5) is 3; round(2.5) is 2.
+    let out = comp("component A():\n    a = round(x)\n    b = round(x, 2)\n");
+    assert_contains(&out, &["round_py(x)", "round_to(x, 2)"]);
+    assert!(
+        !out.contains("Math.round"),
+        "Math.round rounds ties away from zero, got:\n{out}"
+    );
+}
+
+#[test]
+fn every_emitted_helper_is_exported_by_the_runtime() {
+    // The compiler injects `import { name } from 'hydra'` for names it invents.
+    // A name the runtime does not export is a green build and a ReferenceError.
+    // scripts/helper-contract.mjs walks the Rust source; this asserts the list
+    // its own cases produce is non-empty, so a compile change that stops
+    // recording a helper fails here rather than at run time.
+    let out = comp(
+        "component A():\n    a = int(x)\n    b = round(x)\n    c = sorted(xs)\n    d = max(xs)\n    e = bool(x)\n    f = \"ab\" * 2\n    g = xs[-1]\n    h = x % 3\n",
+    );
+    assert_contains(
+        &out,
+        &["import { int, max_of, py_at, py_mod, py_repeat, round_py, sorted, truthy } from 'hydra';"],
+    );
+}
+
+#[test]
+fn comparing_two_sequences_compares_by_value() {
+    // `[1, 2] == [1, 2]` is false in JS, true in Python. A guard that tests a
+    // list for equality silently took the wrong branch.
+    let out = comp("component A():\n    a = [1, 2] == [1, 2]\n    b = x == 1\n");
+    assert_contains(&out, &["py_eq([1, 2], [1, 2])", "(x === 1)"]);
+}
+
+#[test]
+fn not_on_a_literal_sequence_uses_python_truthiness() {
+    // `not []` is True in Python and `![]` is false.
+    let out = comp("component A():\n    a = not []\n    b = not x\n");
+    assert_contains(&out, &["(!truthy([]))", "(!x)"]);
+}
+
+#[test]
+fn an_exponent_is_part_of_a_number_literal() {
+    // `1e3` used to lex as the number 1 followed by the identifier `e3`.
+    let out = comp("component A():\n    a = 1e3\n    b = 1.5e-2\n");
+    assert_contains(&out, &["const a = 1e3;", "const b = 1.5e-2;"]);
+}
+

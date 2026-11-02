@@ -141,8 +141,9 @@ is, not as it might become.
 These are deliberate. They are listed because someone will otherwise report them
 as bugs.
 
-- `f"{x:.0f}"` uses `toLocaleString`, which rounds a tie away from zero;
-  Python rounds to even. `1500.5` prints `1,501`.
+- `f"{x:.0f}"` and `round(x)` round a tie to EVEN, like Python, via the runtime's
+  `py_fixed` / `round_to`. This was a documented deviation; it no longer is.
+  `format(2.5, ".0f")` is `2` and `format(1500.5, ".0f")` is `1500`.
 - `getattr`, and every other builtin not listed in section 6, is not
   implemented. Unlike multiple inheritance it is not rejected by the parser: it
   emits verbatim and fails at runtime. This is the known sharp edge of the
@@ -151,8 +152,12 @@ as bugs.
   errors, so they cannot reach runtime.
 - Keyword arguments work for functions defined in the same file (the signature is
   known) and are a **compile error** for imported functions (it is not).
-- Truthiness follows JavaScript, not Python: an empty list and an empty dict are
-  truthy in JS terms. Use the runtime's `truthy()` for Python semantics.
+- Truthiness in a CONDITION is Python's: `if xs:` and `while xs:` go through the
+  runtime's `truthy()`, so an empty list, dict or string is falsy. It applies to
+  conditions the compiler can see (`if`, `elif`, `while`, a tree `if`); a
+  condition hidden inside a callback the compiler never inspects is JavaScript's.
+  Single object literals — Python's way to spell a record — stay truthy, and so
+  do DOM elements and refs.
 - Integer division, `//`, and Python's arbitrary-precision integers do not exist.
 
 ## 8. Diagnostics: what is an error, what is a warning

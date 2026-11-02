@@ -311,13 +311,13 @@ Ini tidak perlu impor:
 | HydraScript | Menghasilkan |
 |---|---|
 | `len(xs)` / `len(d)` | `xs.length` / `len_of(d)` sadar-dict |
-| `max(a, b)` / `max(xs)` | `Math.max(a, b)` / spread |
-| `min(a, b)` / `min(xs)` | `Math.min(a, b)` / spread |
-| `abs(x)` / `round(x)` | `Math.abs` / `Math.round` |
+| `max(a, b)` / `max(xs)` | `Math.max(a, b)` / runtime `max_of(xs)` |
+| `min(a, b)` / `min(xs)` | `Math.min(a, b)` / runtime `min_of(xs)` |
+| `abs(x)` / `round(x)` | `Math.abs` / runtime `round_py(x)` — tie ke angka genap |
 | `pow(a, b)` | `a ** b` |
 | `sum(xs)` / `sum(xs, start)` | reduce / helper runtime |
-| `sorted(xs)` / `reversed(xs)` | tidak memutasi |
-| `str` / `int` / `float` / `bool` | `String` / `parseInt` / `parseFloat` / `Boolean` |
+| `sorted(xs)` / `reversed(xs)` | tidak memutasi; angka dibandingkan sebagai angka |
+| `str` / `int` / `float` / `bool` | `String` / runtime `int` / `float` / `truthy` |
 | `isinstance(x, int)` | `isinstance(x, Number)` |
 | `type(x).__name__` | `x.constructor.name` |
 | `enumerate` / `range` / `zip` | helper runtime, diimpor otomatis |

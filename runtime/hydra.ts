@@ -116,6 +116,107 @@ export function py_fixed(x: any, n: number): string {
   return '-' + body
 }
 
+/**
+ * `.pop()` — one name, two meanings, decided by the receiver.
+ *
+ * On a LIST `xs.pop()` removes and returns the LAST element. On a DICT
+ * `d.pop("k")` removes the entry for that key and returns its value, with an
+ * optional fallback. The compiler has one spelling for both, so the helper
+ * dispatches: the receiver's type is the only thing that says which was meant.
+ *
+ * Routing the list case to `dict_pop` (the old mapping) read a key of
+ * `undefined` and returned the fallback, so `xs.pop()` was `None` while the list
+ * silently kept its element.
+ */
+export function pop_of(x: any, key: any = -1, fallback: any = null): any {
+  if (Array.isArray(x)) {
+    if (x.length === 0) throw new IndexError('pop from empty list')
+    const at = key === undefined || key === null || key === -1 ? x.length - 1 : Number(key)
+    const i = at < 0 ? x.length + at : at
+    if (i < 0 || i >= x.length) throw new IndexError('pop index out of range')
+    return x.splice(i, 1)[0]
+  }
+  if (Object.prototype.hasOwnProperty.call(x, key)) {
+    const v = x[key]
+    delete x[key]
+    return v
+  }
+  if (fallback !== null) return fallback
+  throw new KeyError(JSON.stringify(key))
+}
+
+/**
+ * `xs[-1]` — Python's negative index, which JS reads as a missing property.
+ *
+ * `xs[-1]` is `undefined` in JS and the LAST element in Python, so a "peek at the
+ * most recent item" returned `undefined`, silently, on every list. Only literal
+ * negative indexes are rewritten (the compiler can see the sign), so this costs
+ * nothing at a call site that was not written that way.
+ */
+export const py_at = (xs: any, i: number): any => (i < 0 ? xs[xs.length + i] : xs[i])
+
+/**
+ * `a * n` where the LEFT side is a string or a list — Python repeats.
+ *
+ * JS has no `*` for sequences, so `"ab" * 3` was `NaN` and `[0] * 3` was `0`:
+ * a value that looks like arithmetic and is silently nonsense. Numbers keep the
+ * numeric meaning, which is what the same operator means in Python.
+ */
+export function py_repeat(a: any, n: number): any {
+  if (typeof a === 'number') return a * n
+  if (typeof a === 'string') return a.repeat(Math.max(0, Math.trunc(n)))
+  if (Array.isArray(a)) {
+    const out: any[] = []
+    for (let i = 0; i < Math.max(0, Math.trunc(n)); i++) out.push(...a)
+    return out
+  }
+  return a as any
+}
+
+/**
+ * `a == b` — Python's equality, which is STRUCTURAL for sequences.
+ *
+ * `[1, 2] == [1, 2]` is `false` in JavaScript because two array literals are two
+ * objects. That comparison is everywhere in Python code — a guard, a memo check,
+ * a state comparison — and it silently took the wrong branch. Numbers, strings,
+ * booleans and null keep the `===` answer; arrays and plain objects compare by
+ * value, recursively.
+ */
+export function py_eq(a: any, b: any): boolean {
+  if (a === b) return true
+  if (a == null || b == null) return false
+  if (typeof a === 'number' && typeof b === 'number') return a === b || (Number.isNaN(a) && Number.isNaN(b))
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false
+    for (let i = 0; i < a.length; i++) if (!py_eq(a[i], b[i])) return false
+    return true
+  }
+  if (typeof a === 'object' && typeof b === 'object') {
+    const ka = Object.keys(a)
+    const kb = Object.keys(b)
+    if (ka.length !== kb.length) return false
+    for (const k of ka) if (!Object.prototype.hasOwnProperty.call(b, k) || !py_eq(a[k], b[k])) return false
+    return true
+  }
+  return false
+}
+
+/** `a != b` — the negation, so the two can never disagree. */
+export const py_ne = (a: any, b: any): boolean => !py_eq(a, b)
+
+/**
+ * `a % b` — Python's sign, not JavaScript's.
+ *
+ * Python's result takes the SIGN OF THE DIVISOR: `-7 % 3` is 2, and JS's is -1.
+ * The difference is invisible until it is not — a ring buffer index, a modulo
+ * hash, a "which column is this" calculation all go one cell the wrong way for
+ * negative input, and nothing throws.
+ */
+export function py_mod(a: number, b: number): number {
+  const r = a % b
+  return r !== 0 && (r < 0) !== (b < 0) ? r + b : r
+}
+
 /** Group the integer part in threes, as `,` does in Python's format spec. */
 function groupThousands(intPart: string): string {
   const neg = intPart.startsWith('-')
@@ -471,7 +572,30 @@ export function fetch_json<T = any>(url: string, deps: DependencyList = []): Asy
  */
 
 export const len = <T,>(x: { length: number } | T[]): number => x.length
-export const sorted = <T,>(xs: T[]): T[] => xs.slice().sort()
+
+/**
+ * `sorted(xs)` — Python's ordering, not JavaScript's.
+ *
+ * `Array.prototype.sort()` with no comparator compares the STRING forms, so
+ * `sorted([10, 9, 100])` came out `[10, 100, 9]`: a build that succeeds and a
+ * list in the wrong order, which is the worst kind of wrong. Numbers compare
+ * numerically, everything else as text — Python compares homogeneous sequences
+ * exactly this way, and a mixed sequence is a type error there rather than a
+ * meaningful order.
+ */
+export const sorted = <T,>(xs: T[]): T[] =>
+  xs
+    .slice()
+    .sort((a: any, b: any) =>
+      typeof a === 'number' && typeof b === 'number'
+        ? a - b
+        : String(a) < String(b)
+          ? -1
+          : String(a) > String(b)
+            ? 1
+            : 0,
+    )
+
 export const reversed = <T,>(xs: T[]): T[] => xs.slice().reverse()
 export const sum = (xs: number[]): number => xs.reduce((a, b) => a + b, 0)
 
@@ -493,16 +617,46 @@ export function range(...args: number[]): number[] {
 }
 
 /** Python-style truthiness: empty list/dict/string and 0 are falsy. */
-export const truthy = (x: unknown): boolean =>
-  x == null ? false
-  : Array.isArray(x) ? x.length > 0
-  : typeof x === 'object' ? Object.keys(x as object).length > 0
-  : Boolean(x)
+/**
+ * `truthy(x)` — Python truthiness, for a CONDITION.
+ *
+ * The empty-container rule is the whole reason this exists: `[]` and `{}` are
+ * true in JS and False in Python. But it applies to PLAIN containers only. A
+ * single object literal is Python's only way to spell a record, and a DOM
+ * element, a Map, a Set and a React ref are all `typeof 'object'` too; keying off
+ * `Object.keys().length` made `if el:` false for every HTML element the app ever
+ * looked up (an element has no OWN enumerable keys), and `if ref.current:` false
+ * for a ref holding one. That is a branch silently never taken.
+ *
+ * So: arrays by length, plain objects by key count, everything else by JS
+ * truthiness — which already agrees with Python for `null`/`0`/`''`/`NaN`.
+ */
+export const truthy = (x: unknown): boolean => {
+  if (x == null) return false
+  if (Array.isArray(x)) return x.length > 0
+  if (x instanceof Map || x instanceof Set) return x.size > 0
+  if (typeof x === 'object') {
+    const proto = Object.getPrototypeOf(x)
+    // `Object.create(null)` and `{}` are plain; classes, elements, refs are not.
+    if (proto === Object.prototype || proto === null) return Object.keys(x as object).length > 0
+    return true
+  }
+  return Boolean(x)
+}
 
 /* ------------------------------------------------------------------- dict */
 
 /** `d = dict_get(obj, "key", default)` — attribute access that will not throw. */
-export const dict_get = <T,>(o: any, key: string, fallback: T): T =>
+/**
+ * `d.get(k)` / `d.get(k, default)`.
+ *
+ * Python's fallback for a MISSING key is `None`, and the compiler emitted
+ * `undefined` for the one-argument form because `fallback` defaulted to nothing.
+ * `None` is the value Python code tests with `is None`, so the difference is the
+ * whole idiom. `!!in` rather than a truthiness check on the value: a key holding
+ * `0` or `""` is present, and treating it as missing is a different bug.
+ */
+export const dict_get = <T,>(o: any, key: string, fallback: T | null = null): T | null =>
   o != null && key in o ? o[key] : fallback
 
 /** `safe(fn)` — wrap a handler so a throw does not take down the tree. */
@@ -804,6 +958,30 @@ export function min_by<T,>(xs: T[], key: (x: T) => number): T | null {
     }
   }
   return best
+}
+
+/**
+ * `max(xs)` / `min(xs)` — ONE sequence.
+ *
+ * The compiler used to spread the argument into `Math.max(...xs)`. For a plain
+ * array that answers correctly; for a Set, a string, a generator or the result of
+ * `range(n)` it spreads nothing useful and returns NaN silently. Taking the
+ * sequence and iterating is the same answer for the array case and a real answer
+ * for the rest.
+ *
+ * An empty sequence is a ValueError, exactly as in Python — returning `-Infinity`
+ * would let the NaN-shaped bug back in through a different door.
+ */
+export function max_of(xs: any): any {
+  const arr = Array.isArray(xs) ? xs : [...(xs as Iterable<any>)]
+  if (arr.length === 0) throw new ValueError('max() arg is an empty sequence')
+  return arr.reduce((a, b) => (b > a ? b : a))
+}
+
+export function min_of(xs: any): any {
+  const arr = Array.isArray(xs) ? xs : [...(xs as Iterable<any>)]
+  if (arr.length === 0) throw new ValueError('min() arg is an empty sequence')
+  return arr.reduce((a, b) => (b < a ? b : a))
 }
 
 /** `first(xs, fallback)` */
@@ -2405,10 +2583,79 @@ export const clamp = (x: number, lo: number, hi: number): number =>
 /** `lerp(0, 100, 0.25)` -> 25 — linear interpolation, `t` not clamped. */
 export const lerp = (a: number, b: number, t: number): number => a + (b - a) * t
 
-/** `round_to(3.14159, 2)` -> 3.14 — `round(2.675, 2)` gives 2.67 in Python too. */
+/**
+ * `round(x)` / `round(x, n)` — Python's rounding, which is NOT `Math.round`.
+ *
+ * Python rounds a tie to the EVEN digit (`round(2.5)` is 2, `round(3.5)` is 4)
+ * and judges that tie against the double's exact value; `Math.round` rounds
+ * halfway cases up, so `round(2.5)` came out 3. Same disagreement `py_fixed`
+ * settles for formatting, and the same reason: it shows up on money.
+ *
+ * `toFixed` is what makes the expansion usable — a double's exact decimal needs
+ * at most ~767 fraction digits, so 100 separates a real tie from a near one.
+ */
 export const round_to = (x: number, digits: number = 0): number => {
-  const f = Math.pow(10, digits)
-  return Math.round((x + Number.EPSILON * Math.sign(x)) * f) / f
+  const v = Number(x)
+  if (!Number.isFinite(v)) return v
+  const n = Math.max(0, Math.trunc(digits))
+  // `toFixed` is authoritative here only as a decimal expansion; the tie
+  // decision below is made from the digits, not from its rounding.
+  // `toFixed` caps at 100 digits TOTAL, so the expansion budget shrinks as the
+  // requested precision grows. 100 is still far past any real tie.
+  const plain = Math.abs(v).toFixed(Math.min(100, n + 100))
+  const dot = plain.indexOf('.')
+  const keep = plain.slice(0, dot) + plain.slice(dot + 1, dot + 1 + n)
+  const rest = plain.slice(dot + 1 + n)
+  const isTie = rest[0] === '5' && /^0*$/.test(rest.slice(1))
+  const up = rest[0] > '5' || (isTie && Number(keep[keep.length - 1]) % 2 === 1)
+  const bumped = (BigInt(keep) + (up ? 1n : 0n)).toString()
+  const cut = bumped.length - n
+  const out = Number(cut > 0 ? bumped.slice(0, cut) + '.' + bumped.slice(cut) : '0.' + bumped.padStart(n, '0'))
+  return v < 0 || Object.is(v, -0) ? -out : out
+}
+
+/** `round(x)` — Python's one-argument form. */
+export const round_py = (x: number): number => round_to(x, 0)
+
+/**
+ * `int(x)` — Python's constructor, which RAISES on a string it cannot parse.
+ *
+ * `parseInt` was what the compiler emitted before, and the two disagree on the
+ * cases that matter: `parseInt("3.9")` is 3 (Python raises), `parseInt("12px")`
+ * is 12 (Python raises), and `parseInt(3.9)` on a float is fine in both. The
+ * difference is not cosmetic — a silent 12 from "12px" is a corrupt number that
+ * travels.
+ */
+export function int(x: any, base: number = 10): number {
+  if (typeof x === 'number') {
+    if (!Number.isFinite(x)) throw new ValueError(`cannot convert ${x} to int`)
+    return Math.trunc(x)
+  }
+  if (typeof x === 'boolean') return x ? 1 : 0
+  if (x === null || x === undefined) throw new TypeError(`int() argument must be a string or a number, not ${x}`)
+  const s = String(x).trim()
+  const re = base === 16 ? /^[+-]?[0-9a-fA-F]+$/ : base === 8 ? /^[+-]?[0-7]+$/ : base === 2 ? /^[+-]?[01]+$/ : /^[+-]?\d+$/
+  if (!re.test(s)) throw new ValueError(`invalid literal for int() with base ${base}: ${JSON.stringify(String(x))}`)
+  return parseInt(s, base)
+}
+
+/**
+ * `float(x)` — Python's constructor. `parseFloat("1.5abc")` is 1.5; Python
+ * raises. Also accepts `inf`/`nan`, which `parseFloat` spells differently.
+ */
+export function float(x: any): number {
+  if (typeof x === 'number') return x
+  if (typeof x === 'boolean') return x ? 1 : 0
+  if (x === null || x === undefined) throw new TypeError(`float() argument must be a string or a number, not ${x}`)
+  const s = String(x).trim()
+  const low = s.toLowerCase()
+  if (low === 'inf' || low === '+inf' || low === 'infinity') return Infinity
+  if (low === '-inf' || low === '-infinity') return -Infinity
+  if (low === 'nan') return NaN
+  if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s)) {
+    throw new ValueError(`could not convert string to float: ${JSON.stringify(String(x))}`)
+  }
+  return Number(s)
 }
 
 /** `format_number(1234567.891, "en-US")` -> "1,234,567.891" */

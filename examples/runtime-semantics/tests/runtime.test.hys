@@ -1,0 +1,111 @@
+# [xihanzu-NR]
+# Python semantics the runtime must answer, in the toolchain a project actually
+# has. Run with: hydra test
+from "hydra/test" import test, expect
+from "hydra" import truthy, sorted, py_mod, py_at, max_of, min_of, round_to, round_py, int, float, pop_of
+
+# --- truthiness -------------------------------------------------------------
+# An empty list and dict are False in Python and true in JS; a single object
+# literal is Python's way to spell a record and must stay True.
+def _falsy():
+    expect(truthy([])).to_be(False)
+    expect(truthy({})).to_be(False)
+    expect(truthy("")).to_be(False)
+    expect(truthy(0)).to_be(False)
+
+test("empty containers are falsy", _falsy)
+
+def _tnonemptycontainers():
+    expect(truthy([0])).to_be(True)
+    expect(truthy({"a": 1})).to_be(True)
+    expect(truthy({"a": "b"})).to_be(True)
+
+test("non-empty containers and records are truthy", _tnonemptycontainers)
+
+# A DOM element has no own enumerable keys. Keying truthiness off Object.keys()
+# made `if el:` false for every element the app looked up, so the branch was
+# silently never taken — this is the regression that blanked a real portfolio.
+# An object with a PROTOTYPE other than Object.prototype is what an element, a
+# class instance and a React ref all look like from the runtime's side.
+def _taDOMelementistruth():
+    class FakeElement:
+        def __init__(self):
+            self.nodeType = 1
+    expect(truthy(FakeElement())).to_be(True)
+    expect(truthy(new Map())).to_be(False)
+
+test("a DOM element is truthy", _taDOMelementistruth)
+
+def _tnullandundefinedar():
+    expect(truthy(None)).to_be(False)
+    expect(truthy({"current": None})).to_be(True)
+
+test("null and undefined are falsy even inside a ref", _tnullandundefinedar)
+
+# --- ordering ---------------------------------------------------------------
+# `[10, 9, 100].sort()` compares string forms: [10, 100, 9].
+def _tnumberssortnumeric():
+    expect(sorted([10, 9, 100])).to_equal([9, 10, 100])
+    expect(sorted(["b", "a"])).to_equal(["a", "b"])
+
+test("numbers sort numerically", _tnumberssortnumeric)
+
+# --- arithmetic -------------------------------------------------------------
+# Python's modulo takes the sign of the DIVISOR.
+def _tmodulokeepsthedivi():
+    expect(py_mod(-7, 3)).to_be(2)
+    expect(py_mod(7, 3)).to_be(1)
+    expect(py_mod(-7, -3)).to_be(-1)
+
+test("modulo keeps the divisor's sign", _tmodulokeepsthedivi)
+
+# round() is tie-to-even, not halfway-up.
+def _troundroundsatietoe():
+    expect(round_py(2.5)).to_be(2)
+    expect(round_py(3.5)).to_be(4)
+    expect(round_to(2.675, 2)).to_be(2.67)
+    expect(round_to(1.005, 2)).to_be(1.0)
+
+test("round rounds a tie to even", _troundroundsatietoe)
+
+# --- sequences --------------------------------------------------------------
+def _tanegativeindexcoun():
+    expect(py_at([1, 2, 3], -1)).to_be(3)
+    expect(py_at([1, 2, 3], 0)).to_be(1)
+
+test("a negative index counts from the end", _tanegativeindexcoun)
+
+def _tmaxandmintakeonese():
+    expect(max_of([1, 5, 3])).to_be(5)
+    expect(min_of([1, 5, 3])).to_be(1)
+
+test("max and min take one sequence", _tmaxandmintakeonese)
+
+def _tpopmeanslastelemen():
+    xs = [1, 2]
+    expect(pop_of(xs)).to_be(2)
+    expect(xs).to_equal([1])
+    d = {"a": 1}
+    expect(pop_of(d, "a")).to_be(1)
+
+test("pop means last element on a list and value on a dict", _tpopmeanslastelemen)
+
+# --- constructors -----------------------------------------------------------
+# parseInt("12px") is 12; Python raises, and a silent 12 travels.
+def _tintandfloatrejecta():
+    expect(int("42")).to_be(42)
+    expect(float("1.5")).to_be(1.5)
+    expect(int(3.9)).to_be(3)
+
+test("int and float reject a partial parse", _tintandfloatrejecta)
+
+# --- equality ---------------------------------------------------------------
+# `[1, 2] == [1, 2]` is false in JS (two objects) and true in Python.
+def _tequality():
+    from "hydra" import py_eq, py_ne
+    expect(py_eq([1, 2], [1, 2])).to_be(True)
+    expect(py_eq({"a": 1}, {"a": 1})).to_be(True)
+    expect(py_eq([1], [2])).to_be(False)
+    expect(py_ne([1], [2])).to_be(True)
+
+test("sequences compare by value", _tequality)

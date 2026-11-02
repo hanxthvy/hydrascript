@@ -12,6 +12,88 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## 0.9.1 — 2026-11-02
+
+**Python semantics for the operators and builtins whose JS spelling is close
+enough to look right.** Every item below produced a GREEN build and a wrong
+value, which is the worst failure shape this project has: nothing threw, so
+nothing pointed at the source line.
+
+### Fixed
+- **`sorted(xs)` compared string forms.** `Array.prototype.sort()` with no
+  comparator orders `[10, 9, 100]` as `[10, 100, 9]`. Now the runtime's `sorted`,
+  which compares numbers numerically and everything else as text.
+- **`x % y` took JavaScript's sign.** Python's result follows the DIVISOR, so
+  `-7 % 3` is 2 and was -1 — a ring index or bucket calculation landed one cell
+  off for negative input. Now `py_mod(a, b)`.
+- **`xs[-1]` was `undefined`.** A negative literal index is Python's
+  count-from-the-end; it is now `py_at(xs, -1)`. An index whose sign is not
+  statically known keeps the plain form, because rewriting it would break every
+  arithmetic index.
+- **`round(x)` rounded halfway up.** Python rounds a tie to the EVEN digit:
+  `round(2.5)` is 2, and was 3. `round_to`/`round_py` do it the way `py_fixed`
+  already did for `f"{x:.2f}"`. `round(2.675, 2)` is 2.67 again.
+- **`int("12px")` was 12.** `parseInt` truncates a partial parse where Python
+  raises, so a corrupt number travelled. `int`/`float` are runtime constructors
+  that raise `ValueError` for the same inputs.
+- **`f"{x:.3f}"` crashed in a `.hys` file.** The f-string translator invents
+  `py_fixed`/`py_group` and only the `.hyx` emitter recorded the import, so every
+  formatted f-string in a plain-node file threw `ReferenceError: py_fixed is not
+  defined`. Both emitters record it now, and
+  `packages/cli/helper-contract.test.mjs` asserts that every name the emitter can
+  emit is exported by the runtime — the class of bug `int` and `float` also
+  belonged to.
+- **`if xs:` used JavaScript truthiness.** An empty list and an empty dict are
+  truthy in JS and falsy in Python, so the wrong branch was taken silently. Bare
+  names in `if`/`elif`/`while` and in a tree `if` now go through `truthy()`.
+  Tests are wrapped only when the test is a name: `if x == 1` and `if not x` are
+  already correct and stay unwrapped.
+- **`bool([])` was true.** `Boolean` is not `bool`; it is `truthy()` now.
+- **`max(xs)` / `min(xs)` spread the argument.** Correct for an array, `NaN` for
+  a Set, a string or `range(n)`. `max_of`/`min_of` iterate, and an empty
+  sequence raises `ValueError` like Python.
+- **`xs.pop()` returned `None` and left the list alone.** The compiler lowered
+  every `.pop` to the dict helper, which read a key of `undefined`. One helper
+  now dispatches on the receiver: last element for a list, value for a dict key.
+- **`d.get(k)` returned `undefined`.** Python's fallback is `None`, and
+  `is None` is the whole idiom.
+- **`truthy()` reported an HTML element as falsy.** It keyed objects off
+  `Object.keys().length`, and an element has no own enumerable keys — so
+  `if el:` was false for every element the app looked up, and a branch was
+  silently never taken. Found by building a real portfolio, where it blanked the
+  page. Containers are judged by length/count, everything else by JS truthiness.
+- **`"ab" * 3` was `NaN`.** A literal string or list on the left of `*` repeats
+  through `py_repeat`. A variable keeps the numeric meaning: `price * qty` must
+  not change.
+- **`range(1, 10, 3)` threw `ReferenceError`.** The one-argument arm could never
+  see the variadic form, and the `.hys` path had no arm at all.
+- **A helper imported by hand was imported again.** `from "hydra" import sorted`
+  plus a generated `import { sorted }` was a duplicate binding and a build error
+  (`The symbol "sorted" has already been declared`). The generated import now
+  drops names the author already imported.
+
+### Fixed — build and tooling
+- **The compile cache could serve a previous compiler's output.** Its docstring
+  promised that "a compiler change is a miss by construction", but the key
+  carried the package VERSION, which does not move when the Rust source is
+  rebuilt. It now hashes the two binaries.
+- **`npm test` ran 4 of the 16 test files.** The remaining twelve — router, ssr,
+  ssr-concurrency, compile-cache, error-reporting, hmr, lsp, static-deploy,
+  test-command, loader, vscode-extension — ran only when invoked by hand.
+- **`scripts/hx-examples-check.sh` ignored `hydra test`.** An example whose own
+  suite failed still reported PASS. The new `examples/runtime-semantics` exists
+  to hold those assertions, and `hydra test` is now part of the check.
+
+### Added
+- **`examples/runtime-semantics`** — 11 `hydra test` assertions covering the
+  semantics above, so they are enforced by the repo's own example check rather
+  than by a one-off script.
+- **`scripts/page-console.mjs` / `scripts/page-network.mjs`** for debugging a
+  blank page over CDP: which module failed to load, and why. Both pick a real
+  page target — attaching to a Chrome extension's background page reports
+  "blank" for every site, which cost an hour of chasing a compiler bug that was
+  not there.
+
 ## 0.9.0 — 2026-11-02
 
 **Tests for the features 0.8 shipped, and four silent-failure bugs they found.**

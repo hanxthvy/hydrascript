@@ -320,13 +320,13 @@ These need no import:
 | HydraScript | Emits |
 |---|---|
 | `len(xs)` / `len(d)` | `xs.length` / dict-aware `len_of(d)` |
-| `max(a, b)` / `max(xs)` | `Math.max(a, b)` / spread |
-| `min(a, b)` / `min(xs)` | `Math.min(a, b)` / spread |
-| `abs(x)` / `round(x)` | `Math.abs` / `Math.round` |
+| `max(a, b)` / `max(xs)` | `Math.max(a, b)` / runtime `max_of(xs)` |
+| `min(a, b)` / `min(xs)` | `Math.min(a, b)` / runtime `min_of(xs)` |
+| `abs(x)` / `round(x)` | `Math.abs` / runtime `round_py(x)` — tie to even |
 | `pow(a, b)` | `a ** b` |
 | `sum(xs)` / `sum(xs, start)` | reduce / runtime helper |
-| `sorted(xs)` / `reversed(xs)` | non-mutating |
-| `str` / `int` / `float` / `bool` | `String` / `parseInt` / `parseFloat` / `Boolean` |
+| `sorted(xs)` / `reversed(xs)` | non-mutating; numbers compare numerically |
+| `str` / `int` / `float` / `bool` | `String` / runtime `int` / `float` / `truthy` |
 | `isinstance(x, int)` | `isinstance(x, Number)` |
 | `type(x).__name__` | `x.constructor.name` |
 | `enumerate` / `range` / `zip` | runtime helpers, auto-imported |
