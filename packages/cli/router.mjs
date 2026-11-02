@@ -39,6 +39,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { readMeta, shellMeta } from './meta.mjs';
+
 import { matchRoute, compareRoutes, pathSegments, parseQuery } from '../../runtime/router-core.js';
 
 export { matchRoute, compareRoutes, pathSegments, parseQuery };
@@ -264,13 +266,26 @@ export function scanRoutes(pagesDir) {
     // Read from the SOURCE at scan time rather than from an import at runtime,
     // because the decision changes what the BUILD does — a `csr` route is not
     // pre-rendered at all. Convention over keyword: it is a name, not syntax.
+    //
+    // The same read gets `meta`, for the same reason and one more: the compiler
+    // emits a module-level assignment as `const meta = ...`, not as an export,
+    // so importing the page module would not carry it even if we wanted to.
     let rendering = null;
+    let meta = null;
+    let text = null;
     try {
-      const text = fs.readFileSync(path.join(root, rel), 'utf8');
-      const m = /^\s*rendering\s*=\s*["'](ssg|csr|ssr)["']/m.exec(text);
-      if (m) rendering = m[1];
+      text = fs.readFileSync(path.join(root, rel), 'utf8');
     } catch {
       /* unreadable is not fatal here; the compiler will say so */
+    }
+    if (text !== null) {
+      const m = /^\s*rendering\s*=\s*["'](ssg|csr|ssr)["']/m.exec(text);
+      if (m) rendering = m[1];
+      const read = readMeta(text);
+      if (read.error) result.errors_diagnostics.push(`${rel}: ${read.error}`);
+      // `meta = {}` declares nothing, so it is treated as no meta at all rather
+      // than as an empty entry in the generated table.
+      else if (read.meta && Object.keys(read.meta).length > 0) meta = read.meta;
     }
 
     const serverCandidates = serverFileFor(rel) || [];
@@ -286,6 +301,8 @@ export function scanRoutes(pagesDir) {
       serverFile,
       /** `ssg` (pre-render), `csr` (client only), or null (decided by the project). */
       rendering,
+      /** `{ title, description }`, or null when the page declares none. */
+      meta,
       params: urlParts
         .filter((p) => p.kind === 'param' || p.kind === 'catchall')
         .map((p) => p.name),
@@ -393,8 +410,13 @@ function importerSpecifier(file) {
  * `pagesDir` is only needed for the convenience of reading it back; the
  * specifiers are relative to the generated file, which lives at
  * `<root>/.hydra/`.
+ *
+ * `cwd` is here for one value: the shell's own `<title>` and description. A
+ * navigation to a page that declares no `meta` has to put the shell's title
+ * back, and the shell is a file in the project — the browser cannot read it
+ * without a request the framework should not make.
  */
-export function routesModuleSource(table, { base = '/' } = {}) {
+export function routesModuleSource(table, { base = '/', cwd = null } = {}) {
   // STATIC imports, not `() => import(...)`.
   //
   // The lazy form is the more obvious choice and it does not work: esbuild sees
@@ -452,6 +474,24 @@ export function routesModuleSource(table, { base = '/' } = {}) {
     })),
   ) + ';');
   lines.push('');
+  // The page's `meta`, keyed by pattern, so a client navigation knows what the
+  // new route's title is without a request. It travels in the table rather than
+  // in the page module because the compiler emits `meta = {...}` as a local
+  // `const`, not an export — see meta.mjs.
+  //
+  // This is also what a CSR route gets: it is never pre-rendered, so the table
+  // is the only place its metadata can live.
+  lines.push('export const pageMeta = ' + JSON.stringify(
+    Object.fromEntries(table.routes.filter((r) => r.meta).map((r) => [r.pattern, r.meta])),
+  ) + ';');
+  lines.push('');
+  // The shell's own values, for a page that declares no `meta` of its own: it
+  // gets the project's title back after a navigation rather than the previous
+  // page's. A shell with no `<title>` stays null, so the browser keeps whatever
+  // it has rather than shipping an empty string.
+  const shell = cwd ? shellMeta(cwd) : { title: null, description: null };
+  lines.push('export const shellMeta = ' + JSON.stringify(shell) + ';');
+  lines.push('');
   // COMPONENTS, not loaders. `() => Promise.resolve(mod)` was the earlier shape
   // and it survived here after the runtime moved on: the client then had a
   // function where a component belonged, React rendered the Promise it returned,
@@ -482,7 +522,7 @@ export function routesModuleSource(table, { base = '/' } = {}) {
   lines.push(`export const hasNotFound = ${rootNotFound ? 'true' : 'false'};`);
   lines.push(`export const base = ${JSON.stringify(base)};`);
   lines.push('');
-  lines.push('export default { routes, pages, pageLayouts, pageErrors, notFound, hasNotFound, base };');
+  lines.push(`export default { routes, pages, pageLayouts, pageErrors, pageMeta, shellMeta, notFound, hasNotFound, base };`);
   lines.push('');
   return lines.join('\n');
 }
@@ -519,7 +559,7 @@ export function writeRoutesModule(cwd, table, opts = {}) {
   const dir = path.join(cwd, GENERATED_DIR);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, GENERATED_FILE);
-  fs.writeFileSync(file, routesModuleSource(table, opts), 'utf8');
+  fs.writeFileSync(file, routesModuleSource(table, { ...opts, cwd: opts.cwd || cwd }), 'utf8');
   return file;
 }
 
@@ -544,7 +584,7 @@ export function routesEsbuildPlugin(table, { base = '/', cwd } = {}) {
         namespace: 'hydra-routes',
       }));
       build.onLoad({ filter: /.*/, namespace: 'hydra-routes' }, () => ({
-        contents: routesModuleSource(table, { base }),
+        contents: routesModuleSource(table, { base, cwd: cwd || process.cwd() }),
         loader: 'js',
         resolveDir,
       }));
@@ -584,6 +624,7 @@ export function routesJson(table) {
       params: r.params,
       dynamic: r.hasParams,
       serverFile: r.serverFile || null,
+      meta: r.meta || null,
       layouts: layoutChainFor(r.dir, table),
       error: errorFor(r.dir, table),
     })),
@@ -711,6 +752,10 @@ function identFor(file) {
       file: r.file,
       params: r.params,
       segments: r.segments,
+      // Carried so a server render of a DYNAMIC route gets the page's own title.
+      // The pre-render pass applies `meta` from the scanner's table instead;
+      // this bundle only knows what is written here.
+      meta: r.meta || null,
     })),
   ) + ';');
   lines.push('');
@@ -730,11 +775,11 @@ function identFor(file) {
     lines.push(`  pageErrors[${JSON.stringify(pattern)}] = ${f ? `pick(${ident(f)})` : 'null'};`);
   }
   lines.push(`  const notFound = ${rootNotFound ? `pick(${ident(rootNotFound)})` : 'null'};`);
-  lines.push(
-    `  return { routes, pages, pageLayouts, pageErrors, notFound, hasNotFound: ${
+  lines.push(`  return { routes, pages, pageLayouts, pageErrors, pageMeta: ${JSON.stringify(
+    Object.fromEntries(table.routes.filter((r) => r.meta).map((r) => [r.pattern, r.meta])),
+  )}, notFound, hasNotFound: ${
       rootNotFound ? 'true' : 'false'
-    }, base: ${JSON.stringify(base)} };`,
-  );
+    }, base: ${JSON.stringify(base)} };`);
   lines.push('}');
   lines.push('');
   lines.push('function __sourceFor(pattern) {');

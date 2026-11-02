@@ -474,6 +474,48 @@ Kalau proyek punya `src/pages` tapi `App`-nya tidak pernah memanggil `Router()`,
 tidak ada yang dipra-render: tanpa router tidak ada route untuk dipra-render, dan
 build mengatakannya, bukan menulis halaman kosong.
 
+### Metadata: `meta`
+
+Sebuah halaman boleh mendeklarasikan `<title>` dan deskripsinya sendiri sebagai
+dict di level modul:
+
+```python
+# src/pages/about.hyx
+meta = {"title": "About — Hanz", "description": "Siapa yang menulis ini."}
+
+component About():
+    ...
+```
+
+Nilai itu dipakai di dua tempat, dari satu sumber:
+
+- **Saat build**, ke HTML statis route itu: `dist/about/index.html` memuat
+  `<title>` dan `<meta name="description">` tersebut, menggantikan punya cangkang.
+  Halaman tanpa `meta` tetap memakai judul cangkang, begitu juga setiap route yang
+  tidak pernah diberi `meta`.
+- **Saat navigasi klien**, oleh `Router()` — yang sudah dirender setiap proyek
+  ber-route. Pindah dari `/` ke `/about` memasang judul baru; kembali lagi
+  memulihkan judul cangkang, karena halaman yang tidak mengklaim apa pun tidak
+  boleh mewarisi judul halaman sebelumnya.
+
+Dua kunci, `title` dan `description`. Kunci ketiga adalah **error build yang
+menyebut namanya**, bukan nilai yang tidak pernah sampai ke halaman: ini bukan
+head manager, dan tidak akan tumbuh jadi satu. Ini juga bukan hook — tidak ada
+`use_head`, dan menambahkannya berarti dua cara mengatakan hal yang sama.
+
+`meta` dibaca dari SUMBER halaman, di tempat yang sama `rendering = "csr"` dibaca,
+bukan dengan mengimpor halaman. Compiler meng-emit `meta` level modul sebagai
+`const` lokal, bukan ekspor, jadi impor tidak akan membawanya — dan halaman adalah
+modul klien, jadi mengimpornya saat build berarti menjalankan impor-impornya di
+node, melewati batas yang justru dijaga `.server.hys`.
+
+**Yang sengaja belum:** metadata yang bergantung pada URL (`/blog/hello` ingin
+"hello" di judulnya) bukan metadata statis, dan ini tidak berpura-pura sebaliknya
+— cangkang route dinamis memakai judul aplikasi, dan klien memasang judul
+halamannya setelah hidrasi. Tidak ada open-graph, twitter card, canonical, atau
+structured data; masing-masing adalah klaim terpisah tentang sebuah halaman dan
+butuh pernyataannya sendiri tentang apa yang membuatnya benar.
+
 ### Data: `loader` dan `action`
 
 Sebuah halaman bisa punya **belahan server** di berkas di sampingnya — nama sama,
@@ -757,6 +799,7 @@ versinya target, dan urutannya bagian yang jujur.
 | 0.8 | Loader jalan ulang saat navigasi klien | rilis |
 | 0.9 | `hydra-lsp`: diagnostik, hover, go-to-definition, rename | rilis |
 | 0.9 | `hydra test`: tes komponen, route dan snapshot | rilis |
+| berikutnya | `meta` per halaman: `<title>` dan deskripsi, saat SSG dan saat navigasi | selesai, belum dirilis |
 | 1.0 | Cache kompilasi inkremental (content-addressed, di disk) | rilis |
 | 1.0 | Kompilasi paralel (worker pool, diukur, mati di bawah skala) | rilis |
 | berikutnya | React Fast Refresh (state dipertahankan lintas edit) | belum mulai |

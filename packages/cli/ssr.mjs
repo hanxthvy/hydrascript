@@ -29,6 +29,7 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
 import { matchRoute } from '../../runtime/router-core.js';
+import { applyMeta } from './meta.mjs';
 import { readBody, requestFor } from './actions.mjs';
 
 /** Where the build leaves the server bundle for the dev/preview/serve commands. */
@@ -204,7 +205,7 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
       if (!element) return null;
       const rendered = renderToString(element);
       if (typeof mod.__clear_seed === 'function') mod.__clear_seed();
-      return { pattern, params, data, html: rendered };
+      return { pattern, params, data, html: rendered, meta: hit.route.meta || null };
     },
     /** Render a URL into a complete HTML document. */
     async renderPage(url, opts = {}) {
@@ -212,6 +213,11 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
       if (!out) return null;
       let html = injectMarkup(shell, out.html);
       html = injectData(html, dataTag(out.pattern, url, out.data));
+      // The same `meta` the pre-render pass applies. `shell` here is the
+      // project's own index.html, whose title is the app's; without this a
+      // page served for `/blog/hello` would answer with the shell's title while
+      // the static build of every OTHER route had the page's.
+      html = applyMeta(html, out.meta);
       return { ...out, document: html };
     },
     /** Run just the loader, for the data endpoint. */
