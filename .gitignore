@@ -5,9 +5,10 @@
 
 # Review notes and audit output. Kept out of the repository for the same reason
 # the worklogs are: they are someone's working opinion about the code, not part
-# of what the project ships. `.review*.md` catches `.review-production.md` and
-# any follow-up with the same prefix.
+# of what the project ships. Both spellings are covered — `.review*.md` for a
+# hidden working copy, `REVIEW*.md` for the readable one at the project root.
 .review*.md
+REVIEW*.md
 
 # Dependencies. NOTE: without this, `git add -A` stages every dependency in the
 # repository — there are example projects and a plugin each with their own
