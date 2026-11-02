@@ -14,10 +14,11 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 import {
   scanRoutes,
   writeRoutesModule,
+  writeSsgEntry,
   routesEsbuildPlugin,
   routeTable,
   routesJson,
-  ROUTES_MODULE,
+  matchRoute,
 } from './router.mjs';
 
 /**
@@ -694,6 +695,15 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
       );
     }
     writeRoutesModule(cwd, routesTable, { base });
+    if (routesTable.routes.length > 0) {
+      const dynamic = routesTable.routes.filter((r) => r.hasParams);
+      console.log(
+        `[hydra] ${routesTable.routes.length} route(s) from ${path.relative(cwd, pagesDir) || '.'}` +
+          (dynamic.length > 0
+            ? `, ${dynamic.length} dynamic (${dynamic.map((r) => r.pattern).join(', ')})`
+            : ''),
+      );
+    }
   }
 
   let _p = phaseStart();
@@ -795,6 +805,11 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   // attached yet would surface as an unhandled rejection and take the process
   // down, and SSG failure is deliberately non-fatal (step 8 reports it).
   const ssgEntryCandidates = [
+    // The generated pre-render entry comes first when file-based routing is on:
+    // the runtime `Router` resolves pages in an effect, and `renderToString`
+    // does not run effects, so rendering through it would pre-render an empty
+    // shell. The generated entry imports the pages statically instead.
+    ...(routesTable ? [writeSsgEntry(cwd, routesTable)].filter(Boolean) : []),
     path.join(cwd, 'src/App.hyx'),
     path.join(cwd, 'src/App.hsx'),
     path.join(cwd, 'src/App.jsx'),
@@ -1137,27 +1152,77 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
         const reactMod = await import(pathToFileURL(reactPath).href);
         const React = reactMod.default || reactMod;
 
-        const AppComponent = ssgMod.App || ssgMod.default || Object.values(ssgMod).find((v) => typeof v === 'function');
-        if (!AppComponent) {
-          throw new Error('Could not find exported App component in SSR bundle');
-        }
-
         phase('5c. ssg import react', _s);
         _s = phaseStart();
-        const renderedHtml = renderToString(React.createElement(AppComponent));
+
+        // One page of HTML per static route. A route with a parameter has no
+        // single URL to render, so it is skipped and SAID OUT LOUD: a project
+        // that ships a `/blog/:slug` and finds an empty shell in the served HTML
+        // has to be able to read why, not infer it.
+        const staticRoutes = routesTable ? routesTable.routes.filter((r) => !r.hasParams) : [];
+        const dynamicRoutes = routesTable ? routesTable.routes.filter((r) => r.hasParams) : [];
+
+        const sourceHtml = fs.existsSync(htmlOutPath) ? fs.readFileSync(htmlOutPath, 'utf8') : null;
+        const inject = (html, rendered) =>
+          html.replace(/<div\s+id=["']root["']\s*>\s*<\/div>/i, `<div id="root">${rendered}</div>`);
+
+        /** `/about` -> `dist/about/index.html`; `/` -> `dist/index.html`. */
+        const htmlPathForPattern = (pattern) => {
+          if (pattern === '/') return htmlOutPath;
+          const slug = pattern.replace(/^\/+|\/+$/g, '');
+          if (!slug) return htmlOutPath;
+          const dir = path.join(outDir, ...slug.split('/'));
+          fs.mkdirSync(dir, { recursive: true });
+          return path.join(dir, 'index.html');
+        };
+
+        let renderedCount = 0;
+        if (sourceHtml && routesTable && staticRoutes.length > 0 && typeof ssgMod.renderFor === 'function') {
+          for (const route of staticRoutes) {
+            try {
+              const element = ssgMod.renderFor(route.pattern, {});
+              if (!element) {
+                console.warn(`[hydra] SSG: ${route.pattern} (src/pages/${route.file}) exports no component; skipped`);
+                continue;
+              }
+              const rendered = renderToString(element);
+              fs.writeFileSync(htmlPathForPattern(route.pattern), inject(sourceHtml, rendered), 'utf8');
+              renderedCount += 1;
+            } catch (err) {
+              // One page that throws must not cost the other pages their HTML.
+              console.error(`[hydra] SSG: ${route.pattern} failed to pre-render: ${err.message || err}`);
+            }
+          }
+          console.log(
+            `[hydra] SSG: pre-rendered ${renderedCount}/${staticRoutes.length} static route(s) into ${path.relative(cwd, outDir)}/`,
+          );
+          if (dynamicRoutes.length > 0) {
+            console.log(
+              `[hydra] SSG: ${dynamicRoutes.length} dynamic route(s) left as the client shell ` +
+                `(${dynamicRoutes.map((r) => r.pattern).join(', ')}) — a URL with a parameter has no single page to build`,
+            );
+          }
+        } else {
+          const AppComponent =
+            ssgMod.App || ssgMod.default || Object.values(ssgMod).find((v) => typeof v === 'function');
+          if (!AppComponent) {
+            throw new Error('Could not find exported App component in SSR bundle');
+          }
+          const renderedHtml = renderToString(React.createElement(AppComponent));
+          if (sourceHtml) {
+            fs.writeFileSync(htmlOutPath, inject(sourceHtml, renderedHtml), 'utf8');
+            console.log(
+              `[hydra] SSG: Pre-rendered HTML injected into ${path.relative(cwd, htmlOutPath)} (${renderedHtml.length} chars)`,
+            );
+          }
+        }
+
         phase('5d. renderToString', _s);
         // Sub-phases above replace the coarser '5. ssg render' entry: the
         // parent span covers exactly them plus the HTML injection, and
         // reporting both made the table add up to more than the build.
         for (let i = phaseTimes.length - 1; i >= 0; i--) {
           if (phaseTimes[i][0] === '5. ssg render') { phaseTimes.splice(i, 1); break; }
-        }
-
-        if (fs.existsSync(htmlOutPath)) {
-          let html = fs.readFileSync(htmlOutPath, 'utf8');
-          html = html.replace(/<div\s+id=["']root["']\s*><\/div>/i, `<div id="root">${renderedHtml}</div>`);
-          fs.writeFileSync(htmlOutPath, html, 'utf8');
-          console.log(`[hydra] SSG: Pre-rendered HTML injected into dist/index.html (${renderedHtml.length} chars)`);
         }
       } catch (err) {
         console.error('[hydra] SSG Pre-rendering error:', err.message || err);

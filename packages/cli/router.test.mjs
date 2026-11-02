@@ -73,8 +73,12 @@ test('a route group does not appear in the URL but still scopes its layouts', ()
   const table = scanRoutes(pages);
   const price = table.routes.find((r) => r.pattern === '/price');
   assert.ok(price, 'group omitted from the URL');
-  assert.equal(price.group, '(marketing)');
-  assert.deepEqual(layoutChainFor(price.dir, table), ['(marketing)/_layout.hyx']);
+  // `dir` keeps the group, because a group exists precisely to give its routes
+  // a layout of their own.
+  assert.equal(price.dir, '(marketing)');
+  assert.deepEqual(layoutChainFor('(marketing)', table), ['(marketing)/_layout.hyx']);
+  // A route with no layout above it gets an empty chain, not a fallback.
+  assert.deepEqual(layoutChainFor('nowhere', table), []);
 });
 
 test('a leading underscore is private: not routable, and not an error', () => {
@@ -190,7 +194,8 @@ test('hydra routes table lists dynamic routes and framework files', () => {
   });
   const table = scanRoutes(pages);
   const text = routeTable(table);
-  assert.match(text, /\/blog\/:slug\s+src\/blog\/\[slug\]\.hyx\s+\(dynamic\)/);
+  assert.match(text, /\/blog\/:slug\s+dynamic\s+src\/pages\/blog\/\[slug\]\.hyx/);
+  assert.match(text, /\/\s+static\s+src\/pages\/index\.hyx/);
   assert.match(text, /layout/);
   assert.match(text, /404/);
 });

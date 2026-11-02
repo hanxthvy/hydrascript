@@ -14,6 +14,12 @@ import React, {
 } from 'react'
 import * as ReactDOM from 'react-dom/client'
 
+import {
+  matchRoute as core_match_route,
+  parseQuery as core_parse_query,
+  pickPageComponent as core_pick_page,
+} from './router-core.js'
+
 /* ------------------------------------------------------------------ state */
 
 /**
@@ -732,6 +738,402 @@ export function Link({ to, href, onClick, replace = false, children, ...rest }: 
     onClick: handleClick,
     ...rest,
   }, children)
+}
+
+/* ------------------------------------------------------- file-based routing
+ *
+ * The route table is generated from the pages directory at build time and
+ * arrives as the virtual module `hydra:routes`. Everything below works off that
+ * one table, including the same matcher the CLI used to build it — see
+ * `runtime/router-core.js` for why the matcher is not written twice.
+ *
+ * The table is read through a lazy, cached import rather than a static import,
+ * because a project that does not use file-based routing must still be able to
+ * import this runtime. A static import of a virtual module would make every
+ * project require a generated file it has no pages for.
+ */
+
+export interface RouteEntry {
+  pattern: string
+  file: string
+  params: string[]
+}
+
+/** `() => import('./pages/x.hyx')` — esbuild turns each one into a chunk. */
+export type ComponentImporter = () => Promise<any>
+
+/**
+ * The generated route table.
+ *
+ * Every value except `notFound` is keyed by route pattern, so the table cannot
+ * pair a page with the wrong layout: they are two views of one key.
+ */
+export interface RouteTable {
+  routes: RouteEntry[]
+  /** pattern -> importer for the page. */
+  pages: Record<string, ComponentImporter>
+  /** pattern -> wrapped-by importers, nearest first. */
+  pageLayouts: Record<string, ComponentImporter[]>
+  /** pattern -> nearest `_error` importer, or null. */
+  pageErrors: Record<string, ComponentImporter | null>
+  /** `null` unless the project has a `_404` file. */
+  notFound: ComponentImporter | null
+  hasNotFound: boolean
+  base: string
+}
+
+let route_table_cache: RouteTable | null | undefined = undefined
+let route_table_promise: Promise<RouteTable | null> | null = null
+
+/**
+ * The generated route table, or `null` in a project without one.
+ *
+ * One module load, cached at module scope: the table, the page importers and
+ * the layout importers all come from the same generated file, so the browser
+ * cannot see a table that disagrees with the importers beside it.
+ */
+export function use_route_table(): RouteTable | null | undefined {
+  const [table, setTable] = useState<RouteTable | null | undefined>(route_table_cache)
+
+  useEffect(() => {
+    if (route_table_cache !== undefined) {
+      if (table !== route_table_cache) setTable(route_table_cache)
+      return
+    }
+    let alive = true
+    if (!route_table_promise) {
+      route_table_promise = import('hydra:routes')
+        .then((m: any) => {
+          route_table_cache = {
+            routes: m.routes || [],
+            pages: m.pages || {},
+            pageLayouts: m.pageLayouts || {},
+            pageErrors: m.pageErrors || {},
+            notFound: m.notFound || null,
+            hasNotFound: Boolean(m.hasNotFound),
+            base: m.base || '/',
+          }
+          return route_table_cache
+        })
+        .catch(() => {
+          // Not a failure: this project has no pages directory, so it wires its
+          // own routes and never asked for this module.
+          route_table_cache = null
+          return null
+        })
+    }
+    route_table_promise.then((t) => {
+      if (alive) setTable(t)
+    })
+    return () => {
+      alive = false
+    }
+    // The table is deliberately absent from the deps: this effect must not
+    // re-run because of the state it sets.
+  }, [])
+
+  return table
+}
+
+/** The table as a plain value, for code outside a component. */
+export function get_route_table_sync(): RouteTable | null {
+  return route_table_cache ?? null
+}
+
+/**
+ * `params = use_params()`
+ *
+ * The dynamic segments of the current URL, `{}` on a static route.
+ */
+export function use_params(): Record<string, string | string[]> {
+  const match = use_route_match()
+  return match ? match.params : {}
+}
+
+/**
+ * `query = use_query_string()`
+ *
+ * The query string as an object. Named to stay out of the way of `use_query`,
+ * which is this runtime's data-fetching hook and has nothing to do with URLs.
+ */
+export function use_query_string(): Record<string, string> {
+  const path = use_path()
+  const location = typeof window !== 'undefined' ? window.location.href : path
+  return useMemo(() => core_parse_query(location), [location])
+}
+
+/**
+ * The full route for the current URL.
+ *
+ * `pattern` and `file` are null when nothing matched, which is information the
+ * caller usually wants: a page can tell "wrong URL" from "right URL, no data".
+ */
+export function use_route(): {
+  path: string
+  params: Record<string, string | string[]>
+  query: Record<string, string>
+  pattern: string | null
+  file: string | null
+} {
+  const path = use_path()
+  const query = use_query_string()
+  const match = use_route_match()
+  return {
+    path,
+    params: match ? match.params : {},
+    query,
+    pattern: match ? match.route.pattern : null,
+    file: match ? match.route.file : null,
+  }
+}
+
+/** The raw match for the current URL, or null. */
+export function use_route_match(): { route: RouteEntry; params: Record<string, string | string[]> } | null {
+  const path = use_path()
+  const table = use_route_table()
+  return useMemo(() => {
+    if (!table || table.routes.length === 0) return null
+    return core_match_route(path, table.routes as any) as any
+  }, [path, table])
+}
+
+/**
+ * `navigate_to("/blog/12", replace=True)`
+ *
+ * `navigate` is the primitive; this is the same thing with the parts that are
+ * easy to get wrong handled: the deployment base prefix, and a query string
+ * built from a dict rather than concatenated by hand.
+ */
+export function navigate_to(
+  to: string,
+  opts: { replace?: boolean; query?: Record<string, string | number | boolean | null | undefined> } = {},
+): void {
+  if (typeof window === 'undefined') return
+  const base = route_table_cache?.base || '/'
+  let url = to
+  if (base !== '/' && url.startsWith('/') && !url.startsWith(base)) {
+    url = base.replace(/\/$/, '') + url
+  }
+  if (opts.query) {
+    const qs = new URLSearchParams()
+    for (const [k, v] of Object.entries(opts.query)) {
+      if (v !== null && v !== undefined && v !== false) qs.set(k, String(v))
+    }
+    const s = qs.toString()
+    if (s) url += (url.includes('?') ? '&' : '?') + s
+  }
+  if (opts.replace) {
+    window.history.replaceState({}, '', url)
+    window.dispatchEvent(new PopStateEvent('popstate'))
+  } else {
+    navigate(url)
+  }
+}
+
+/** Wrap `inner` in a layout chain, outermost first. */
+
+/**
+ * Error boundary for one route's subtree.
+ *
+ * React only supports error boundaries as class components, so this is one. It
+ * exists in the runtime rather than in generated code so that every project
+ * gets the same behaviour, and so the fallback contract (`error`, `path` props)
+ * is documented in one place.
+ */
+export class RouteErrorBoundary extends React.Component<
+  { fallback?: any; path?: string; children?: React.ReactNode },
+  { error: Error | null }
+> {
+  constructor(props: any) {
+    super(props)
+    this.state = { error: null }
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { error }
+  }
+
+  componentDidCatch(error: Error) {
+    // Swallowing this would make a broken page look like a styling problem.
+    if (typeof console !== 'undefined') console.error('[hydra] route error:', error)
+  }
+
+  render() {
+    if (this.state.error) {
+      const Fallback = this.props.fallback
+      if (Fallback) {
+        return React.createElement(Fallback, { error: this.state.error, path: this.props.path })
+      }
+      return React.createElement(
+        'div',
+        { style: { padding: '2rem', fontFamily: 'monospace', whiteSpace: 'pre-wrap' } },
+        `This route threw.\n\n${this.state.error && this.state.error.message ? this.state.error.message : String(this.state.error)}`,
+      )
+    }
+    return this.props.children
+  }
+}
+
+export interface RouterProps {
+  /** Route table. Defaults to the generated one. */
+  routes?: RouteEntry[]
+  /** `pattern -> importer`. Defaults to the generated one. */
+  pages?: Record<string, ComponentImporter>
+  /** `pattern -> wrapped-by importers, nearest first`. Defaults to the generated one. */
+  pageLayouts?: Record<string, ComponentImporter[]>
+  /** `pattern -> error component importer`. Defaults to the generated one. */
+  pageErrors?: Record<string, ComponentImporter | null>
+  /**
+   * Already-loaded components, keyed by pattern, layout file or `_404`.
+   *
+   * For a project that wires its own routes, or that cannot use dynamic
+   * imports. Everything else normally comes from the generated table.
+   */
+  components?: Record<string, any>
+  /** Rendered while a page's chunk is loading. */
+  loading?: React.ReactNode
+  children?: React.ReactNode
+}
+
+async function loadImporter(importer: any): Promise<any> {
+  if (typeof importer !== 'function') return importer || null
+  return core_pick_page(await importer())
+}
+
+/**
+ * Wrap `page` in its layout chain.
+ *
+ * `chain` is nearest-first and layouts nest outermost-first, so it is walked
+ * backwards: for `[dashboard, root]`, root wraps dashboard wraps the page.
+ */
+export function wrapInLayouts(page: React.ReactNode, chain: any[]): React.ReactNode {
+  let el = page
+  for (let i = chain.length - 1; i >= 0; i--) {
+    if (chain[i]) el = React.createElement(chain[i], null, el)
+  }
+  return el
+}
+
+/**
+ * Resolve `{ page, layouts, error }` for a pattern, from either source.
+ *
+ * One function for both the generated importers and the `components` escape
+ * hatch, so a project that passes its own components cannot end up with a
+ * different nesting rule than a project that does not.
+ */
+async function resolveRoute(
+  pattern: string,
+  pages: Record<string, ComponentImporter>,
+  pageLayouts: Record<string, ComponentImporter[]>,
+  pageErrors: Record<string, ComponentImporter | null>,
+  components?: Record<string, any>,
+): Promise<{ page: any; layouts: any[]; error: any }> {
+  const fromComponents = components ? components[pattern] : undefined
+  if (fromComponents) return { page: fromComponents, layouts: [], error: null }
+  const [page, layouts, error] = await Promise.all([
+    loadImporter(pages[pattern]),
+    Promise.all((pageLayouts[pattern] || []).map((imp) => loadImporter(imp))),
+    loadImporter(pageErrors[pattern]),
+  ])
+  return { page, layouts: layouts.filter(Boolean), error }
+}
+
+/**
+ * `Router`: render the page for the current URL.
+ *
+ * With no props it uses the generated table, which is the point: an app writes
+ * `Router()` and the folder layout decides what that means.
+ */
+export function Router(props: RouterProps) {
+  const { components, loading, children } = props
+  const path = use_path()
+  const table = use_route_table()
+  const [resolved, setResolved] = useState<{ page: any; layouts: any[]; error: any } | null>(null)
+  const [notFoundComp, setNotFoundComp] = useState<any>(null)
+
+  const routes: RouteEntry[] = useMemo(() => {
+    if (props.routes) return props.routes
+    return table ? table.routes : []
+  }, [props.routes, table])
+
+  const pages = props.pages || (table ? table.pages : {})
+  const pageLayouts = props.pageLayouts || (table ? table.pageLayouts : {})
+  const pageErrors = props.pageErrors || (table ? table.pageErrors : {})
+
+  const match = useMemo(
+    () => (routes.length > 0 ? (core_match_route(path, routes as any) as any) : null),
+    [path, routes],
+  )
+  const pattern = match ? match.route.pattern : null
+
+  // The page, its layout chain and its error boundary resolve together: split
+  // across three effects they would settle in three paints, which on a slow
+  // chunk shows as a flash of the page without its layout.
+  useEffect(() => {
+    if (!pattern) {
+      setResolved(null)
+      return
+    }
+    let alive = true
+    resolveRoute(pattern, pages, pageLayouts, pageErrors, components)
+      .then((r) => {
+        if (alive) setResolved(r)
+      })
+      .catch((err: Error) => {
+        if (!alive) return
+        // A chunk that failed to load is a route error like any other, so it
+        // goes through the same boundary instead of a separate message.
+        setResolved({ page: null, layouts: [], error: null })
+        if (typeof console !== 'undefined') console.error('[hydra] could not load route', pattern, err)
+      })
+    return () => {
+      alive = false
+    }
+  }, [pattern, pages, pageLayouts, pageErrors, components])
+
+  const notFoundImporter = (components && components['_404']) || (table ? table.notFound : null)
+
+  useEffect(() => {
+    if (pattern || !notFoundImporter) {
+      setNotFoundComp(null)
+      return
+    }
+    let alive = true
+    // `_404` may arrive as an importer or as a ready component; both are the
+    // same thing to the caller.
+    Promise.resolve()
+      .then(() => (typeof notFoundImporter === 'function' && notFoundImporter.length === 0
+        ? loadImporter(notFoundImporter)
+        : notFoundImporter))
+      .then((c) => {
+        if (alive) setNotFoundComp(c)
+      })
+      .catch(() => {
+        if (alive) setNotFoundComp(null)
+      })
+    return () => {
+      alive = false
+    }
+  }, [pattern, notFoundImporter])
+
+  if (!match) {
+    if (notFoundComp) return React.createElement(notFoundComp, { path })
+    return null
+  }
+
+  const page = resolved && resolved.page
+  const body = page
+    ? wrapInLayouts(
+        React.createElement(page, { params: match.params, path, route: match.route }),
+        resolved!.layouts,
+      )
+    : ((loading as any) ?? null)
+
+  return React.createElement(
+    RouteErrorBoundary,
+    { fallback: resolved ? resolved.error : null, path },
+    React.createElement(Fragment, null, body, children),
+  )
 }
 
 // [xihanzu-NR]

@@ -182,6 +182,38 @@ class Cdp {
 }
 
 /**
+ * Every HTML page the build produced, as URL paths, root first.
+ *
+ * A file-based build emits one page per static route (`dist/about/index.html`),
+ * and checking only `dist/index.html` would leave every other route unchecked —
+ * which is exactly where a route-specific bug lives. The list is bounded so a
+ * project with hundreds of routes cannot turn a build into a browser
+ * regression suite; the cap is reported rather than silently applied.
+ */
+function builtPages(distDir, cap = 25) {
+  const found = [];
+  const walk = (dir) => {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (e.name === 'index.html') {
+        const rel = path.relative(distDir, dir).split(path.sep).join('/');
+        found.push(rel === '' ? '/' : `/${rel}/`);
+      }
+    }
+  };
+  walk(distDir);
+  found.sort((a, b) => (a === '/' ? -1 : b === '/' ? 1 : a.localeCompare(b)));
+  return { pages: found.slice(0, cap), total: found.length, cap };
+}
+
+/**
  * Run the gate against a directory of built files.
  *
  * @param {object} opts
@@ -237,7 +269,6 @@ export async function runRuntimeGate({ distDir, serve }) {
     ({ server } = await serve(distDir));
     const port = server.address()?.port;
     if (!port) throw new Error('static server did not report a port');
-    const url = `http://127.0.0.1:${port}/`;
 
     child = spawn(
       browser,
@@ -271,6 +302,8 @@ export async function runRuntimeGate({ distDir, serve }) {
       });
     }
 
+    // Chrome is launched with `about:blank` as its target, so the page to
+    // attach to is already there and stays the same one for every route.
     const targets = await getJson(`http://127.0.0.1:${devPort}/json/list`);
     const page = targets.find((t) => t.type === 'page');
     if (!page?.webSocketDebuggerUrl) {
@@ -291,15 +324,13 @@ export async function runRuntimeGate({ distDir, serve }) {
     });
     const cdp = new Cdp(ws);
 
+    /** Exceptions seen since the last `Page.navigate`, with the page they came from. */
+    let currentPage = '/';
     cdp.on('Runtime.exceptionThrown', (p) => {
       const d = p.exceptionDetails || {};
-      const text =
-        d.exception?.description ||
-        d.exception?.value ||
-        d.text ||
-        'uncaught exception';
+      const text = d.exception?.description || d.exception?.value || d.text || 'uncaught exception';
       // The stack's first line is enough; the rest is noise in a build log.
-      exceptions.push(String(text).split('\n')[0].trim());
+      exceptions.push(`${currentPage} — ${String(text).split('\n')[0].trim()}`);
     });
     cdp.on('Log.entryAdded', (p) => {
       const e = p.entry || {};
@@ -308,7 +339,7 @@ export async function runRuntimeGate({ distDir, serve }) {
         // libraries log recoverable complaints, and failing on those makes the
         // gate unusable. Exceptions are the hard signal.
         const t = (e.text || '').trim();
-        if (t) warnings.push(t.split('\n')[0]);
+        if (t) warnings.push(`${currentPage} — ${t.split('\n')[0]}`);
       }
     });
 
@@ -316,42 +347,54 @@ export async function runRuntimeGate({ distDir, serve }) {
     await cdp.send('Log.enable');
     await cdp.send('Page.enable');
 
-    let loaded = false;
-    cdp.on('Page.loadEventFired', () => {
-      loaded = true;
-    });
-    await cdp.send('Page.navigate', { url });
+    const { pages, total, cap } = builtPages(distDir);
+    if (total > cap) {
+      warnings.push(
+        `${total} HTML pages built; the gate checked the first ${cap} (a build is not a test suite)`,
+      );
+    }
 
-    const loadDeadline = Date.now() + 15000;
-    while (!loaded && Date.now() < loadDeadline) await sleep(100);
-    if (!loaded) warnings.push(`page never fired load within 15s (${url})`);
+    for (const pagePath of pages) {
+      currentPage = pagePath;
+      let loaded = false;
+      const onLoad = () => {
+        loaded = true;
+      };
+      cdp.on('Page.loadEventFired', onLoad);
+      await cdp.send('Page.navigate', { url: `http://127.0.0.1:${port}${pagePath}` });
 
-    await sleep(SETTLE_MS);
+      const loadDeadline = Date.now() + 15000;
+      while (!loaded && Date.now() < loadDeadline) await sleep(100);
+      if (!loaded) warnings.push(`${pagePath} — page never fired load within 15s`);
 
-    // Empty-shell detection. Advisory: reported, never fatal.
-    try {
-      const res = await cdp.send('Runtime.evaluate', {
-        expression: `(() => {
-          const root = document.getElementById('root') || document.body;
-          return JSON.stringify({
-            rootId: document.getElementById('root') ? 'root' : 'body',
-            children: root ? root.children.length : -1,
-            textLength: (document.body.innerText || '').trim().length,
-          });
-        })()`,
-        returnByValue: true,
-      });
-      const info = JSON.parse(res.result?.value || '{}');
-      if (info.children === 0 && info.textLength === 0) {
-        warnings.push(
-          `${info.rootId} rendered nothing (#${info.rootId} has no children and the body has no text)`,
-        );
+      await sleep(SETTLE_MS);
+
+      // Empty-shell detection. Advisory: reported, never fatal. Skipped for the
+      // off-budget pages above, where the browser was never pointed at them.
+      try {
+        const res = await cdp.send('Runtime.evaluate', {
+          expression: `(() => {
+            const root = document.getElementById('root') || document.body;
+            return JSON.stringify({
+              rootId: document.getElementById('root') ? 'root' : 'body',
+              children: root ? root.children.length : -1,
+              textLength: (document.body.innerText || '').trim().length,
+            });
+          })()`,
+          returnByValue: true,
+        });
+        const info = JSON.parse(res.result?.value || '{}');
+        if (info.children === 0 && info.textLength === 0) {
+          warnings.push(
+            `${pagePath} — ${info.rootId} rendered nothing (#${info.rootId} has no children and the body has no text)`,
+          );
+        }
+      } catch (e) {
+        // A failed probe is not a finding, but swallowing it silently is how a
+        // 10-second stall stayed invisible: the check that was supposed to notice
+        // an empty page simply never ran. Say so.
+        warnings.push(`${pagePath} — empty-shell check could not run: ${e.message}`);
       }
-    } catch (e) {
-      // A failed probe is not a finding, but swallowing it silently is how a
-      // 10-second stall stayed invisible: the check that was supposed to notice
-      // an empty page simply never ran. Say so.
-      warnings.push(`empty-shell check could not run: ${e.message}`);
     }
 
     ws.close();
