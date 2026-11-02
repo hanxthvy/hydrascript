@@ -48,6 +48,23 @@ const SETTLE_MS = Number(process.env.HYDRA_GATE_SETTLE_MS || 900);
 const GATE_TIMEOUT_MS = Number(process.env.HYDRA_GATE_TIMEOUT_MS || 25000);
 
 /**
+ * Available memory (MiB) needed before the gate will launch a browser.
+ * `HYDRA_GATE_FORCE=1` overrides the check.
+ */
+const GATE_MIN_FREE_MIB = Number(process.env.HYDRA_GATE_MIN_MB || 350);
+
+/** MemAvailable from /proc/meminfo, in MiB; null where that file is not a thing. */
+function availableMemoryMiB() {
+  try {
+    const txt = fs.readFileSync('/proc/meminfo', 'utf8');
+    const m = /^MemAvailable:\s+(\d+)\s+kB/m.exec(txt);
+    return m ? Math.round(Number(m[1]) / 1024) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Chrome flags for the gate. Exported so a test can assert them: two of these are
  * load-bearing, not cosmetic.
  *
@@ -124,6 +141,80 @@ function getJson(url) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * A Chrome left behind by a killed build holds its renderer's memory forever.
+ *
+ * `child.kill()` kills the process the gate spawned and NOT its children, and a
+ * Chrome is a process tree: browser, gpu, zygote, one renderer per tab. Killing
+ * the parent leaves the renderers reparented to init and running — measured on
+ * this machine, four orphaned gates held ~800 MB between them and the next
+ * build died on SIGTERM. The gate is spawned `detached` so Chrome becomes a
+ * process-group leader, and the whole group is killed.
+ *
+ * `process.on('exit')` covers the case that caused the leak in the first place:
+ * the build itself being interrupted, which never reaches the `finally`.
+ */
+const liveGates = new Set();
+
+function killTree(child) {
+  if (!child || child.killed) return;
+  const pid = child.pid;
+  if (!pid) return;
+  try {
+    // Negative pid = the whole process group (Chrome was spawned detached).
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
+function killAllGates() {
+  for (const c of liveGates) killTree(c);
+  liveGates.clear();
+}
+process.on('exit', killAllGates);
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => {
+    killAllGates();
+    process.exit(128 + (sig === 'SIGINT' ? 2 : sig === 'SIGTERM' ? 15 : 1));
+  });
+}
+
+/**
+ * Remove profiles a previous, killed gate left in tmp, and the Chrome trees
+ * still attached to them. Best effort and bounded: anything whose browser is
+ * gone, or older than an hour, is removed. Without this a machine accumulates
+ * one dead profile per interrupted build.
+ */
+function sweepStaleGates() {
+  const tmp = os.tmpdir();
+  let entries = [];
+  try {
+    entries = fs.readdirSync(tmp);
+  } catch {
+    return;
+  }
+  const now = Date.now();
+  for (const name of entries) {
+    if (!name.startsWith('hydra-gate-')) continue;
+    const dir = path.join(tmp, name);
+    try {
+      const age = now - fs.statSync(dir).mtimeMs;
+      const owner = path.join(dir, 'DevToolsActivePort');
+      // A profile with no live browser (no port file after a moment) or one old
+      // enough that no build can still own it.
+      if (age < 60_000 && fs.existsSync(owner)) continue;
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* in use by another build, leave it */
+    }
+  }
+}
 
 /**
  * A tiny CDP client: enough of the protocol for a page load, and nothing more.
@@ -240,6 +331,23 @@ export async function runRuntimeGate({ distDir, serve }) {
     };
   }
 
+  // A browser needs ~150 MB. On a small box already under memory pressure,
+  // launching one is what tips it over: measured on a 3.8 GB host, earlyoom
+  // killed the build mid-gate at 19% available memory and the build reported
+  // "killed by SIGTERM" with nothing about the gate. A build must not be the
+  // thing that dies because the gate wanted a browser, so the gate steps aside
+  // and says why.
+  const mem = process.env.HYDRA_GATE_FORCE === '1' ? null : availableMemoryMiB();
+  if (mem !== null && mem < GATE_MIN_FREE_MIB) {
+    return {
+      skipped: `only ${mem} MiB of memory available; the browser check needs ~${GATE_MIN_FREE_MIB} MiB (run it by hand: HYDRA_GATE_FORCE=1 hydra build)`,
+      ok: true,
+      exceptions: [],
+      warnings: [],
+    };
+  }
+
+  sweepStaleGates();
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hydra-gate-'));
   let child = null;
   let server = null;
@@ -247,10 +355,9 @@ export async function runRuntimeGate({ distDir, serve }) {
   const warnings = [];
 
   const finish = async (result) => {
-    try {
-      if (child && !child.killed) child.kill('SIGKILL');
-    } catch {
-      /* already gone */
+    if (child) {
+      killTree(child);
+      liveGates.delete(child);
     }
     try {
       server?.close();
@@ -275,8 +382,11 @@ export async function runRuntimeGate({ distDir, serve }) {
       // The profile comes first so the array stays readable; the rest is the
       // exported constant so nothing can silently drift from what it asserts.
       [`--user-data-dir=${profile}`, ...GATE_CHROME_FLAGS],
-      { stdio: ['ignore', 'ignore', 'pipe'] },
+      // `detached` makes Chrome a process-group leader so `killTree` can take
+      // the whole tree down. Without it the renderers outlive the gate.
+      { stdio: ['ignore', 'ignore', 'pipe'], detached: true },
     );
+    liveGates.add(child);
 
     // Chrome writes the port it chose into DevToolsActivePort.
     const portFile = path.join(profile, 'DevToolsActivePort');

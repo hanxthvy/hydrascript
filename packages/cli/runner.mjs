@@ -436,14 +436,26 @@ function renderUsesRouter(cwd) {
  * routing off entirely for a project that wires its own. The default is
  * `src/pages`, which is where `hydra init` has always put pages.
  */
+/**
+ * The pages directory, or null when the project does not route by file.
+ *
+ * `null` also means "the directory is not there": the default path was returned
+ * unconditionally, so every project without a `src/pages` was treated as one
+ * that has it, and the build printed "src/pages exists but the app does not
+ * render Router()" about a directory that did not exist. A message that is
+ * confidently wrong about the project is worse than no message.
+ */
 function pagesDirectory(cwd, config) {
   const raw = config.routes;
   if (raw === false) return null;
-  if (typeof raw === 'string' && raw.trim() !== '') return path.resolve(cwd, raw.trim());
-  if (raw && typeof raw === 'object' && typeof raw.dir === 'string') {
-    return path.resolve(cwd, raw.dir);
+  let dir;
+  if (typeof raw === 'string' && raw.trim() !== '') dir = path.resolve(cwd, raw.trim());
+  else if (raw && typeof raw === 'object' && typeof raw.dir === 'string') {
+    dir = path.resolve(cwd, raw.dir);
+  } else {
+    dir = path.join(cwd, 'src', 'pages');
   }
-  return path.join(cwd, 'src', 'pages');
+  return fs.existsSync(dir) ? dir : null;
 }
 
 export function readConfig(cwd) {

@@ -12,6 +12,40 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## 0.7.1 — 2026-11-02
+
+**The runtime gate stopped killing the build it was checking.** No change to
+emitted code; this is a build-reliability release.
+
+### Fixed
+- **Every interrupted build leaked a Chrome process tree.** `child.kill()`
+  signals the process the gate spawned, and a Chrome is a tree: browser, gpu,
+  zygote, one renderer per tab. The renderers were reparented to init and kept
+  running. Measured on this host: four orphaned gates held ~800 MB between them,
+  and the next build was killed by `earlyoom` at 19% available memory with no
+  message about the gate at all. Chrome is now spawned `detached` and the whole
+  process group is killed, and a `process.on('exit')` handler covers the build
+  being interrupted, which never reaches the `finally`.
+- **The gate now looks at free memory before it opens a browser.** A browser
+  needs ~150 MB; on a box already under pressure, starting one is what tips it
+  over, and a build must not die because its checker wanted a browser. Below
+  `HYDRA_GATE_MIN_MB` (default 350) the gate skips itself and says the number.
+  `HYDRA_GATE_FORCE=1` overrides it.
+- **Stale gate profiles are swept** instead of accumulating one directory per
+  interrupted build.
+- **`pagesDirectory` claimed `src/pages` existed when it did not.** Every project
+  without the directory got "src/pages exists but the app does not render
+  `Router()`" about a directory that was not there. It now returns the directory
+  only if it exists.
+
+### Note
+The memory pressure on this machine turned out to be the real cause of the
+SIGTERM-killed builds, not the compiler: the host's 2 GB swap was completely
+full. A second 4 GB swap file is in `/etc/fstab`; the leak fix above is what
+keeps the gate from contributing to it.
+
+---
+
 ## 0.7.0 — 2026-11-02
 
 **The meta-framework half of the roadmap, in one release: loaders, per-module

@@ -228,6 +228,26 @@ test('the runtime gate disables WebGL (a 10s stall otherwise)', async () => {
   assert.ok(GATE_CHROME_FLAGS.includes('--headless=new'));
 });
 
+test('the gate skips itself on a box without the memory for a browser', async () => {
+  // The regression: on a 3.8 GB host with swap full, the gate launched Chrome,
+  // earlyoom killed the build mid-gate, and `hydra build` reported "killed by
+  // SIGTERM" with nothing about the gate — a build killed by its own checker.
+  // So the gate must refuse to start, with the reason, before it spawns.
+  const src = fs.readFileSync(path.join(HERE, 'runtime-gate.mjs'), 'utf8');
+  assert.match(src, /MemAvailable/, 'the gate must read MemAvailable before spawning a browser');
+  assert.match(src, /GATE_MIN_FREE_MIB/);
+});
+
+test('the gate kills the whole process tree, not only the browser parent', async () => {
+  // A Chrome is a process tree. `child.kill()` takes down the parent and leaves
+  // one renderer per tab reparented to init: measured, four interrupted builds
+  // left ~800 MB of orphaned renderers and the fifth build died on SIGTERM.
+  const src = fs.readFileSync(path.join(HERE, 'runtime-gate.mjs'), 'utf8');
+  assert.match(src, /detached:\s*true/, 'Chrome must lead its own group to be killable');
+  assert.match(src, /process\.kill\(-pid/, 'the group is killed by negative pid');
+  assert.match(src, /process\.on\('exit'/, 'an interrupted build must still clean up');
+});
+
 test('serveDirectory is importable without starting anything', () => {
   // Importing the runner must not open a socket; the test above imports it too,
   // and this pins the invariant so a future top-level side effect is caught.
