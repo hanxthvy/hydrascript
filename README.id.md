@@ -271,6 +271,19 @@ Jalankan langsung dengan `hydra run script.hys`.
 Helper compiler maupun adapter React datang dari satu specifier, `hydra`, yang
 mengarah ke `runtime/hydra.ts`.
 
+**Tiga specifier, dan compiler menegakkan mana yang boleh dipakai di mana:**
+
+| import dari | berisi | boleh di |
+|---|---|---|
+| `hydra` | helper universal (`state`, `fetch_json`, `mount`, `Router`) | modul apa saja |
+| `hydra/server` | `env`, `read_text`, `write_text`, `redirect` | hanya `.server.hys` |
+| `hydra/client` | `window_size`, `scroll_to`, `local_storage`, `clipboard` | hanya `.hyx`/`.tsx` |
+
+Mengimpor `hydra/server` dari halaman adalah **error build yang menyebut berkasnya
+dan alasannya**, bukan stack trace saat runtime. Kebalikannya juga diperiksa:
+`hydra/client` di `.server.hys` gagal, karena di sana tidak ada `window`. Compiler
+menolak import yang bisa ia buktikan salah, dan hanya itu jenis import yang ia tolak.
+
 | Fungsi | API React |
 |---|---|
 | `v, set_v = state(init)` | `useState` |
@@ -375,10 +388,16 @@ membutuhkan `vite.config.ts`, `tailwind.config.ts` maupun `postcss.config.js`.
 | `hydra preview` | Menyajikan `dist/` (build dulu kalau belum ada) |
 | `hydra run <file.hys>` | Menjalankan skrip in-process |
 
-**Soal "HMR":** `hydra dev` memantau `src/` dan build ulang, dan build ulangnya
-terlihat dalam sekitar 10 detik. Tapi **tidak** mendorong update ke browser —
-tidak ada websocket, tidak ada protokol hot-module. Kamu me-refresh halamannya.
-Menyebut itu HMR akan salah, jadi README ini tidak.
+**Soal "HMR":** `hydra dev` memantau `src/`, build ulang, dan **memuat ulang
+halaman di browser lewat websocket** — tanpa dependensi, tanpa ekstensi, sekitar
+10 detik dari simpan ke reload. Yang *tidak* ia lakukan adalah mempertahankan
+state komponen melintasi perubahan: edit yang berhasil memuat ulang halaman, bukan
+menukar modul di tempat. Menyebutnya React Fast Refresh akan salah, jadi README
+ini menyebutnya live reload.
+
+**Build ulang yang gagal tidak memuat ulang.** Error-nya dikirim ke halaman,
+jadi console menampilkan pesan compiler beserta berkas dan barisnya, dan kamu
+tetap memegang halaman terakhir yang bekerja sampai kodenya bisa dikompilasi lagi.
 
 ### Routing berbasis berkas
 
@@ -426,20 +445,88 @@ Runtime gate sekarang memeriksa **setiap** `index.html` yang dihasilkan, bukan
 hanya yang di akar: dengan HTML per-route, memeriksa satu halaman meninggalkan
 setiap route lain tanpa pemeriksaan.
 
-**Soal SSG, dan kenapa proyek contoh mematikannya.** Pra-render bersifat opt-in
-per proyek (`"rendering": { "ssg": true }`), dan empat proyek contoh dikirim
-dengan itu mati: `dist/index.html` mereka cangkang ~400 byte yang render di
-klien. Dengan `ssg: true`, build pra-render dan mencetak apa yang dilakukannya.
-Contoh-contohnya mati karena masing-masing adalah satu-halaman yang menguji
-runtime, bukan situs dengan URL yang diinginkan crawler — pra-render di situ hanya
-akan memamerkan fiturnya tanpa mengujinya. Proyek dengan `src/pages` dan
-`Router()` mendapat pra-render per route secara default; lihat "Routing berbasis
-berkas" di atas.
+**SSG menyala secara default untuk route statis.** Proyek dengan `src/pages` dan
+`Router()` pra-render setiap route statis tanpa konfigurasi apa pun. Statis
+artinya: tanpa parameter URL, dan tanpa `rendering = "csr"` di halamannya.
 
-**Mengubah default itu ada di roadmap untuk 0.8** — SSG untuk route statis, SSR
-untuk yang dinamis, CSR sebagai opt-out eksplisit — dan itu belum dikerjakan.
-Mengatakannya di sini lebih murah daripada membiarkan pembaca menyangka default
-sekarang adalah pilihan yang sudah dipikirkan.
+Dua cara opt-out, keduanya tanpa sintaks baru:
+
+```python
+# src/pages/dashboard.hyx — halaman ini render di klien saja
+rendering = "csr"
+
+component Dashboard():
+    ...
+```
+
+```json
+// hydraconfig.json — seluruh proyek, kembali ke perilaku lama
+{ "rendering": { "ssg": false } }
+```
+
+Route **dinamis** (`[slug]`) tidak punya satu halaman untuk dibangun, jadi ia
+dilewati dan disebut namanya di log build. Itu sengaja, bukan celah: SSR untuk
+route dinamis butuh server saat request, dan build statis tidak punya itu. Empat
+proyek contoh masih memakai `"ssg": false` — masing-masing adalah satu-halaman
+yang menguji runtime, bukan situs dengan URL yang diinginkan crawler.
+
+Kalau proyek punya `src/pages` tapi `App`-nya tidak pernah memanggil `Router()`,
+tidak ada yang dipra-render: tanpa router tidak ada route untuk dipra-render, dan
+build mengatakannya, bukan menulis halaman kosong.
+
+### Data: `loader` dan `action`
+
+Sebuah halaman bisa punya **belahan server** di berkas di sampingnya — nama sama,
+`.server.hys` bukan `.hyx`:
+
+```
+src/pages/blog/index.hyx           -> halamannya (modul klien: render di browser)
+src/pages/blog/index.server.hys    -> loader dan action-nya (modul server: tak pernah masuk bundel)
+```
+
+```python
+# src/pages/blog/index.server.hys
+from "hydra/server" import env
+
+export async def loader(event):
+    return {"posts": await db.fetch_all(), "region": env("REGION", "local")}
+
+export async def action(event):
+    text = event.request.body.get("text")
+    if not text:
+        return {"ok": False, "reason": "empty"}
+    await db.insert(text)
+    return redirect("/blog?added=1")
+```
+
+```python
+# src/pages/blog/index.hyx — props-nya ADALAH nilai balikan loader
+component BlogIndex(posts: list = [], region: str = "?"):
+    ...
+```
+
+`loader` jalan **sekali per route saat build** (SSG), hasilnya dirender ke HTML
+*dan* di-inline sebagai JSON, jadi klien hydrate dengan nilai yang sama alih-alih
+fetch ulang. `action` jalan saat URL yang sama di-`POST`.
+
+**Kenapa berkas terpisah, bukan `export def loader` di dalam halaman.** Modul
+halaman adalah modul klien: ia render di browser dan import-nya masuk bundel
+klien. Loader yang dideklarasikan di sana hanya bisa server-only *berdasarkan
+konvensi* — satu `import fs` nyasar dan build rusak dengan cara yang sulit dibaca.
+`.server.hys` sama sekali tidak terjangkau dari klien, jadi pemisahannya fakta
+tentang build, bukan aturan yang harus diingat.
+
+`event` adalah satu objek, jadi tanda tangannya tidak berubah saat framework
+menambah field: `event.params`, `event.url`, `event.query` (punya `.get()`), dan
+`event.request` (`method`, `headers`, `body`, hanya untuk action).
+
+`.server.hys` tanpa halaman di sampingnya adalah **error build yang menyebut
+kedua berkasnya**, karena loader yang tak pernah dipanggil hampir selalu salah
+nama berkas.
+
+**Belum selesai:** loader tidak jalan ulang saat navigasi *sisi klien* — JSON
+yang di-inline itulah yang klien punya sampai halaman dimuat ulang. Itu, dan SSR
+untuk route dinamis, adalah bagian berikutnya; lihat roadmap.
 
 Keluaran build: `dist/index.html`, `dist/assets/index-<hash>.js`,
 `dist/assets/index.css`, plus chunk untuk `import()` dinamis.
@@ -662,8 +749,12 @@ versinya target, dan urutannya bagian yang jujur.
 | 0.6.2 | Routing berbasis berkas, SSG per-route | rilis |
 | 0.6.2 | `hydra routes`: tabel route dicetak dan di-generate | rilis |
 | 0.6.2 | Argumen kata kunci lintas berkas dan untuk metode | rilis |
-| 0.7 | HMR: push websocket, error overlay, React Fast Refresh | belum mulai |
-| 0.8 | Default rendering: SSG untuk route statis, SSR untuk dinamis, CSR opt-out | belum mulai |
+| 0.7 | Live reload: push websocket, error overlay di browser | rilis |
+| 0.7 | `loader` / `action` (`.server.hys` di samping halaman) | rilis |
+| 0.7 | `hydra/server` dan `hydra/client`, ditegakkan per modul | rilis |
+| 0.7 | SSG default untuk route statis, opt-out `rendering = "csr"` | rilis |
+| 0.7 | React Fast Refresh (state dipertahankan lintas edit) | belum mulai |
+| 0.8 | SSR untuk route dinamis; loader jalan ulang saat navigasi klien | belum mulai |
 | 0.9 | `hydra-lsp`: hover, go-to-definition, rename | belum mulai |
 | 0.9 | `hydra test`: unit, route dan snapshot test untuk komponen | belum mulai |
 | 1.0 | Cache build inkremental, kompilasi paralel | belum mulai |
