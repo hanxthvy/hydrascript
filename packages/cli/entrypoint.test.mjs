@@ -233,3 +233,96 @@ test('serveDirectory is importable without starting anything', () => {
   // and this pins the invariant so a future top-level side effect is caught.
   assert.equal(typeof serveDirectory, 'function');
 });
+
+test('a scaffolded app builds, pre-renders every static route, and passes the gate', async (t) => {
+  // The regression this exists for: an earlier router resolved pages through
+  // `() => import('./pages/x.hyx')`, esbuild turned that into a chunk the entry
+  // never referenced, `Router` vanished from the client bundle, and the build
+  // still printed "Built successfully". Only the runtime gate noticed. So this
+  // asserts the three things together — the build, the per-route HTML, and the
+  // gate's own verdict — because any one of them alone would have passed.
+  if (!fs.existsSync(HYDRA)) return t.skip(`${HYDRA} not built`);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hydra-router-'));
+  const realLog = console.log;
+  const logs = [];
+  try {
+    console.log = (...a) => logs.push(a.join(' '));
+    const { execFileSync } = await import('node:child_process');
+    execFileSync(HYDRA, ['init', '.'], { cwd: dir, stdio: 'pipe' });
+
+    // The scaffold's own deps are the toolchain's business; react is needed.
+    const reactSrc = path.join(REPO, 'examples', 'blog', 'node_modules');
+    if (!fs.existsSync(reactSrc)) return t.skip('example node_modules not installed');
+    fs.symlinkSync(reactSrc, path.join(dir, 'node_modules'));
+
+    const runner = await import('./runner.mjs');
+    await runner.runBuild(dir, { dev: false, mode: 'production' });
+  } catch (e) {
+    console.log = realLog;
+    assert.fail(`build threw: ${e.message}\n${logs.join('\n')}`);
+  } finally {
+    console.log = realLog;
+  }
+
+  const said = logs.join('\n');
+  assert.match(said, /pre-rendered 2\/2 static route/, said);
+  assert.match(said, /runtime gate passed/, `the gate must have run and passed:\n${said}`);
+
+  // One HTML file per static route, each with real content in #root.
+  const outDir = path.join(dir, 'dist');
+  for (const page of ['index.html', path.join('about', 'index.html')]) {
+    const html = fs.readFileSync(path.join(outDir, page), 'utf8');
+    const root = html.match(/<div id="root">([\s\S]*?)<\/div>/);
+    assert.ok(root, `${page} has no #root`);
+    assert.ok(root[1].trim().length > 100, `${page} pre-rendered an empty shell`);
+  }
+
+  // And the route table must be REACHABLE from the entry, walkimg the static
+  // imports the way the browser does.
+  //
+  // This is the exact failure that motivated the test: the table used to be
+  // emitted as a chunk nothing imported, so it was on disk, the build said
+  // success, and the page rendered nothing. Reading only the entry file is not
+  // enough — the table legitimately lives in a shared chunk — so the assertion
+  // is about reachability, not about which file it landed in.
+  const reachable = new Set();
+  const walk = (file) => {
+    const key = path.basename(file);
+    if (reachable.has(key)) return;
+    reachable.add(key);
+    const text = fs.readFileSync(file, 'utf8');
+    for (const m of text.matchAll(/from\s*["']([^"']+\.js)["']|import\s*\(\s*["']([^"']+\.js)["']/g)) {
+      const spec = m[1] || m[2];
+      const target = spec.startsWith('/')
+        ? path.join(outDir, spec.slice(1))
+        : path.resolve(path.dirname(file), spec);
+      if (fs.existsSync(target)) walk(target);
+    }
+  };
+  const entryFile = fs
+    .readdirSync(path.join(outDir, 'assets'))
+    .find((f) => f.startsWith('index-') && f.endsWith('.js'));
+  walk(path.join(outDir, 'assets', entryFile));
+
+  const resolveChunk = (f) => {
+    for (const candidate of [path.join(outDir, 'assets', f), path.join(outDir, 'assets', 'chunks', f)]) {
+      if (fs.existsSync(candidate)) return candidate;
+    }
+    return null;
+  };
+  const reachableText = [...reachable]
+    .map((f) => resolveChunk(f))
+    .filter(Boolean)
+    .map((f) => fs.readFileSync(f, 'utf8'))
+    .join('\n');
+  assert.ok(
+    /No route matched|is not a page/.test(reachableText),
+    `the _404 page must be reachable from the entry; reached: ${[...reachable].join(', ')}`,
+  );
+  assert.ok(
+    reachable.size > 1,
+    'the entry must import at least one chunk, or the table is orphaned',
+  );
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});

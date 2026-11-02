@@ -876,6 +876,10 @@ export function mount(component: any, element: HTMLElement | null) {
  */
 export function use_path(): string {
   const getPath = () => {
+    // The pre-render pass walks several URLs with one module instance, so the
+    // path it is currently rendering wins over `window.location` — which in SSG
+    // is a stub that never changes.
+    if (ssr_seed && ssr_seed.path) return ssr_seed.path
     if (typeof window === 'undefined') return '/'
     return (window.location.pathname !== '/' ? window.location.pathname : window.location.hash) || '/'
   }
@@ -973,9 +977,6 @@ export interface RouteEntry {
   params: string[]
 }
 
-/** `() => import('./pages/x.hyx')` — esbuild turns each one into a chunk. */
-export type ComponentImporter = () => Promise<any>
-
 /**
  * The generated route table.
  *
@@ -984,20 +985,68 @@ export type ComponentImporter = () => Promise<any>
  */
 export interface RouteTable {
   routes: RouteEntry[]
-  /** pattern -> importer for the page. */
-  pages: Record<string, ComponentImporter>
-  /** pattern -> wrapped-by importers, nearest first. */
-  pageLayouts: Record<string, ComponentImporter[]>
-  /** pattern -> nearest `_error` importer, or null. */
-  pageErrors: Record<string, ComponentImporter | null>
-  /** `null` unless the project has a `_404` file. */
-  notFound: ComponentImporter | null
+  /**
+   * pattern -> the page COMPONENT.
+   *
+   * Not a loader: the generated table imports each page statically, so the
+   * component is here from the first render. See `Router` for why the lazy
+   * shape had to go.
+   */
+  pages: Record<string, any>
+  /** pattern -> the layout components, nearest first. */
+  pageLayouts: Record<string, any[]>
+  /** pattern -> the nearest `_error` component, or null. */
+  pageErrors: Record<string, any>
+  /** The `_404` component, or null. */
+  notFound: any
   hasNotFound: boolean
   base: string
 }
 
 let route_table_cache: RouteTable | null | undefined = undefined
 let route_table_promise: Promise<RouteTable | null> | null = null
+
+/**
+ * What the pre-render pass is currently rendering.
+ *
+ * `renderToString` runs no effects, so the lazy `import('hydra:routes')` below
+ * cannot resolve during SSG — and a `Router()` that renders nothing is exactly
+ * the hydration mismatch the runtime gate reports as React #418. The build
+ * therefore SEEDS the runtime with the table and the URL it is rendering, and
+ * both hooks below prefer the seed. One router, one path resolution, no second
+ * implementation that can disagree with the first.
+ */
+export interface SsrSeed {
+  table: RouteTable
+  /** The URL path being pre-rendered. */
+  path?: string
+}
+
+let ssr_seed: SsrSeed | null = null
+
+/** Called by the generated pre-render entry. Not for application code. */
+export function __seed_for_ssr(seed: SsrSeed): void {
+  ssr_seed = seed
+  if (seed.table) route_table_cache = seed.table
+}
+
+/** Clear the seed. Called after pre-rendering so nothing leaks into an import. */
+export function __clear_ssr_seed(): void {
+  ssr_seed = null
+  route_table_cache = undefined
+  route_table_promise = null
+}
+
+/**
+ * The route table, synchronously when it is known.
+ *
+ * Returns `null` when there is none, and the seeded table during a pre-render —
+ * so `Router` renders real content in the HTML instead of an empty shell.
+ */
+export function get_route_table_sync(): RouteTable | null {
+  if (ssr_seed) return ssr_seed.table
+  return route_table_cache ?? null
+}
 
 /**
  * The generated route table, or `null` in a project without one.
@@ -1007,9 +1056,18 @@ let route_table_promise: Promise<RouteTable | null> | null = null
  * cannot see a table that disagrees with the importers beside it.
  */
 export function use_route_table(): RouteTable | null | undefined {
-  const [table, setTable] = useState<RouteTable | null | undefined>(route_table_cache)
+  const seeded = ssr_seed ? ssr_seed.table : undefined
+  const [table, setTable] = useState<RouteTable | null | undefined>(
+    seeded !== undefined ? seeded : route_table_cache,
+  )
 
   useEffect(() => {
+    // A seeded table is final: this is a pre-render, not a browser, and there is
+    // no module to import.
+    if (ssr_seed) {
+      if (table !== ssr_seed.table) setTable(ssr_seed.table)
+      return
+    }
     if (route_table_cache !== undefined) {
       if (table !== route_table_cache) setTable(route_table_cache)
       return
@@ -1047,11 +1105,6 @@ export function use_route_table(): RouteTable | null | undefined {
   }, [])
 
   return table
-}
-
-/** The table as a plain value, for code outside a component. */
-export function get_route_table_sync(): RouteTable | null {
-  return route_table_cache ?? null
 }
 
 /**
@@ -1191,65 +1244,12 @@ export class RouteErrorBoundary extends React.Component<
 export interface RouterProps {
   /** Route table. Defaults to the generated one. */
   routes?: RouteEntry[]
-  /** `pattern -> importer`. Defaults to the generated one. */
-  pages?: Record<string, ComponentImporter>
-  /** `pattern -> wrapped-by importers, nearest first`. Defaults to the generated one. */
-  pageLayouts?: Record<string, ComponentImporter[]>
-  /** `pattern -> error component importer`. Defaults to the generated one. */
-  pageErrors?: Record<string, ComponentImporter | null>
-  /**
-   * Already-loaded components, keyed by pattern, layout file or `_404`.
-   *
-   * For a project that wires its own routes, or that cannot use dynamic
-   * imports. Everything else normally comes from the generated table.
-   */
+  /** Already-loaded components, keyed by pattern, layout file or `_404`. */
   components?: Record<string, any>
-  /** Rendered while a page's chunk is loading. */
+  /** Rendered while a page is loading. The generated table is synchronous, so
+   *  this only matters for a project that supplies its own async source. */
   loading?: React.ReactNode
   children?: React.ReactNode
-}
-
-async function loadImporter(importer: any): Promise<any> {
-  if (typeof importer !== 'function') return importer || null
-  return core_pick_page(await importer())
-}
-
-/**
- * Wrap `page` in its layout chain.
- *
- * `chain` is nearest-first and layouts nest outermost-first, so it is walked
- * backwards: for `[dashboard, root]`, root wraps dashboard wraps the page.
- */
-export function wrapInLayouts(page: React.ReactNode, chain: any[]): React.ReactNode {
-  let el = page
-  for (let i = chain.length - 1; i >= 0; i--) {
-    if (chain[i]) el = React.createElement(chain[i], null, el)
-  }
-  return el
-}
-
-/**
- * Resolve `{ page, layouts, error }` for a pattern, from either source.
- *
- * One function for both the generated importers and the `components` escape
- * hatch, so a project that passes its own components cannot end up with a
- * different nesting rule than a project that does not.
- */
-async function resolveRoute(
-  pattern: string,
-  pages: Record<string, ComponentImporter>,
-  pageLayouts: Record<string, ComponentImporter[]>,
-  pageErrors: Record<string, ComponentImporter | null>,
-  components?: Record<string, any>,
-): Promise<{ page: any; layouts: any[]; error: any }> {
-  const fromComponents = components ? components[pattern] : undefined
-  if (fromComponents) return { page: fromComponents, layouts: [], error: null }
-  const [page, layouts, error] = await Promise.all([
-    loadImporter(pages[pattern]),
-    Promise.all((pageLayouts[pattern] || []).map((imp) => loadImporter(imp))),
-    loadImporter(pageErrors[pattern]),
-  ])
-  return { page, layouts: layouts.filter(Boolean), error }
 }
 
 /**
@@ -1257,22 +1257,25 @@ async function resolveRoute(
  *
  * With no props it uses the generated table, which is the point: an app writes
  * `Router()` and the folder layout decides what that means.
+ *
+ * Resolution is SYNCHRONOUS on purpose. An earlier version loaded pages through
+ * `() => import('./pages/x.hyx')`, which reads better and does not work: esbuild
+ * treats a dynamic import of a statically-resolvable path as its own entry
+ * point, so the route table landed in a chunk the entry never referenced — the
+ * client bundle contained no `Router`, the page rendered nothing, and the build
+ * reported success. The runtime gate caught it. Static imports are compiled in,
+ * so the first render has everything it needs and there is no loading state to
+ * get wrong.
  */
 export function Router(props: RouterProps) {
   const { components, loading, children } = props
   const path = use_path()
   const table = use_route_table()
-  const [resolved, setResolved] = useState<{ page: any; layouts: any[]; error: any } | null>(null)
-  const [notFoundComp, setNotFoundComp] = useState<any>(null)
 
   const routes: RouteEntry[] = useMemo(() => {
     if (props.routes) return props.routes
     return table ? table.routes : []
   }, [props.routes, table])
-
-  const pages = props.pages || (table ? table.pages : {})
-  const pageLayouts = props.pageLayouts || (table ? table.pageLayouts : {})
-  const pageErrors = props.pageErrors || (table ? table.pageErrors : {})
 
   const match = useMemo(
     () => (routes.length > 0 ? (core_match_route(path, routes as any) as any) : null),
@@ -1280,72 +1283,51 @@ export function Router(props: RouterProps) {
   )
   const pattern = match ? match.route.pattern : null
 
-  // The page, its layout chain and its error boundary resolve together: split
-  // across three effects they would settle in three paints, which on a slow
-  // chunk shows as a flash of the page without its layout.
-  useEffect(() => {
-    if (!pattern) {
-      setResolved(null)
-      return
-    }
-    let alive = true
-    resolveRoute(pattern, pages, pageLayouts, pageErrors, components)
-      .then((r) => {
-        if (alive) setResolved(r)
-      })
-      .catch((err: Error) => {
-        if (!alive) return
-        // A chunk that failed to load is a route error like any other, so it
-        // goes through the same boundary instead of a separate message.
-        setResolved({ page: null, layouts: [], error: null })
-        if (typeof console !== 'undefined') console.error('[hydra] could not load route', pattern, err)
-      })
-    return () => {
-      alive = false
-    }
-  }, [pattern, pages, pageLayouts, pageErrors, components])
+  // A supplied `components` entry wins for the pattern; otherwise the generated
+  // table's own maps are consulted. One code path, so a project that passes its
+  // own components cannot end up with a different nesting rule.
+  const page = useMemo(() => {
+    if (!pattern) return null
+    if (components && components[pattern]) return components[pattern]
+    return table && table.pages[pattern] ? core_pick_page(table.pages[pattern]) : null
+  }, [pattern, components, table])
 
-  const notFoundImporter = (components && components['_404']) || (table ? table.notFound : null)
+  const layoutChain = useMemo(() => {
+    if (!pattern || !table) return []
+    const files = table.pageLayouts[pattern] || []
+    return files.filter(Boolean)
+  }, [pattern, table])
 
-  useEffect(() => {
-    if (pattern || !notFoundImporter) {
-      setNotFoundComp(null)
-      return
-    }
-    let alive = true
-    // `_404` may arrive as an importer or as a ready component; both are the
-    // same thing to the caller.
-    Promise.resolve()
-      .then(() => (typeof notFoundImporter === 'function' && notFoundImporter.length === 0
-        ? loadImporter(notFoundImporter)
-        : notFoundImporter))
-      .then((c) => {
-        if (alive) setNotFoundComp(c)
-      })
-      .catch(() => {
-        if (alive) setNotFoundComp(null)
-      })
-    return () => {
-      alive = false
-    }
-  }, [pattern, notFoundImporter])
+  const errorComponent = useMemo(() => {
+    if (!pattern || !table) return null
+    const imp = table.pageErrors[pattern]
+    return imp ? core_pick_page(imp) : null
+  }, [pattern, table])
+
+  const notFoundComponent = useMemo(() => {
+    if (!table || !table.notFound) return null
+    return core_pick_page(table.notFound)
+  }, [table])
 
   if (!match) {
-    if (notFoundComp) return React.createElement(notFoundComp, { path })
+    if (notFoundComponent) {
+      return React.createElement(
+        Fragment,
+        null,
+        React.createElement(notFoundComponent, { path }),
+        children,
+      )
+    }
     return null
   }
 
-  const page = resolved && resolved.page
   const body = page
-    ? wrapInLayouts(
-        React.createElement(page, { params: match.params, path, route: match.route }),
-        resolved!.layouts,
-      )
+    ? wrapInLayouts(React.createElement(page, { params: match.params, path, route: match.route }), layoutChain)
     : ((loading as any) ?? null)
 
   return React.createElement(
     RouteErrorBoundary,
-    { fallback: resolved ? resolved.error : null, path },
+    { fallback: errorComponent, path },
     React.createElement(Fragment, null, body, children),
   )
 }

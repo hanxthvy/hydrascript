@@ -39,7 +39,7 @@ CREATES:
   src/index.css           the three Tailwind directives
   src/components/         Header.hyx, Card.hyx, Button.hyx
   src/lib/stats.hys       pure helpers, imported by App.hyx
-  src/pages/              Home.hyx, About.hyx
+  src/pages/              index.hyx, about.hyx, _404.hyx
 ";
 
 const DOCTOR_USAGE: &str = "\
@@ -385,37 +385,99 @@ mount(App, root_element)
 "#;
 
 const APP_HYX_TEMPLATE: &str = r#"# [xihanzu-NR]
-from hydra import state, use_path, navigate
+from hydra import state, Link, Router
 from "./components/Header.hyx" import Header
 from "./components/Card.hyx" import Card
 from "./components/Button.hyx" import Button
-from "./pages/Home.hyx" import Home
-from "./pages/About.hyx" import About
 from "./lib/stats.hys" import greeting
 
 component App():
-    path = use_path()
     clicks, set_clicks = state(0)
     samples, set_samples = state([2, 4, 6])
 
     div(className="min-h-screen bg-slate-50 text-slate-900"):
-        Header(
-            title="HydraScript",
-            links=[{"path": "/", "label": "Home"}, {"path": "/about", "label": "About"}],
-            current=path,
-            on_nav=navigate,
-        )
+        # The nav is plain <a> links: the router owns the URL, so a link is a
+        # link. `Link` intercepts the click for a client-side transition and
+        # still renders an href that works without JavaScript.
+        header(className="border-b border-slate-200 bg-white"):
+            div(className="mx-auto flex max-w-3xl items-center justify-between gap-4 p-4"):
+                span(className="text-lg font-black tracking-tight text-indigo-600"): "HydraScript"
+                nav(className="flex items-center gap-1"):
+                    Link(to="/", className="rounded-lg px-3 py-1.5 text-sm font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-900"):
+                        "Home"
+                    Link(to="/about", className="rounded-lg px-3 py-1.5 text-sm font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-900"):
+                        "About"
+
         main(className="mx-auto max-w-3xl space-y-6 p-6"):
-            if path == "/about":
-                About(version="0.1.0")
-            else:
-                Home(greeting=greeting("HydraScript"), samples=samples)
+            # `Router()` renders src/pages for the current URL, so the folder is
+            # the route table and this file does not grow an if/elif per page.
+            Router()
+
             Card(title="State + interop", subtitle="App owns the state; stats.hys does the maths"):
                 div(className="flex items-center gap-3"):
                     Button(label="Add a sample", on_press=lambda: set_samples(samples + [clicks + 2]))
                     Button(label="Reset", variant="ghost", on_press=lambda: set_samples([2, 4, 6]))
                     span(className="text-sm text-slate-500"): f"clicks: {clicks}"
+
         footer(className="p-6 text-center text-xs text-slate-400"): greeting("HydraScript")
+"#;
+
+/// The home page. It is a PAGE, not a component: `Router()` renders it and
+/// passes `params`, and its URL comes from its filename.
+const HOME_HYX_TEMPLATE: &str = r#"# [xihanzu-NR]
+from "../components/Card.hyx" import Card
+from "../lib/stats.hys" import summarise
+
+component Home(greeting: str = "Hello", samples = []):
+    stats = summarise(samples)
+
+    div(className="space-y-6"):
+        Card(title=greeting, subtitle="src/pages/index.hyx — this file IS the `/` route"):
+            div(className="grid grid-cols-3 gap-3 text-center"):
+                div(className="rounded-xl bg-slate-50 p-3"):
+                    p(className="text-xs uppercase tracking-wide text-slate-400"): "count"
+                    p(className="text-xl font-bold text-slate-900"): stats["count"]
+                div(className="rounded-xl bg-slate-50 p-3"):
+                    p(className="text-xs uppercase tracking-wide text-slate-400"): "total"
+                    p(className="text-xl font-bold text-slate-900"): stats["total"]
+                div(className="rounded-xl bg-slate-50 p-3"):
+                    p(className="text-xs uppercase tracking-wide text-slate-400"): "mean"
+                    p(className="text-xl font-bold text-slate-900"): stats["mean"]
+        Card(title="Samples", subtitle="One <li> per entry, from a for loop"):
+            ul(className="space-y-1 text-sm text-slate-600"):
+                # `key=` on the element returned by a `for` loop. Without it React
+                # warns on the very first build, and a scaffold should not open
+                # with a warning.
+                for value in samples:
+                    li(key=value): f"sample {value} squared is {value * value}"
+"#;
+
+/// The about page, reached at `/about` because that is its filename. The
+/// parameter name is `version`, so the URL does not have to agree with it.
+const ABOUT_HYX_TEMPLATE: &str = r#"# [xihanzu-NR]
+from "../components/Card.hyx" import Card
+
+component About(version: str = "0.1.0"):
+    features = ["Pythonic syntax", "Two targets: .hyx and .hys", "SSG on by default"]
+
+    div(className="space-y-6"):
+        Card(title="About", subtitle=f"version {version}"):
+            p(className="text-sm text-slate-600"):
+                "src/pages/about.hyx, so the router serves it at /about."
+            ul(className="list-disc space-y-1 pl-5 text-sm text-slate-600"):
+                for index, feature in enumerate(features):
+                    li(key=index): feature
+"#;
+
+/// A `_404.hyx` so a wrong URL says so, instead of rendering nothing.
+const NOTFOUND_HYX_TEMPLATE: &str = r#"# [xihanzu-NR]
+from "../components/Card.hyx" import Card
+
+component NotFound(path: str = "/"):
+    div(className="space-y-6"):
+        Card(title="404", subtitle="No route matched"):
+            p(className="text-sm text-slate-600"):
+                f"{path} is not a page. Add src/pages for it, or go back."
 "#;
 
 /// CSS needs the `/* */` watermark form. The `#` form used for the Pythonic
@@ -476,46 +538,7 @@ component Button(label: str = "Button", variant: str = "primary", on_press = Non
     ): label
 "#;
 
-const HOME_HYX_TEMPLATE: &str = r#"# [xihanzu-NR]
-from "../components/Card.hyx" import Card
-from "../lib/stats.hys" import summarise
 
-component Home(greeting: str = "Hello", samples = []):
-    stats = summarise(samples)
-
-    div(className="space-y-6"):
-        Card(title=greeting, subtitle="Rendered from src/pages/Home.hyx"):
-            div(className="grid grid-cols-3 gap-3 text-center"):
-                div(className="rounded-xl bg-slate-50 p-3"):
-                    p(className="text-xs uppercase tracking-wide text-slate-400"): "count"
-                    p(className="text-xl font-bold text-slate-900"): stats["count"]
-                div(className="rounded-xl bg-slate-50 p-3"):
-                    p(className="text-xs uppercase tracking-wide text-slate-400"): "total"
-                    p(className="text-xl font-bold text-slate-900"): stats["total"]
-                div(className="rounded-xl bg-slate-50 p-3"):
-                    p(className="text-xs uppercase tracking-wide text-slate-400"): "mean"
-                    p(className="text-xl font-bold text-slate-900"): stats["mean"]
-        Card(title="Samples", subtitle="One <li> per entry, from a for loop"):
-            ul(className="space-y-1 text-sm text-slate-600"):
-                # `key=` on the element returned by a `for` loop. Without it React
-                # warns on the very first build, and a scaffold should not open
-                # with a warning.
-                for value in samples:
-                    li(key=value): f"sample {value} squared is {value * value}"
-"#;
-
-const ABOUT_HYX_TEMPLATE: &str = r#"# [xihanzu-NR]
-from "../components/Card.hyx" import Card
-
-component About(version: str = "0.1.0"):
-    features = ["Pythonic syntax", "Two targets: .hyx and .hys", "SSG on by default"]
-
-    div(className="space-y-6"):
-        Card(title="About", subtitle=f"version {version}"):
-            ul(className="list-disc space-y-1 pl-5 text-sm text-slate-600"):
-                for index, feature in enumerate(features):
-                    li(key=index): feature
-"#;
 
 /// Plain ESM with no React: App.hyx imports summarise() and greeting() from
 /// here, which is what proves the two targets interoperate.
@@ -581,8 +604,9 @@ src/main.hyx            entry — mounts App into #root
 src/App.hyx             owns the state, picks the page, wires the components
 src/components/         Header.hyx, Card.hyx, Button.hyx
 src/lib/stats.hys       pure helpers, imported by App.hyx and the pages
-src/pages/Home.hyx      default screen
-src/pages/About.hyx     second screen, reached through the router
+src/pages/index.hyx     the `/` route
+src/pages/about.hyx     the `/about` route
+src/pages/_404.hyx      shown when no route matches
 src/index.css           the three Tailwind directives
 dist/                   build output (git-ignored), pre-rendered to HTML
 ```
@@ -735,12 +759,16 @@ pub fn init(args: &[String]) -> ExitCode {
             STATS_HYS_TEMPLATE.to_string(),
         ),
         (
-            root.join("src").join("pages").join("Home.hyx"),
+            root.join("src").join("pages").join("index.hyx"),
             HOME_HYX_TEMPLATE.to_string(),
         ),
         (
-            root.join("src").join("pages").join("About.hyx"),
+            root.join("src").join("pages").join("about.hyx"),
             ABOUT_HYX_TEMPLATE.to_string(),
+        ),
+        (
+            root.join("src").join("pages").join("_404.hyx"),
+            NOTFOUND_HYX_TEMPLATE.to_string(),
         ),
     ];
 
@@ -1198,8 +1226,9 @@ export component Badge(label: str):
             "src/components/Card.hyx",
             "src/components/Button.hyx",
             "src/lib/stats.hys",
-            "src/pages/Home.hyx",
-            "src/pages/About.hyx",
+            "src/pages/index.hyx",
+            "src/pages/about.hyx",
+            "src/pages/_404.hyx",
         ] {
             assert!(target.join(rel).is_file(), "expected {} to exist", rel);
         }
@@ -1279,7 +1308,8 @@ export component Badge(label: str):
             ("src/index.css", "/* [xihanzu-NR] */"),
             ("src/lib/stats.hys", "# [xihanzu-NR]"),
             ("src/components/Button.hyx", "# [xihanzu-NR]"),
-            ("src/pages/Home.hyx", "# [xihanzu-NR]"),
+            ("src/pages/index.hyx", "# [xihanzu-NR]"),
+            ("src/pages/_404.hyx", "# [xihanzu-NR]"),
             ("tailwind.config.js", "// [xihanzu-NR]"),
             ("index.html", "<!-- [xihanzu-NR] -->"),
         ] {
@@ -1318,7 +1348,10 @@ export component Badge(label: str):
             }
             checked += 1;
         }
-        assert_eq!(checked, 8, "expected 6 .hyx + 2 .hys sources");
+        // 7 .hyx (main, App, Header, Card, Button, Home, About, _404 is 8) plus
+        // the two .hys. The count is asserted so a template that stops being
+        // written is a test failure and not a silently smaller scaffold.
+        assert_eq!(checked, 9, "expected 7 .hyx + 2 .hys sources");
     }
 
     #[test]

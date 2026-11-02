@@ -246,6 +246,91 @@ function copyDirRecursive(src, dest) {
 }
 
 /**
+ * The file that DEFINES the app component, as a project-relative path.
+ *
+ * Not the entrypoint: `src/main.hyx` mounts a component, it does not export one,
+ * and a pre-render that renders the bootstrap renders nothing. `src/App.hyx` is
+ * where every scaffold and every example puts the root component, and the entry
+ * that found `main.hyx` is the fallback for a project that put it elsewhere.
+ */
+function appComponentPath(cwd, entryPoint) {
+  const candidates = [
+    'src/App.hyx',
+    'src/App.hsx',
+    'src/App.tsx',
+    'src/App.jsx',
+    'src/App.js',
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(path.join(cwd, c))) return c;
+  }
+  return path.relative(cwd, entryPoint).split(path.sep).join('/');
+}
+
+/**
+ *
+ * Read from the source rather than from the built bundle, because the decision
+ * is needed BEFORE the bundle exists and because the answer is about intent, not
+ * about what a minifier kept. A project that never mentions `Router` is not
+ * using file-based routing, whatever is in its `src/pages`.
+ *
+ * Deliberately a text scan: a real answer would need the module graph, and the
+ * cost of being wrong is asymmetric — a false negative pre-renders a single page
+ * (the old, correct-for-that-project behaviour), while a false positive is the
+ * hydration bug this prevents.
+ */
+function renderUsesRouter(cwd) {
+  const srcDir = path.join(cwd, 'src');
+  const files = [];
+  const walk = (dir) => {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.isDirectory()) {
+        if (e.name === 'node_modules' || e.name === '.hydra') continue;
+        walk(path.join(dir, e.name));
+      } else if (/\.(hyx|hsx|hys|hs|tsx|ts|jsx|js|mjs)$/.test(e.name)) {
+        files.push(path.join(dir, e.name));
+      }
+    }
+  };
+  walk(srcDir);
+  for (const f of files) {
+    let text;
+    try {
+      text = fs.readFileSync(f, 'utf8');
+    } catch {
+      continue;
+    }
+    // HydraScript writes `from hydra import Router`, and a hand-written TSX
+    // file writes the JS form. Both are checked because `src/` can hold either,
+    // and the FIRST version of this only knew the JS spelling — so it answered
+    // "no router" for every HydraScript project, which is the one case that
+    // matters.
+    // HydraScript writes the specifier bare (`from hydra import ...`); the
+    // quotes are optional so both spellings are accepted. Requiring the quotes
+    // was the bug: it made this answer "no router" for every HydraScript
+    // project, which is the only case that matters.
+    const pyImportsRouter = /^[ \t]*from[ \t]+["']?hydra["']?[ \t]+import[ \t]+[^\n]*\bRouter\b/m.test(
+      text,
+    );
+    const jsImportsRouter =
+      /import\s*(?:\{[^}]*\bRouter\b[^}]*\}|[A-Za-z_$][\w$]*\s*,\s*\{[^}]*\bRouter\b[^}]*\})\s*from\s*["']hydra["']/.test(
+        text,
+      );
+    const bareImportsRouter = /^\s*import\s+.*\bRouter\b.*from\s+["']hydra["']/m.test(text);
+    if ((pyImportsRouter || jsImportsRouter || bareImportsRouter) && /\bRouter\s*\(/.test(text)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Where the page files live.
  *
  * `routes` in hydraconfig may be a directory, or `false` to turn file-based
@@ -604,7 +689,7 @@ async function buildSsgBundle(esbuild, cwd, pkgRoot, ssgEntry, hydraAlias, confi
     target: 'node18',
     plugins: [
       createHydraEsbuildPlugin(),
-      ...(routesTable ? [routesEsbuildPlugin(routesTable, { base })] : []),
+      ...(routesTable ? [routesEsbuildPlugin(routesTable, { base, cwd })] : []),
       {
         name: 'hydra-ssg-external-react',
         setup(build) {
@@ -674,6 +759,17 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   // URL prefix that corresponds to `assetsDir`. `publicPath` needs this rather
   // than `base`; see the esbuild options below.
   const assetsPublicPath = base + 'assets/';
+  // Wipe the asset directory before writing into it.
+  //
+  // esbuild's `outdir` ACCUMULATES: it never removes output it did not write
+  // this run. Content-hashed names make that look harmless, and for the entry
+  // it is, because `index.html` is rewritten with the new hash every time. What
+  // it broke is every DYNAMIC import: a chunk left over from a previous build
+  // stays on disk and keeps its own frozen list of the chunk names that existed
+  // then, so a route table resolved to a stale page chunk. That is a module
+  // graph that disagrees with itself across builds, and the symptom is a
+  // runtime error from code that is not in the source tree any more.
+  fs.rmSync(assetsDir, { recursive: true, force: true });
   fs.mkdirSync(assetsDir, { recursive: true });
 
   // 0. File-based routes.
@@ -685,7 +781,24 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   // picked is wrong.
   const pagesDir = pagesDirectory(cwd, config);
   let routesTable = null;
-  if (pagesDir) {
+  // A `src/pages` directory does not by itself mean the app ROUTES by file. A
+  // project can keep page components there and pick between them by hand —
+  // `hydra init` did exactly that — and pre-rendering such a project per route
+  // produces HTML that disagrees with what the client renders at that URL. React
+  // says so as a hydration mismatch (#418), which is why the runtime gate
+  // catches it and why this check exists: the gate is the safety net, not the
+  // plan.
+  //
+  // The signal is the only honest one available without running the app: does
+  // the source render the runtime's `Router`? If it does not, file-based routing
+  // is not in use, and the previous single-page behaviour is what is correct.
+  if (pagesDir && !renderUsesRouter(cwd)) {
+    console.log(
+      '[hydra] src/pages exists but the app does not render `Router()`, so routes are not ' +
+        'pre-rendered per page (render `Router()` from hydra to turn that on)',
+    );
+    routesTable = null;
+  } else if (pagesDir) {
     routesTable = scanRoutes(pagesDir);
     if (routesTable.errors_diagnostics.length > 0) {
       throw new Error(
@@ -809,7 +922,11 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     // the runtime `Router` resolves pages in an effect, and `renderToString`
     // does not run effects, so rendering through it would pre-render an empty
     // shell. The generated entry imports the pages statically instead.
-    ...(routesTable ? [writeSsgEntry(cwd, routesTable)].filter(Boolean) : []),
+    ...(routesTable
+      ? [
+          writeSsgEntry(cwd, routesTable, { entry: appComponentPath(cwd, entryPoint) }),
+        ].filter(Boolean)
+      : []),
     path.join(cwd, 'src/App.hyx'),
     path.join(cwd, 'src/App.hsx'),
     path.join(cwd, 'src/App.jsx'),
@@ -900,7 +1017,7 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
       createHydraEsbuildPlugin(),
       // `hydra:routes` resolves from the table scanned at step 0. In a project
       // with no pages directory the plugin simply never matches.
-      ...(routesTable ? [routesEsbuildPlugin(routesTable, { base })] : []),
+      ...(routesTable ? [routesEsbuildPlugin(routesTable, { base, cwd })] : []),
     ],
     // The runtime file lives in this package, but it imports 'react' and
     // 'react-dom/client'. esbuild resolves those relative to the IMPORTING

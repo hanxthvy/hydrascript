@@ -174,15 +174,19 @@ test('matching: nothing matches a URL that has no route', () => {
   assert.equal(matchRoute('/about/deeper', routes), null);
 });
 
-test('the generated module is plain ESM with no imports', () => {
+test('the generated module imports its pages STATICALLY', () => {
   const pages = fixture({ 'index.hyx': '', 'blog/[slug].hyx': '' });
   const table = scanRoutes(pages);
   const src = routesModuleSource(table, { base: '/sub/' });
-  assert.doesNotMatch(src, /^\s*import\s/m);
   assert.match(src, /export const routes =/);
   assert.match(src, /export const base = "\/sub\/";/);
-  // It must be evaluable as a module, not just look like one.
   assert.match(src, /export default/);
+  // Static imports, NOT `() => import(...)`. The lazy form is compiled by
+  // esbuild into a chunk the entry never references, which is how `Router`
+  // disappeared from the client bundle while the build reported success.
+  assert.match(src, /^import \* as __route_/m);
+  assert.doesNotMatch(src, /\(\) => import\(/);
+  assert.doesNotMatch(src, /await/);
 });
 
 test('hydra routes table lists dynamic routes and framework files', () => {
