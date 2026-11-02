@@ -21,6 +21,7 @@ fn usage() -> String {
          USAGE:\n\
          \x20 hydra dev [--port N]         build and serve, rebuild on change\n\
          \x20 hydra build [options]       build for production\n\
+         \x20 hydra routes [--json]      show the file-based route table\n\
          \x20 hydra preview [--port N]     preview production build\n\
          \x20 hydra run <file.hys> [args] execute script directly in memory\n\
          \x20 hydra repl                  interactive Pythonic REPL\n\
@@ -40,7 +41,7 @@ fn usage() -> String {
          \x20 hydra clean [--all]         remove build output (and node_modules)\n\
          \x20 hydra analyze [dir]         bundle size report from the last build\n\
          \x20 hydra --version\n\
-         \x20 hydra dev|build|preview|run|watch|repl|check|init|fmt|stats|doctor|add|remove|list|clean|analyze  project commands\n"
+         \x20 hydra dev|build|preview|routes|run|watch|repl|check|init|fmt|stats|doctor|add|remove|list|clean|analyze  project commands\n"
     )
 }
 
@@ -62,6 +63,7 @@ fn main() -> ExitCode {
         args[0].as_str(),
         "dev"
             | "build"
+            | "routes"
             | "preview"
             | "check"
             | "types"

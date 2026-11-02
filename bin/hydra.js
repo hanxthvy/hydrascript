@@ -12,7 +12,7 @@ const ROOT = path.resolve(HERE, '..');
 const args = process.argv.slice(2);
 const cmd = args[0];
 
-const isMetaCommand = cmd === 'dev' || cmd === 'build' || cmd === 'preview';
+const isMetaCommand = cmd === 'dev' || cmd === 'build' || cmd === 'preview' || cmd === 'routes';
 
 if (isMetaCommand) {
   const runnerPath = path.join(ROOT, 'packages/cli/runner.mjs');

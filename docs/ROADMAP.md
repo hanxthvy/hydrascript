@@ -1,0 +1,270 @@
+# Roadmap fitur HydraScript
+
+Lanjutan dari `RESEARCH-META-FRAMEWORK.md`. Ini yang akan dibangun, dalam urutan
+yang bisa dikerjakan, dengan konvensi yang sudah diputuskan.
+
+Aturan yang dipegang sepanjang dokumen ini, sesuai janji di README:
+
+- **Sintaks tetap beku di 0.3.** Tidak ada konstruksi baru di `.hyx`/`.hys`.
+  Semua fitur di sini hidup di runner, runtime, dan konvensi nama berkas.
+- **Tidak ada kode tersembunyi.** Tiap hal yang di-generate bisa dilihat lewat
+  perintah (`hydra routes`), dan tidak ada satu pun yang berjalan karena
+  "framework bilang begitu".
+- **Tidak ada auto-import.** Bertabrakan dengan `hydra check` dan dengan satu-
+  satunya nilai jual yang susah ditiru: semuanya eksplisit.
+
+Legenda status: `BARU` = belum ada sama sekali. `PERLUAS` = pondasinya ada.
+`PERBAIKI` = sudah ada tapi belum layak dipakai.
+
+---
+
+## Fase 1 — Routing berbasis berkas (tanpa server)
+
+Ini fondasinya. Semua fase lain menggantung di sini.
+
+### F1. `hydra routes` — penemuan route + manifest `BARU`
+
+Scan `src/pages/**/*.hyx`, hasilkan manifest route: path URL, berkas, daftar
+param, dan apakah route itu statis atau dinamis.
+
+- Tulis ke `.hydra/routes.generated.js` (tidak di-commit, masuk `.gitignore`).
+- Di-inject sebagai virtual module lewat esbuild plugin yang sudah ada.
+- `hydra routes` mencetaknya sebagai tabel supaya tidak ada yang tersembunyi.
+- `hydra routes --json` untuk dipakai tooling/CI.
+
+Konvensi nama berkas:
+
+```
+src/pages/index.hyx            -> /
+src/pages/about.hyx            -> /about
+src/pages/blog/index.hyx       -> /blog
+src/pages/blog/[slug].hyx      -> /blog/:slug
+src/pages/docs/[...rest].hyx   -> /docs/*  (juga /docs)
+src/pages/docs/[[...rest]].hyx -> /docs/*  (boleh, dan boleh juga /docs)
+src/pages/(marketing)/price.hyx -> /price  (grup, tidak masuk URL)
+src/pages/_partials/Hero.hyx   -> tidak routable (awalan `_`)
+```
+
+Desain yang diambil dari mana: `[slug]` dan `[...rest]` dari Next/Nuxt,
+awalan `_` untuk privat dari Next (`_folder`), `(grup)` untuk layout terpisah
+dari Next dan SvelteKit.
+
+Yang disentuh: `packages/cli/runner.mjs`, `packages/cli/esbuild-plugin.mjs`,
+`.gitignore`, `schema.json` (kunci `routes`).
+
+Diverifikasi kalau: `hydra routes` mencetak tabel benar untuk scaffold DAN untuk
+portfolio `/var/www/hanz`; build tetap hijau; gate headless lulus.
+
+### F2. Navigasi klien + `Link` `PERLUAS`
+
+`use_path()` dan `navigate()` sudah ada. Yang ditambah:
+
+- `use_route()` -> `{"path": str, "params": dict, "query": dict}`
+- `use_params()` -> `dict` dari `[slug]`/`[...rest]`
+- `use_query()` -> `dict` dari `?a=1`
+- `Link(to="/about")` -> komponen `hydra` yang merender `<a href>` dan
+  meng-intercept klik kiri biasa jadi `navigate()`. `<a>` biasa tetap berfungsi
+  tanpa JS, sama seperti SvelteKit.
+
+Sengaja TIDAK dibuat: prefetch otomatis ala `next/link`. Itu optimasi yang
+membutuhkan asumsi tentang siapa yang akan mengklik, dan bisa ditambah nanti
+tanpa mengubah API.
+
+Yang disentuh: `runtime/hydra.ts` saja. Nol perubahan compiler.
+
+Diverifikasi kalau: navigasi klien mempertahankan state React yang sama
+(tidak remount seluruh pohon), tombol back browser mengembalikan halaman benar.
+
+### F3. Layout bersarang `BARU`
+
+`_layout.hyx` di sebuah folder membungkus semua route di folder itu, dan
+mewarisi layout di atasnya.
+
+```
+src/pages/_layout.hyx          -> membungkus semua route
+src/pages/dashboard/_layout.hyx -> membungkus /dashboard/*
+```
+
+Isi layout memakai `slot` yang sudah ada di bahasa ini, jadi tidak ada sintaks
+baru sama sekali — ini murni penyusunan pohon di manifest.
+
+Diverifikasi kalau: navigasi antar dua route bersaudara tidak me-remount layout.
+
+### F4. Halaman `_404.hyx` dan `_error.hyx` `BARU`
+
+`_404.hyx` untuk URL yang tidak ketemu, `_error.hyx` sebagai error boundary
+React per folder (boleh di beberapa level, yang terdekat menang).
+
+Diverifikasi kalau: route yang salah menampilkan `_404` bukan halaman putih;
+komponen yang sengaja `raise` tertangkap boundary dan halaman lain tetap hidup.
+
+### F5. Metadata per halaman `BARU`
+
+Ekspor `meta` dari berkas halaman, atau panggil `use_head({...})` dari runtime.
+
+```
+# src/pages/about.hyx
+meta = {"title": "About — Hanz", "description": "..."}
+
+component About():
+    ...
+```
+
+Diterapkan ke `<head>` saat SSG, dan diubah di klien saat navigasi. Ini yang
+membuat SSG punya alasan untuk dipakai.
+
+Diverifikasi kalau: `dist/about/index.html` memuat `<title>` yang benar, dan
+`view-source` halaman itu bukan cangkang kosong.
+
+### F6. SSG per-route `PERBAIKI`
+
+Sekarang hanya `dist/index.html`. Setelah F1 ada, loop `renderToString` untuk
+tiap route statis -> `dist/about/index.html`. Route dinamis (ber-param) dilewati
+kecuali diminta eksplisit, dan itu dilaporkan saat build, bukan didiamkan.
+
+Kode `renderToString` + penyuntikan HTML-nya sudah ada di `runner.mjs`; ini
+mengubah "satu keluaran" jadi "satu keluaran per route".
+
+Diverifikasi kalau: build portfolio menghasilkan >1 berkas HTML, tiap berkas
+memuat markup asli, dan gate headless lulus di semuanya.
+
+---
+
+## Fase 2 — DX
+
+### F7. HMR websocket sungguhan `BARU`
+
+Ganti "rebuild 10 detik lalu refresh manual" jadi push lewat websocket +
+`import.meta.hot`. Dev server sudah punya HTTP server sendiri, jadi ini
+menambah protokol, bukan mengganti bundler.
+
+Hati-hati: ini protokol yang harus dijaga selamanya. Harus ada penurunan yang
+bersih ke full reload kalau modulnya tidak bisa di-hot-swap.
+
+Diverifikasi kalau: edit satu komponen mengubah halaman tanpa kehilangan state,
+dan edit yang tidak bisa di-hot-swap jatuh ke reload penuh, bukan halaman mati.
+
+### F8. `hydra doctor` dan `hydra stats` tahu soal route `PERLUAS`
+
+Melaporkan jumlah route, route duplikat, param yang bertabrakan (`[slug].hyx`
+dan `[id].hyx` di folder yang sama harus jadi error, bukan salah satu menang
+diam-diam), dan route yang menunjuk berkas hilang.
+
+Diverifikasi kalau: dua berkas param bertabrakan menghasilkan pesan error yang
+menyebut kedua berkasnya.
+
+---
+
+## Fase 3 — Sisi server (satu paket, jangan setengah)
+
+Tiga fitur di bawah ini hanya boleh dikirim bersama. API route tanpa pemisahan
+rahasia adalah jebakan, bukan fitur.
+
+### F9. `.env` dengan pemisahan rahasia `BARU`
+
+- `PUBLIC_*` boleh masuk bundel klien.
+- Selain itu hanya ada di server, dan dipakai lewat `import.meta.env` (yang
+  sudah di-`define` esbuild) atau `env("KEY")` dari runtime di sisi server.
+- Memakai variabel non-`PUBLIC_` di berkas klien jadi **error build**, bukan
+  `undefined` diam-diam.
+
+Diverifikasi kalau: sengaja memakai kunci rahasia di komponen klien
+menggagalkan build dengan pesan yang menyebut nama variabelnya.
+
+### F10. API routes `BARU`
+
+`src/api/*.hys` yang mengekspor fungsi per metode.
+
+```
+# src/api/hello.hys
+def get(req):
+    return {"ok": True, "at": now_iso()}
+
+def post(req, body):
+    return {"created": body["name"]}, 201
+```
+
+Jalan di `hydra dev` dan `hydra preview`, dan jadi handler saat build target
+Node. Di build target statis, folder `api/` dilaporkan sebagai diabaikan —
+dengan sengaja berisik, bukan hilang tanpa kabar.
+
+Diverifikasi kalau: `curl` ke endpoint dev mengembalikan JSON benar untuk GET dan
+POST; build statis memberi peringatan yang menyebut route yang dibuang.
+
+### F11. Middleware `BARU`
+
+Satu `src/middleware.hys` yang mengekspor `handle(req)` dan bisa membalas,
+mengubah, atau meneruskan. Bergantung pada F10.
+
+Diverifikasi kalau: middleware bisa memblokir satu path dan meneruskan sisanya.
+
+### F12. Loader per-route `BARU`
+
+Satu model saja, bukan tiga. Ekspor `load(params, req)` di berkas halaman
+(mirip `+page.server.js` SvelteKit, tapi tetap satu berkas).
+
+- Saat SSG: jalan di server, hasilnya disuntik ke HTML dan diteruskan lewat
+  payload supaya klien tidak fetch dua kali.
+- Saat navigasi klien: framework yang memanggil, komponen tidak.
+
+Diverifikasi kalau: satu halaman menampilkan data yang sama saat SSG dan saat
+navigasi klien, dan tidak ada request ganda di Network tab.
+
+---
+
+## Fase 4 — Pilihan, setelah semua di atas terbukti
+
+### F13. `hydra build --target node|static` `BARU`
+
+Dua target saja. Adapter multi-platform ala Nitro baru masuk akal kalau ada
+pengguna lain; sebelum itu jumlah target adalah biaya tanpa pembaca.
+
+---
+
+## Yang sengaja tidak dibangun
+
+Ditulis di README sebagai keputusan, bukan sebagai kekurangan:
+
+- **React Server Components.** Ini ganti arsitektur, bukan tambahan. Emit
+  HydraScript adalah React client biasa, dan itu disebut sebagai kelebihan,
+  bukan utang.
+- **Streaming SSR dan islands (Astro).** Sama: modelnya berbeda, bukan kurang.
+- **Route paralel dan intercepting route (Next).** Fitur niche, biaya konseptual
+  tinggi, dan di Next pun jarang dipakai.
+- **Auto-import komponen ala Nuxt.** Bertabrakan dengan `hydra check` dan dengan
+  janji "eksplisit". Ditolak sadar, bukan karena sulit.
+- **Prefetch otomatis.** Bisa ditambah nanti tanpa mengubah API, jadi tidak perlu
+  sekarang.
+
+---
+
+## Urutan kerja yang disarankan
+
+| # | Fitur | Kenapa di sini |
+|---|---|---|
+| 1 | F1 (route + manifest) | Prasyarat. Tanpa ini semua menggantung. |
+| 2 | F2 (navigasi + Link) | Murah, dan langsung terasa di scaffold. |
+| 3 | F3 (layout) | Bahasa sudah punya `slot`; ini cuma penyusunan pohon. |
+| 4 | F4, F5, F6 (404, meta, SSG per-route) | Paket yang mengubah SSG jadi berguna. |
+| 5 | F7, F8 (HMR, doctor) | DX. Bisa ditukar dengan #4 kalau DX lebih mendesak. |
+| 6 | F9, F10, F11, F12 (server) | Satu paket. Jangan dicicil. |
+| 7 | F13 (target) | Paling akhir, dan paling bisa ditunda. |
+
+## Jebakan yang sudah ketemu (harus ditangani, bukan diasumsikan tidak ada)
+
+- `/var/www/hanz` punya `src/hydra.hys`, sedangkan `hydra` adalah specifier
+  kontrak compiler dan README melarangnya. Begitu F1 memindai `src/`, ini harus
+  dilaporkan sebagai error yang jelas. Sudah ada satu pengguna nyata di disk.
+- `hydraconfig.json` belum punya kunci direktori route. F1 harus menambahkan
+  `"routes": "./src/pages"` ke `schema.json` supaya tidak jadi konvensi yang
+  hanya hidup di dalam kode.
+- Manifest route akan jadi sumber kebenaran kedua di samping kode. Pola di repo
+  ini sudah punya jawabannya (`build.rs` menurunkan daftar helper runtime dari
+  `runtime/hydra.ts` dan gagal kalau file itu hilang): manifest harus dihasilkan
+  dari berkas sumber, tidak pernah ditulis tangan.
+
+## Yang belum diverifikasi
+
+Semua di dokumen ini adalah rencana, bukan klaim sudah jalan. Yang belum diukur:
+waktu build + gate untuk 50+ route hasil SSG, dan apakah runtime gate masih
+lulus kalau HTML sudah ter-hydrate penuh alih-alih cangkang kosong.

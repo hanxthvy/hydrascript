@@ -14,6 +14,11 @@ dist/
 compiler-rs/target/
 target/
 
+# Generated route table. Written by `hydra build` and `hydra routes` from the
+# .hyx files under the pages directory; committing it means it can disagree with
+# the folder it describes, which is the one thing generating it prevents.
+.hydra/
+
 # Generated type declarations. These are produced by `hydra types` from the
 # source; committing them means they can disagree with the component they
 # describe, which is the one thing the generator exists to prevent.

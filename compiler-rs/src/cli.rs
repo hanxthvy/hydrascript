@@ -99,6 +99,13 @@ pub fn build_cmd(args: &[String]) -> ExitCode {
     }
 }
 
+/// `hydra routes` reads the pages directory, which is project state rather than
+/// compiler state, so it belongs to the runner even in a project without a
+/// hydraconfig — the folder layout alone is enough to answer.
+pub fn routes_cmd(args: &[String]) -> ExitCode {
+    spawn_runner("routes", args)
+}
+
 pub fn preview_cmd(args: &[String]) -> ExitCode {
     let has_help = args.iter().any(|a| a == "--help" || a == "-h");
     if find_hydraconfig().is_some() || has_help {
@@ -114,6 +121,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("run") => run_script(&args[1..]),
         Some("dev") => dev_cmd(&args[1..]),
         Some("build") => build_cmd(&args[1..]),
+        Some("routes") => routes_cmd(&args[1..]),
         Some("preview") => preview_cmd(&args[1..]),
         Some("watch") => watch(&args[1..]),
         Some("check") => check(&args[1..]),
@@ -131,7 +139,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some(other) => {
             eprintln!("hydra: unknown command {:?}", other);
             eprintln!(
-                "try: hydra dev | build | preview | run | watch | repl | check | types | init | --help"
+                "try: hydra dev | build | preview | routes | run | watch | repl | check | types | init | --help"
             );
             ExitCode::from(2)
         }

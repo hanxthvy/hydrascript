@@ -11,6 +11,15 @@ import { execFileSync, spawnSync } from 'node:child_process';
 const selfRequire = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
+import {
+  scanRoutes,
+  writeRoutesModule,
+  routesEsbuildPlugin,
+  routeTable,
+  routesJson,
+  ROUTES_MODULE,
+} from './router.mjs';
+
 /**
  * The entrypoint filenames, in priority order. ONE list: the runner resolves
  * against it, the error message names every one of them, and a test in
@@ -233,6 +242,23 @@ function copyDirRecursive(src, dest) {
       fs.copyFileSync(srcPath, destPath);
     }
   }
+}
+
+/**
+ * Where the page files live.
+ *
+ * `routes` in hydraconfig may be a directory, or `false` to turn file-based
+ * routing off entirely for a project that wires its own. The default is
+ * `src/pages`, which is where `hydra init` has always put pages.
+ */
+function pagesDirectory(cwd, config) {
+  const raw = config.routes;
+  if (raw === false) return null;
+  if (typeof raw === 'string' && raw.trim() !== '') return path.resolve(cwd, raw.trim());
+  if (raw && typeof raw === 'object' && typeof raw.dir === 'string') {
+    return path.resolve(cwd, raw.dir);
+  }
+  return path.join(cwd, 'src', 'pages');
 }
 
 export function readConfig(cwd) {
@@ -554,7 +580,7 @@ function phaseReport(totalMs) {
  * React stays external as bare specifiers. A second copy would mean a second
  * hook dispatcher and an "invalid hook call" at render time.
  */
-async function buildSsgBundle(esbuild, cwd, pkgRoot, ssgEntry, hydraAlias, config, mode, base) {
+async function buildSsgBundle(esbuild, cwd, pkgRoot, ssgEntry, hydraAlias, config, mode, base, routesTable = null) {
   const jsxRuntimePath = resolvePkg('react/jsx-runtime', cwd);
   let jsxDevRuntimePath;
   try {
@@ -577,6 +603,7 @@ async function buildSsgBundle(esbuild, cwd, pkgRoot, ssgEntry, hydraAlias, confi
     target: 'node18',
     plugins: [
       createHydraEsbuildPlugin(),
+      ...(routesTable ? [routesEsbuildPlugin(routesTable, { base })] : []),
       {
         name: 'hydra-ssg-external-react',
         setup(build) {
@@ -647,6 +674,27 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   // than `base`; see the esbuild options below.
   const assetsPublicPath = base + 'assets/';
   fs.mkdirSync(assetsDir, { recursive: true });
+
+  // 0. File-based routes.
+  //
+  // Scanned before anything is bundled, and written into `.hydra/` so the table
+  // exists on disk where a person can read it. A mistake in the pages directory
+  // is fatal here rather than a silently missing route later: two files that
+  // disagree about a parameter name describe the same URL, and either one being
+  // picked is wrong.
+  const pagesDir = pagesDirectory(cwd, config);
+  let routesTable = null;
+  if (pagesDir) {
+    routesTable = scanRoutes(pagesDir);
+    if (routesTable.errors_diagnostics.length > 0) {
+      throw new Error(
+        `[hydra] route discovery failed:\n  ` +
+          routesTable.errors_diagnostics.join('\n  ') +
+          `\n= fix the files above, or set "routes": false in hydraconfig.json`,
+      );
+    }
+    writeRoutesModule(cwd, routesTable, { base });
+  }
 
   let _p = phaseStart();
   const { esbuild, postcss, tailwindcss, autoprefixer } = await loadBundlerDeps(cwd);
@@ -770,7 +818,7 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
 
   let ssgPromise = null;
   if (ssgEntry) {
-    ssgPromise = buildSsgBundle(esbuild, cwd, pkgRoot, ssgEntry, hydraAlias, config, mode, base)
+    ssgPromise = buildSsgBundle(esbuild, cwd, pkgRoot, ssgEntry, hydraAlias, config, mode, base, routesTable)
       .then((result) => ({ result }))
       .catch((err) => ({ err }));
   }
@@ -833,7 +881,12 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     // first import and nothing mounted, while the build itself reported success.
     publicPath: assetsPublicPath,
     metafile: true,
-    plugins: [createHydraEsbuildPlugin()],
+    plugins: [
+      createHydraEsbuildPlugin(),
+      // `hydra:routes` resolves from the table scanned at step 0. In a project
+      // with no pages directory the plugin simply never matches.
+      ...(routesTable ? [routesEsbuildPlugin(routesTable, { base })] : []),
+    ],
     // The runtime file lives in this package, but it imports 'react' and
     // 'react-dom/client'. esbuild resolves those relative to the IMPORTING
     // file, so it looked inside the toolchain's own node_modules — where React
@@ -1545,6 +1598,28 @@ if (!invokedDirectly) {
     console.error(err);
     process.exit(1);
   });
+} else if (cmd === 'routes') {
+  // The table, printed. Reading it out of the bundle is not an option: the
+  // whole point is to answer "what does this project's folder layout mean"
+  // before and independently of a build.
+  const config = readConfig(cwd);
+  const wantJson = argv.includes('--json');
+  const dir = pagesDirectory(cwd, config);
+  if (!dir) {
+    if (wantJson) console.log(JSON.stringify({ root: null, routes: [] }, null, 2));
+    else console.log('file-based routing is disabled ("routes": false in hydraconfig.json)');
+    process.exit(0);
+  }
+  const table = scanRoutes(dir);
+  if (wantJson) {
+    console.log(JSON.stringify(routesJson(table), null, 2));
+  } else {
+    console.log(routeTable(table));
+  }
+  if (table.errors_diagnostics.length > 0) {
+    console.error('\n' + table.errors_diagnostics.map((d) => `error: ${d}`).join('\n'));
+    process.exit(1);
+  }
 } else if (cmd === 'preview') {
   // A preview that cannot bind is a failed preview, exit 1. Staying alive
   // while serving nothing is what turned a busy port into 12,485 restarts
