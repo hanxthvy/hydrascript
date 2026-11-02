@@ -146,6 +146,36 @@ export const HMR_CLIENT = `// [xihanzu-NR]
       var msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.type === 'ok') { clearOverlay(); location.reload(); return; }
+      if (msg.type === 'refresh') {
+        // Fast Refresh: re-evaluate the bundle WITHOUT reloading the page. The
+        // components are wrapped in a registry boundary, so the re-evaluated
+        // module writes its new implementation into the existing slot and React
+        // keeps the mounted tree's hook state.
+        //
+        // The cache-busting query is what makes the browser fetch a NEW module
+        // rather than serve the previous one from the module map.
+        clearOverlay();
+        if (window.__hydra_refreshing) return;
+        window.__hydra_refreshing = true;
+        // Which module to re-import is DISCOVERED from the DOM, not remembered
+        // from the first load: the bundle filename is content-hashed, so it
+        // changes on every rebuild. Re-importing the old name would 404, and the
+        // "catch, then reload" would turn that into a full reload: state lost, while
+        // the label still updated, which reads as "Fast Refresh works" until you
+        // look at the counter.
+        var tag = document.querySelector('script[type="module"][src*="assets/"]');
+        var entry = tag && tag.getAttribute('src');
+        if (!entry) { location.reload(); return; }
+        var cached = window.__hydra_refresh_entry === entry;
+        window.__hydra_refresh_entry = entry;
+        // A rebuild that produced the SAME file means nothing changed for the
+        // browser to fetch; a reload would be a lie about what happened.
+        import(entry + (entry.indexOf('?') === -1 ? '?' : '&') + 't=' + Date.now())
+          .catch(function () { location.reload(); })
+          .then(function () { window.__hydra_refreshing = false; });
+        void cached;
+        return;
+      }
       if (msg.type === 'error') { overlay(msg.message || 'build failed'); return; }
       if (msg.type === 'building') { clearOverlay(); return; }
     };
@@ -167,8 +197,22 @@ export const HMR_CLIENT = `// [xihanzu-NR]
  * time the script runs.
  */
 export function injectHmrClient(html, path = '/__hydra/hmr') {
-  if (html.includes('__hydra/hmr')) return html;
-  const tag = `<script>${HMR_CLIENT.replace('/__hydra/hmr', path)}</script>`;
+  // Which module the client re-imports on a refresh. Read from the bundle tag the
+  // page already carries, so the client never has to guess a hashed filename.
+  const entry = /<script\b[^>]*\bsrc="([^"]*assets\/index-[^"]+\.js)"/.exec(html);
+  if (entry && !html.includes('__hydra_entry')) {
+    html = html.replace(
+      '</body>',
+      `  <script>window.__hydra_entry = ${JSON.stringify(entry[1])};</script>\n  </body>`,
+    );
+  }
+  if (html.includes(path)) return html;
+  // The client CONCATENATES this value onto `location.host`, so it must begin with
+  // a slash. It was `'__hydra/hmr'`, which produced
+  // `ws://host:port__hydra/hmr` — an invalid URL, so the HMR socket never opened
+  // and every save needed a manual refresh while the terminal said "Development
+  // mode active". Substituted as a quoted literal so a custom path still works.
+  const tag = `<script>${HMR_CLIENT.replace("'__hydra/hmr'", JSON.stringify(path))}</script>`;
   if (html.includes('</body>')) {
     return html.replace('</body>', `  ${tag}\n  </body>`);
   }

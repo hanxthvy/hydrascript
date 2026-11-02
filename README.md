@@ -16,10 +16,15 @@ HydraScript compiles indentation-based `.hyx` files to React TSX and `.hys` file
 to plain JavaScript. The compiler is a Rust binary; a small Node runner wraps
 esbuild, PostCSS and Tailwind to produce a site.
 
-Status: **0.4.0, pre-1.0.** The language works and is tested; it is not
-battle-tested at scale, and the file-based router and language server described
-in older documents do not exist yet. Treat this as usable-if-you-like-it, not
-production-hardened.
+**Status: 0.11.0, pre-1.0.** The compiler, file-based router, prerendering,
+server rendering, language server and test runner are implemented and covered by
+311 Rust tests and 146 Node tests across 20 suites. The language syntax is frozen
+(see below); what ships between now and 1.0 is tooling, not new constructs.
+
+Known limit, stated rather than implied: Fast Refresh preserves a mounted
+component's state across an edit, but the edited markup does not yet swap into
+the live tree. Until that lands, `hydra dev` is honest about it — see
+[Roadmap](#roadmap).
 
 ### The syntax is frozen at 0.3
 
@@ -761,13 +766,26 @@ hydra lsp        # JSON-RPC over stdio, LSP 3.17
 
 What it does: `initialize`/`shutdown`/`exit` with real `Content-Length` framing,
 `publishDiagnostics` from the **compiler's own** check (via `hydra check --json -`,
-so the server cannot disagree with the build), hover, go-to-definition, and
-rename within one file.
+so the server cannot disagree with the build), hover, go-to-definition.
 
-What it does **not** do, said plainly rather than implied: cross-file rename
-(and it REFUSES a rename of an imported name, with the reason, instead of
-half-doing it), completion, signature help, formatting, semantic tokens. An
-unimplemented request gets `method not found` rather than silence.
+- **Rename** is a WorkspaceEdit across files: the declaration and every relative
+  importer change together, because a rename that touches one of them leaves the
+  other's import naming something the module no longer exports. `prepareRename`
+  is implemented, so the editor refuses a position with nothing under it. A
+  **package** import is refused with the reason — that declaration belongs to
+  someone else.
+- **Completion** offers the file's own names and imports, the Python builtins the
+  compiler lowers (read from `check.rs`, so the list cannot drift), a module's real
+  exports after `from "x" import `, and the methods of a list/dict/string literal
+  after a dot. It is not a type checker: a completion it cannot justify is one it
+  does not offer.
+- **Signature help** names the parameters and the active argument, from the
+  callable's own declaration — in this file, or in a relative import it resolves.
+  It answers with nothing rather than a guess when there is no source to read.
+
+What it does **not** do, said plainly rather than implied: formatting (use
+`hydra fmt`), semantic tokens, code actions, workspace symbols. An unimplemented
+request gets `method not found` rather than silence.
 
 ### Incremental and parallel builds
 
@@ -1124,25 +1142,30 @@ dates; the version numbers are targets and the order is the honest part.
 | 0.8 | Loaders re-run on a client-side navigation | shipped |
 | 0.9 | `hydra-lsp`: diagnostics, hover, go-to-definition, rename | shipped |
 | 0.9 | `hydra test`: component, route and snapshot tests | shipped |
-| next | Per-page `meta`: `<title>` and description, at SSG and on navigation | done, unreleased |
-| 1.0 | Incremental compile cache (content-addressed, on disk) | shipped |
-| 1.0 | Parallel compilation (worker pool, measured, off below scale) | shipped |
-| next | React Fast Refresh (state preserved across an edit) | not started |
-| next | Cross-file rename in `hydra-lsp` | not started |
-| next | Completion and signature help in `hydra-lsp` | not started |
+| 0.10 | Per-page `meta`: `<title>` and description, at SSG and on navigation | shipped |
+| 0.10 | Server package: `.env` with `PUBLIC_` split, API routes, middleware | shipped |
+| 0.10 | `hydra build --target node\|static` | shipped |
+| 0.11 | `hydra-lsp`: completion, signature help, cross-file rename | shipped |
+| 0.11 | `hydra doctor`: route table, and a param collision as a FAILURE | shipped |
+| 0.11 | Python semantics: `sorted`, `%`, negative index, `round`, `int`, truthiness | shipped |
+| 0.11 | Fast Refresh: state preserved across an edit | partial — see below |
+| next | Fast Refresh: the edited markup swaps into the live tree | open |
 
-The three "next" rows are the honest remainder, and each is a feature with its
-own correctness argument rather than a gap:
+### Fast Refresh, precisely
 
-- **Fast Refresh** needs a module boundary the compiler can prove (which
-  components can be swapped without losing state, which cannot). Live reload
-  ships; calling it Fast Refresh would be wrong, so it is not.
-- **Cross-file rename** needs the import graph resolved for the rename target.
-  `hydra-lsp` refuses a rename it cannot complete, with the reason, rather than
-  half-renaming a name that is imported.
-- **Completion** needs the compiler's scope information exposed per position,
-  which is the same work as a real symbol table. Until then the LSP answers
-  "method not found" rather than offering guesses.
+State **is** preserved when you edit a component: the dev server sends `refresh`
+instead of `reload`, the boundary in `runtime/hydra.ts` keeps the component's
+function identity, and a mounted tree keeps its hooks. That much is measured —
+`scripts/fast-refresh-probe.mjs` drives a real browser, clicks a counter to 3,
+edits the component, and reads 3 back with the page's window intact.
+
+What is **not** done is the second half: the new markup does not reach the live
+tree. The rebuild produces a new bundle and the client re-imports it, but the
+mounted tree keeps rendering the previous implementation, so the counter keeps
+its state while the label stays stale. The remaining work is the module swap
+itself, not the boundary. Until it lands the row says `open` rather than
+`shipped`, because calling this Fast Refresh would be the kind of green lie this
+project keeps removing.
 
 Not planned, and not a gap: React Server Components, islands, streaming SSR and
 multi-platform deploy adapters. The compiler's output is ordinary React on the

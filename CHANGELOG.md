@@ -137,6 +137,61 @@ that name promised, and nothing beyond it.
 
 ---
 
+## 0.11.1 — 2026-11-02
+
+**The three LSP/Tooling items the roadmap listed as "not started", plus the
+`doctor` route report.** One of them — Fast Refresh — is shipped in part, and the
+partial half is named rather than implied.
+
+### Added
+- **`hydra-lsp`: cross-file rename.** `textDocument/rename` now returns a
+  WorkspaceEdit covering the declaration AND every relative importer, because a
+  rename that touches one of them leaves the other's import naming something the
+  module no longer exports. `prepareRename` lets the editor refuse a position with
+  nothing under it. A PACKAGE import is refused with the reason: that declaration
+  is not this server's to edit. Found and fixed on the way: the importer scan
+  started at `dirname(target)`, so it could only ever find the declaration.
+- **`hydra-lsp`: completion.** The file's own names and imports, the Python
+  builtins the COMPILER lowers (read out of `check.rs`, not copied — a second list
+  would drift), a module's real exports after `from "x" import `, and the methods
+  of a list/dict/string literal after a dot.
+- **`hydra-lsp`: signature help.** Parameter names and the active argument, from
+  the callable's own declaration in this file or a relative import.
+- **`hydra doctor` reports routes, and a param collision is a FAILURE.** Two files
+  claiming one URL — `[slug].hyx` beside `[id].hyx` — both compile, so which one
+  answers depended on directory order. `doctor` now names both files and exits 1.
+
+### Fixed
+- **The HMR client could never connect.** It built
+  `ws://host:port__hydra/hmr` — no slash before the path — so every save needed a
+  manual refresh while the terminal said "Development mode active". It also went
+  missing from SSR-rendered dev pages entirely, which is every page in a project
+  that uses the router.
+- **Dev SSR pre-rendering threw `Cannot read properties of undefined`.** The
+  refresh boundary's registry key was a module-level `const` read from a call that
+  runs while the module is still initialising, so the assignment became
+  `globalThis[undefined] = ...`. The key is a literal inside its function now.
+- **The worker pool did not receive `process.env`.** A switch set after the pool
+  was created — `HYDRA_DEV` decides whether the dev boundary is emitted at all —
+  was silently absent, so the feature did nothing while every test passed.
+- **The compile cache key now carries the dev/build mode.** The same binary emits
+  both shapes, so a production build's cached `export function Card` was served to
+  `hydra dev`.
+- **`hmr.test.mjs` picked a port with `5380 + random(100)`**, which collided with
+  another dev server in the same run. The failure looked like the socket refusing
+  a connection, i.e. a flaky test blaming the code under test. It asks the OS now.
+
+### Fast Refresh: state preserved, markup not yet
+The dev server sends `refresh` instead of `reload`, the compiler wraps each
+component in a registry boundary (`__refresh`), and a mounted tree keeps its hook
+state across an edit. **Measured**: a browser clicks a counter to 3, the component
+is edited, the counter reads 3 with the page's window intact.
+
+The second half is **not** done: the new markup does not reach the live tree, so
+the counter keeps its state while the label stays stale. The README roadmap says
+`open` for that row. Calling the whole thing Fast Refresh would be the kind of
+green lie this project keeps removing.
+
 ## 0.11.0 — 2026-11-02
 
 **The server side, as one package: `.env` with a real secret split, API routes,

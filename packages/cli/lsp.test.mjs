@@ -64,7 +64,12 @@ test('initialize reports the capabilities the server really has', () => {
   assert.equal(res.serverInfo.version, '9.9.9');
   assert.equal(res.capabilities.hoverProvider, true);
   assert.equal(res.capabilities.definitionProvider, true);
-  assert.equal(res.capabilities.renameProvider, true);
+  // Rename is now a WorkspaceEdit across files, so the provider is an object
+  // carrying `prepareProvider` — the flag that lets the editor refuse a position
+  // with nothing under it instead of sending an empty rename.
+  assert.equal(res.capabilities.renameProvider.prepareProvider, true);
+  assert.ok(res.capabilities.completionProvider, 'completion is implemented');
+  assert.ok(res.capabilities.signatureHelpProvider, 'signature help is implemented');
   // Full sync: the client sends the whole document on change. Claiming
   // incremental without implementing it corrupts the buffer.
   assert.equal(res.capabilities.textDocumentSync, 1);
@@ -72,7 +77,10 @@ test('initialize reports the capabilities the server really has', () => {
 
 test('an unimplemented request answers method-not-found, not silence', () => {
   const { sent, state, io } = session();
-  handleMessage({ jsonrpc: '2.0', id: 7, method: 'textDocument/completion' }, state, io);
+  // A method the server genuinely does not implement. `completion` used to be
+  // this example; it is implemented now, so the example had to move rather than
+  // the assertion disappear — the behaviour under test is the honest refusal.
+  handleMessage({ jsonrpc: '2.0', id: 7, method: 'textDocument/semanticTokens/full' }, state, io);
   assert.equal(sent[0].error.code, -32601);
   assert.equal(sent[0].id, 7);
 });

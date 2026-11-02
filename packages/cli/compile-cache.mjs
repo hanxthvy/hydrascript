@@ -240,6 +240,13 @@ export class CompilePool {
           // string of code, not a data: URL.
           eval: true,
           workerData: { addon: this.addonPath },
+          // A worker does NOT inherit `process.env` by default in the way the
+          // main thread sees it: without this, the compiler inside the worker ran
+          // with the parent's environment at spawn time only, so a switch set
+          // AFTER the pool was created (HYDRA_DEV, which decides whether the
+          // dev-time refresh boundary is emitted) was silently absent and the
+          // feature did nothing while every test passed.
+          env: { ...process.env },
           // A worker's own logging stays out of the build's output; the compiler
           // does not log today, and one that started to would corrupt whatever
           // parses stdout.

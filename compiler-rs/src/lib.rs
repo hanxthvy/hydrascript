@@ -130,6 +130,11 @@ pub fn compile_for(
             if let Some(d) = dir {
                 em = em.with_base_dir(d);
             }
+            // The dev-time refresh boundary is compiled AWAY for a release build.
+            // A production bundle should be a plain function per component; the
+            // indirection exists only so a dev server can keep hook state across
+            // an edit. `HYDRA_DEV=1` is what `hydra dev` sets.
+            em.refresh_boundary = std::env::var("HYDRA_DEV").as_deref() == Ok("1");
             let code = em.run(&module)?;
             let map = em.sourcemap(filename, src);
             // TSX: element tags make bracket counting meaningless.

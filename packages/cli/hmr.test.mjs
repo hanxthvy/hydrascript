@@ -11,6 +11,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -51,7 +52,17 @@ function project() {
 test('dev serves the live-reload client and pushes a rebuild message', async (t) => {
   if (!fs.existsSync(HYDRA)) return t.skip(`${HYDRA} not built`);
   const dir = project();
-  const port = 5380 + Math.floor(Math.random() * 100);
+  // A port the OS says is free. `5380 + random(100)` collided with another test
+  // file's dev server in the same run, and the failure looked like "the socket
+  // refused a connection" — a flaky test that blamed the code under test.
+  const port = await new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const { port: free } = srv.address();
+      srv.close(() => resolve(free));
+    });
+  });
   const child = spawn('node', [path.join(HERE, 'runner.mjs'), 'dev', '--port', String(port)], {
     cwd: dir,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -80,11 +91,19 @@ test('dev serves the live-reload client and pushes a rebuild message', async (t)
     });
     ws.addEventListener('message', (ev) => messages.push(JSON.parse(ev.data)));
 
-    // A good edit: the page should be told to reload.
+    // A good edit: the page is told to REFRESH, not to reload. `refresh` asks the
+    // client to re-import the bundle and swap component implementations in place,
+    // which is what keeps a mounted component's state; `ok` means a full reload and
+    // a lost tree. Both are still reachable — the client falls back to `ok`'s
+    // behaviour when it cannot refresh — so the distinction is asserted here.
     await new Promise((r) => setTimeout(r, 400));
     fs.appendFileSync(path.join(dir, 'src/pages/index.hyx'), '\n# touched\n');
     for (let i = 0; i < 80 && messages.length === 0; i++) await new Promise((r) => setTimeout(r, 250));
-    assert.deepEqual(messages[0], { type: 'ok' }, `expected a reload, got ${JSON.stringify(messages)}`);
+    assert.deepEqual(
+      messages[0],
+      { type: 'refresh' },
+      `expected a refresh, got ${JSON.stringify(messages)}`,
+    );
 
     // A broken edit: an error, NOT a reload. Reloading into a broken bundle takes
     // away the page the developer was reading.

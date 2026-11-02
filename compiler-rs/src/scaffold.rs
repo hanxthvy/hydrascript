@@ -903,6 +903,13 @@ pub fn doctor(args: &[String]) -> ExitCode {
         src.display()
     );
 
+    // Routes. The roadmap asks for this specifically, and the reason is the
+    // collision case: `[slug].hyx` and `[id].hyx` in one folder both match the same
+    // URL, so one of them wins SILENTLY. That is the failure a health report
+    // exists to catch — the build cannot, because both files are valid.
+    println!();
+    route_report(&root, &mut failed);
+
     // The artifacts are the part that goes stale silently. `hydra.node` is what
     // the bundler calls in-process, so a build that copies the CLI binary but
     // not the addon keeps running the OLD compiler while every source test
@@ -918,6 +925,115 @@ pub fn doctor(args: &[String]) -> ExitCode {
     } else {
         println!("all checks passed");
         ExitCode::SUCCESS
+    }
+}
+
+/// Report the file-based routes, and FAIL on a table that cannot resolve.
+///
+/// A collision is two files claiming one URL pattern: a `[slug]` beside an `[id]`,
+/// or a `page.hyx` beside `page/index.hyx`. Both compile, so the build stays green
+/// and which one answers depends on directory order — the kind of bug that looks
+/// like a caching problem for an afternoon.
+fn route_report(root: &Path, failed: &mut usize) {
+    let pages = root.join("src").join("pages");
+    if !pages.is_dir() {
+        println!("warn  no src/pages — this project has no file-based routes");
+        return;
+    }
+
+    // (pattern, file) for every route file, mirroring the runner's rules: `_name`
+    // and `(group)` are not part of the URL, `[x]` is a parameter, `index` is the
+    // folder itself.
+    let mut routes: Vec<(String, String)> = Vec::new();
+    collect_routes(&pages, &pages, &mut routes);
+
+    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for (_, file) in &routes {
+        let ext = file.rsplit('.').next().unwrap_or("");
+        *counts.entry(if ext == "hyx" { "hyx" } else { "hys" }).or_insert(0) += 1;
+    }
+
+    // Group by the shape of the pattern, not its text: `/blog/[slug]` and
+    // `/blog/[id]` are the SAME route.
+    let mut by_shape: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for (pattern, file) in &routes {
+        let shape = pattern
+            .split('/')
+            .map(|seg| if seg.starts_with('[') { "[*]" } else { seg })
+            .collect::<Vec<_>>()
+            .join("/");
+        by_shape.entry(shape).or_default().push(file.clone());
+    }
+
+    let mut collisions = 0usize;
+    for (shape, files) in &by_shape {
+        if files.len() > 1 {
+            collisions += 1;
+            println!(
+                "fail  route collision at {} — {}",
+                if shape.is_empty() { "/" } else { shape },
+                files.join(", ")
+            );
+            println!("      both files match one URL, so which one answers depends on");
+            println!("      directory order. Rename one, or move it under a (group).");
+        }
+    }
+
+    println!(
+        "ok    routes {} ({} .hyx){}",
+        routes.len(),
+        counts.get("hyx").copied().unwrap_or(0),
+        if collisions == 0 {
+            ", no collisions".to_string()
+        } else {
+            format!(", {} COLLISION(S)", collisions)
+        }
+    );
+    *failed += collisions;
+}
+
+/// Walk `dir`, pushing `(url pattern, relative file)` for every route file.
+fn collect_routes(base: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let path = e.path();
+        let name = e.file_name().to_string_lossy().to_string();
+        if path.is_dir() {
+            // `_folder` is private to the router, `(group)` is not in the URL.
+            if name.starts_with('_') || name.starts_with('.') {
+                continue;
+            }
+            collect_routes(base, &path, out);
+            continue;
+        }
+        // Strip the EXTENSION, not the first dot: `[...rest].hyx` is a file whose stem
+        // is `[...rest]`, and splitting on '.' truncated it to `[`.
+        let stem = name
+            .strip_suffix(".hyx")
+            .or_else(|| name.strip_suffix(".hys"))
+            .unwrap_or("");
+        if stem.is_empty() {
+            continue;
+        }
+        // A page's server half is not a route of its own.
+        if name.ends_with(".server.hys") || stem.starts_with('_') {
+            continue;
+        }
+        let rel_dir = dir.strip_prefix(base).unwrap_or(Path::new(""));
+        let mut segs: Vec<String> = rel_dir
+            .components()
+            .filter_map(|c| {
+                let s = c.as_os_str().to_string_lossy().to_string();
+                // A group `(marketing)` does not appear in the URL.
+                if s.starts_with('(') && s.ends_with(')') { None } else { Some(s) }
+            })
+            .collect();
+        if stem != "index" {
+            segs.push(stem.to_string());
+        }
+        let pattern = format!("/{}", segs.join("/"));
+        out.push((pattern, name));
     }
 }
 
@@ -1067,6 +1183,82 @@ pub fn stats(args: &[String]) -> ExitCode {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod route_tests {
+    use super::collect_routes;
+    use std::fs;
+    use std::path::Path;
+
+    fn tree(files: &[&str]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "hydra-routes-{}-{}",
+            std::process::id(),
+            files.len()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        for f in files {
+            let p = dir.join(f);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, "component X():\n    p: \"x\"\n").unwrap();
+        }
+        dir.join("pages")
+    }
+
+    fn patterns(dir: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        collect_routes(dir, dir, &mut out);
+        out.into_iter().map(|(p, _)| p).collect()
+    }
+
+    #[test]
+    fn the_url_rules_match_the_router() {
+        let pages = tree(&[
+            "pages/index.hyx",
+            "pages/about.hyx",
+            "pages/blog/index.hyx",
+            "pages/blog/[slug].hyx",
+            "pages/docs/[...rest].hyx",
+            "pages/(marketing)/price.hyx",
+            "pages/_partials/Hero.hyx",
+            "pages/_404.hyx",
+        ]);
+        let mut got = patterns(&pages);
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                "/",
+                "/about",
+                "/blog",
+                "/blog/[slug]",
+                "/docs/[...rest]",
+                "/price",
+            ],
+            "index, params, catch-all, groups and _private must resolve like the router"
+        );
+    }
+
+    #[test]
+    fn a_param_beside_a_different_param_named_collision_is_visible() {
+        // Both files match `/blog/<one segment>`. The shapes are the same, which is
+        // what `route_report` keys on; this asserts the collection is right, since
+        // the printing half is not worth testing through stdout.
+        let pages = tree(&["pages/blog/[slug].hyx", "pages/blog/[id].hyx"]);
+        let got = patterns(&pages);
+        assert_eq!(got.len(), 2, "both files must be seen, not deduped");
+        let shapes: Vec<String> = got
+            .iter()
+            .map(|p| {
+                p.split('/')
+                    .map(|s| if s.starts_with('[') { "[*]" } else { s })
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .collect();
+        assert_eq!(shapes[0], shapes[1], "they resolve to one URL shape");
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -1093,6 +1093,11 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   // hydraconfig > the default for the command (dev / production).
   const mode = opts.mode || config.mode || (opts.dev ? 'development' : 'production');
   if (mode === 'development') process.env.NODE_ENV = 'development';
+  // The compiler reads this to decide whether to emit the dev-time refresh
+  // boundary. It is a separate switch from NODE_ENV on purpose: a `preview` of a
+  // production build must NOT carry the boundary, and a dev server must.
+  if (opts.dev) process.env.HYDRA_DEV = '1';
+  else delete process.env.HYDRA_DEV;
 
   // 0a. `.env`, loaded BEFORE anything is compiled.
   //
@@ -1136,8 +1141,15 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   // a dev loop recompiles so few files that the write costs more than the hit.
   const cacheWanted =
     opts.dev !== true && process.env.HYDRA_NO_CACHE !== '1' && config.build?.cache !== false;
+  // The cache key must carry EVERYTHING that changes the output. The dev-only
+  // refresh boundary is one of those, and it is not part of the compiler binary:
+  // the same binary emits both shapes. Without this, a production build's cached
+  // `export function Card` was served to `hydra dev`, so Fast Refresh silently did
+  // nothing while every test still passed.
   const compileCache = cacheWanted
-    ? new CompileCache(cacheDirFor(cwd), { version: VERSION }).withExtra(compilerIdentityKey())
+    ? new CompileCache(cacheDirFor(cwd), { version: VERSION }).withExtra(
+        compilerIdentityKey() + (opts.dev ? ':dev' : ':build'),
+      )
     : null;
 
   const base = normalizeBase(config.base);
@@ -2719,7 +2731,13 @@ export async function runDev(cwd = process.cwd(), opts = {}) {
         building = true;
         try {
           await runBuild(cwd, { dev: true });
-          if (hmr) hmr.broadcast(JSON.stringify({ type: 'ok' }));
+          // A successful dev rebuild asks the client to REFRESH (swap the
+          // component implementations in place), not to reload. A full reload
+          // resets every component's state, which is the whole difference between
+          // live reload and Fast Refresh. `ok` remains the message for a plain
+          // reload, used when the client cannot refresh (no registry, a bundle
+          // that failed to re-import).
+          if (hmr) hmr.broadcast(JSON.stringify({ type: 'refresh' }));
         } catch (err) {
           const message = err && err.message ? err.message : String(err);
           console.error('[hydra] Build error:', message);

@@ -617,6 +617,88 @@ export function range(...args: number[]): number[] {
 }
 
 /** Python-style truthiness: empty list/dict/string and 0 are falsy. */
+/* ------------------------------------------------------------ fast refresh
+ *
+ * A dev-time boundary that keeps a mounted component's STATE across a rebuild.
+ *
+ * Why a registry and not a babel plugin: the compiler already knows where every
+ * component begins and ends, so it can emit the boundary itself. What React needs
+ * in order to keep hooks alive is that the ELEMENT TYPE stay identical — same
+ * object identity — while its implementation changes. So the exported binding is
+ * a stable function that reads a slot, and a rebuild writes a new function into
+ * that slot.
+ *
+ * What it does NOT claim, because the difference matters:
+ *
+ *   - It does not patch the running module. A rebuild still replaces the module;
+ *     the boundary is what carries state across that replacement, through a
+ *     registry that lives on `globalThis` and therefore outlives the module.
+ *   - A component that reads a module-level value sees the OLD value until the
+ *     module is re-evaluated. Module state is not hot-swapped, only hooks are.
+ *   - A production build compiles the boundary AWAY (`refresh_boundary = false`),
+ *     so the shipped component is a plain function with no indirection.
+ */
+
+interface RefreshSlot {
+  impl: (props: any) => any
+  /** The stable component React sees. Identity never changes for a given key. */
+  component: (props: any) => any
+}
+
+/**
+ * The registry lives on `globalThis` so it outlives the module instance — a
+ * rebuild replaces the module, and the components already mounted must find their
+ * slot again.
+ *
+ * The KEY is a literal inside the function, not a module constant, because a
+ * component can be registered while this module is still being evaluated: the
+ * generated route table imports pages, a page imports `hydra`, and the component
+ * boundary runs at import time. A module-level `const` read from that first call
+ * is in the temporal dead zone, and the assignment became
+ * `globalThis[undefined] = ...` — "Cannot assign to read only property
+ * 'undefined'". A literal has no such ordering.
+ */
+function refreshRegistry(): Map<string, RefreshSlot> {
+  const g = globalThis as any
+  const key = '__hydra_refresh_registry__'
+  if (!g[key]) g[key] = new Map<string, RefreshSlot>()
+  return g[key] as Map<string, RefreshSlot>
+}
+
+/**
+ * `__refresh("Card", impl)` — a component whose identity survives a rebuild.
+ *
+ * The key is `file:name` at build time (the compiler passes the bare name and the
+ * registry is per module instance), which is enough for the one thing it must do:
+ * when the same component is registered again, the EXISTING component function
+ * gets the new implementation and every mounted instance keeps its hooks.
+ */
+export function __refresh(name: string, impl: (props: any) => any): (props: any) => any {
+  const reg = refreshRegistry()
+  const existing = reg.get(name)
+  if (existing) {
+    existing.impl = impl
+    return existing.component
+  }
+  const slot: RefreshSlot = {
+    impl,
+    // Not an arrow over `slot.impl` captured once: it reads the field on every
+    // render, which is what makes the swap take effect without a remount.
+    component(props: any) {
+      return slot.impl(props)
+    },
+  }
+  Object.defineProperty(slot.component, 'name', { value: name, configurable: true })
+  reg.set(name, slot)
+  return slot.component
+}
+
+/**
+ * `__refresh_count()` — how many components the registry holds. For a test that
+ * asserts the boundary is actually in the bundle, not merely emitted.
+ */
+export const __refresh_count = (): number => refreshRegistry().size
+
 /**
  * `truthy(x)` — Python truthiness, for a CONDITION.
  *

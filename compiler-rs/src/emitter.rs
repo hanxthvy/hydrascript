@@ -937,6 +937,13 @@ pub struct Emitter {
     /// Runtime helpers the source actually used (capitalize, title, ...).
     /// Collected during emission so the import is injected only when needed.
     pub used_helpers: std::cell::RefCell<HashSet<String>>,
+    /// Whether a component is wrapped in the dev-time refresh boundary.
+    ///
+    /// OFF by default: the boundary exists only so a dev server can keep a mounted
+    /// component's state across an edit, and a release build must emit a plain
+    /// function. `hydra dev` turns it on; every other caller gets production shape
+    /// without asking.
+    pub refresh_boundary: bool,
     /// Every `def` in the file, by name: the ordered parameter list.
     ///
     /// Keyword arguments are a Python feature JavaScript does not have. A call
@@ -1012,6 +1019,7 @@ impl Emitter {
             depth: 0,
             imports: HashSet::new(),
             used_helpers: std::cell::RefCell::new(HashSet::new()),
+            refresh_boundary: false,
             fn_params: std::cell::RefCell::new(std::collections::HashMap::new()),
             walrus_names: std::cell::RefCell::new(HashSet::new()),
             class_names: std::cell::RefCell::new(std::collections::HashSet::new()),
@@ -3300,7 +3308,26 @@ impl Emitter {
         } else {
             format!("{{ {} }}: {}Props", ps, name)
         };
-        self.w(&format!("export function {}({}) {{", name, arg));
+        // DEV ONLY: the component's binding is a registry slot, not a hard
+        // reference, so an edit swaps the implementation and keeps the state of
+        // the tree that is already mounted. `__refresh` returns a stable component
+        // whose identity React does not see change.
+        //
+        // The boundary is per COMPONENT, not per module, and that is what makes it
+        // provable: a component that uses an import, a context or a module-level
+        // value still gets a new closure, but React keeps the hook state because
+        // the element type is the same. Nothing here decides "can this be
+        // hot-swapped" — every component can, and none is claimed to be special.
+        let refresh = self.refresh_boundary;
+        if refresh {
+            self.used_helpers.borrow_mut().insert("__refresh".into());
+            self.w(&format!(
+                "export const {} = __refresh({:?}, function {}({}) {{",
+                name, name, name, arg
+            ));
+        } else {
+            self.w(&format!("export function {}({}) {{", name, arg));
+        }
         self.depth += 1;
 
         let mut scope = Scope::scan(body);
@@ -3366,7 +3393,7 @@ impl Emitter {
         }
         self.scopes.pop();
         self.depth -= 1;
-        self.w("}");
+        self.w(if refresh { "});" } else { "}" });
 
         if !params.is_empty() {
             self.w("");

@@ -22,7 +22,7 @@ Legenda status: `BARU` = belum ada sama sekali. `PERLUAS` = pondasinya ada.
 
 Ini fondasinya. Semua fase lain menggantung di sini.
 
-### F1. `hydra routes` — penemuan route + manifest `BARU`
+### F1. `hydra routes` — penemuan route + manifest `SELESAI`
 
 Scan `src/pages/**/*.hyx`, hasilkan manifest route: path URL, berkas, daftar
 param, dan apakah route itu statis atau dinamis.
@@ -55,7 +55,7 @@ Yang disentuh: `packages/cli/runner.mjs`, `packages/cli/esbuild-plugin.mjs`,
 Diverifikasi kalau: `hydra routes` mencetak tabel benar untuk scaffold DAN untuk
 portfolio `/var/www/hanz`; build tetap hijau; gate headless lulus.
 
-### F2. Navigasi klien + `Link` `PERLUAS`
+### F2. Navigasi klien + `Link` `SELESAI`
 
 `use_path()` dan `navigate()` sudah ada. Yang ditambah:
 
@@ -75,7 +75,7 @@ Yang disentuh: `runtime/hydra.ts` saja. Nol perubahan compiler.
 Diverifikasi kalau: navigasi klien mempertahankan state React yang sama
 (tidak remount seluruh pohon), tombol back browser mengembalikan halaman benar.
 
-### F3. Layout bersarang `BARU`
+### F3. Layout bersarang `SELESAI`
 
 `_layout.hyx` di sebuah folder membungkus semua route di folder itu, dan
 mewarisi layout di atasnya.
@@ -90,7 +90,7 @@ baru sama sekali — ini murni penyusunan pohon di manifest.
 
 Diverifikasi kalau: navigasi antar dua route bersaudara tidak me-remount layout.
 
-### F4. Halaman `_404.hyx` dan `_error.hyx` `BARU`
+### F4. Halaman `_404.hyx` dan `_error.hyx` `SELESAI`
 
 `_404.hyx` untuk URL yang tidak ketemu, `_error.hyx` sebagai error boundary
 React per folder (boleh di beberapa level, yang terdekat menang).
@@ -98,7 +98,7 @@ React per folder (boleh di beberapa level, yang terdekat menang).
 Diverifikasi kalau: route yang salah menampilkan `_404` bukan halaman putih;
 komponen yang sengaja `raise` tertangkap boundary dan halaman lain tetap hidup.
 
-### F5. Metadata per halaman `BARU`
+### F5. Metadata per halaman `SELESAI`
 
 Ekspor `meta` dari berkas halaman, atau panggil `use_head({...})` dari runtime.
 
@@ -129,7 +129,7 @@ Yang TIDAK dikerjakan, dan disebut di README: metadata yang bergantung pada URL
 dinamis tetap memakai judul aplikasi. Tidak ada open-graph, twitter card,
 canonical, atau structured data.
 
-### F6. SSG per-route `PERBAIKI`
+### F6. SSG per-route `SELESAI`
 
 Sekarang hanya `dist/index.html`. Setelah F1 ada, loop `renderToString` untuk
 tiap route statis -> `dist/about/index.html`. Route dinamis (ber-param) dilewati
@@ -145,7 +145,7 @@ memuat markup asli, dan gate headless lulus di semuanya.
 
 ## Fase 2 — DX
 
-### F7. HMR websocket sungguhan `BARU`
+### F7. HMR websocket sungguhan `SELESAI`
 
 Ganti "rebuild 10 detik lalu refresh manual" jadi push lewat websocket +
 `import.meta.hot`. Dev server sudah punya HTTP server sendiri, jadi ini
@@ -157,7 +157,7 @@ bersih ke full reload kalau modulnya tidak bisa di-hot-swap.
 Diverifikasi kalau: edit satu komponen mengubah halaman tanpa kehilangan state,
 dan edit yang tidak bisa di-hot-swap jatuh ke reload penuh, bukan halaman mati.
 
-### F8. `hydra doctor` dan `hydra stats` tahu soal route `PERLUAS`
+### F8. `hydra doctor` dan `hydra stats` tahu soal route `SELESAI`
 
 Melaporkan jumlah route, route duplikat, param yang bertabrakan (`[slug].hyx`
 dan `[id].hyx` di folder yang sama harus jadi error, bukan salah satu menang
@@ -258,7 +258,7 @@ Cakupan ditulis terang: `/api` dan ke bawah. Middleware TIDAK jalan untuk berkas
 statis, karena host statis tidak punya middleware — menjalankannya di dev akan
 membuat dev dan produksi berbeda pendapat soal `/about`.
 
-### F12. Loader per-route `BARU`
+### F12. Loader per-route `SELESAI`
 
 Satu model saja, bukan tiga. Ekspor `load(params, req)` di berkas halaman
 (mirip `+page.server.js` SvelteKit, tapi tetap satu berkas).
@@ -341,3 +341,17 @@ Ditulis di README sebagai keputusan, bukan sebagai kekurangan:
 Semua di dokumen ini adalah rencana, bukan klaim sudah jalan. Yang belum diukur:
 waktu build + gate untuk 50+ route hasil SSG, dan apakah runtime gate masih
 lulus kalau HTML sudah ter-hydrate penuh alih-alih cangkang kosong.
+
+## Status akhir
+
+Tiga belas dari tiga belas item di dokumen ini selesai, masing-masing diverifikasi
+dengan menjalankannya: `hydra routes` mencetak tabel, layout membungkus route,
+`_404` masuk tabel, `meta` muncul di `<title>` tiap halaman, `hydra doctor`
+menggagalkan tabrakan param dengan menyebut kedua berkasnya, `.env` dengan
+`PUBLIC_` menolak build yang membocorkan rahasia, API route menjawab GET 200 dan
+POST 201, middleware memblokir satu path dan meneruskan sisanya, dan
+`--target node|static` melaporkan apa yang dibuang alih-alih membuangnya diam-diam.
+
+Yang tersisa di luar daftar ini adalah paruh kedua Fast Refresh: state komponen
+bertahan saat diedit, tetapi markup hasil editnya belum masuk ke pohon yang sudah
+ter-mount. Itu dicatat di README sebagai `open`, bukan sebagai selesai.

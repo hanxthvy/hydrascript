@@ -16,9 +16,15 @@ HydraScript mengompilasi berkas `.hyx` berbasis indentasi menjadi React TSX, dan
 berkas `.hys` menjadi JavaScript biasa. Compiler-nya biner Rust; runner Node
 kecil membungkus esbuild, PostCSS dan Tailwind untuk menghasilkan situs.
 
-Status: **0.4.0, pra-1.0.** Bahasanya bekerja dan diuji; belum teruji di skala
-besar, dan file-based router serta language server yang disebut dokumen lama
-belum ada. Anggap ini "layak dipakai kalau kamu suka", bukan tahan produksi.
+**Status: 0.11.1, pra-1.0.** Compiler, file-based router, prerender, server
+rendering, language server, dan test runner sudah jadi dan ditutup 311 tes Rust
+serta 146 tes Node di 20 suite. Sintaks bahasanya dibekukan (lihat di bawah); yang
+dirilis sampai 1.0 adalah perkakas, bukan konstruksi baru.
+
+Batas yang diketahui, ditulis terang-terangan: Fast Refresh mempertahankan state
+komponen yang sudah ter-mount saat kamu mengedit, tapi markup hasil editnya belum
+ikut berganti di pohon yang hidup. Sampai itu selesai, `hydra dev` mengatakannya
+apa adanya — lihat [Roadmap](#roadmap).
 
 ### Sintaksnya dibekukan di 0.3
 
@@ -799,24 +805,54 @@ versinya target, dan urutannya bagian yang jujur.
 | 0.8 | Loader jalan ulang saat navigasi klien | rilis |
 | 0.9 | `hydra-lsp`: diagnostik, hover, go-to-definition, rename | rilis |
 | 0.9 | `hydra test`: tes komponen, route dan snapshot | rilis |
-| berikutnya | `meta` per halaman: `<title>` dan deskripsi, saat SSG dan saat navigasi | selesai, belum dirilis |
-| 1.0 | Cache kompilasi inkremental (content-addressed, di disk) | rilis |
-| 1.0 | Kompilasi paralel (worker pool, diukur, mati di bawah skala) | rilis |
-| berikutnya | React Fast Refresh (state dipertahankan lintas edit) | belum mulai |
-| berikutnya | Rename lintas berkas di `hydra-lsp` | belum mulai |
-| berikutnya | Completion dan signature help di `hydra-lsp` | belum mulai |
-| 0.9 | `hydra-lsp`: hover, go-to-definition, rename | belum mulai |
-| 0.9 | `hydra test`: unit, route dan snapshot test untuk komponen | belum mulai |
-| 1.0 | Cache build inkremental, kompilasi paralel | belum mulai |
+| 0.10 | `meta` per halaman: `<title>` dan deskripsi, saat SSG dan saat navigasi | rilis |
+| 0.10 | Paket server: `.env` dengan pemisahan `PUBLIC_`, API route, middleware | rilis |
+| 0.10 | `hydra build --target node\|static` | rilis |
+| 0.11 | `hydra-lsp`: completion, signature help, rename lintas berkas | rilis |
+| 0.11 | `hydra doctor`: tabel route, dan tabrakan param sebagai KEGAGALAN | rilis |
+| 0.11 | Semantik Python: `sorted`, `%`, indeks negatif, `round`, `int`, truthiness | rilis |
+| 0.11 | Fast Refresh: state dipertahankan lintas edit | sebagian — lihat di bawah |
+| berikutnya | Fast Refresh: markup hasil edit ikut berganti di pohon yang hidup | terbuka |
+
+### Fast Refresh, tepatnya
+
+State **memang** dipertahankan saat kamu mengedit komponen: dev server mengirim
+`refresh` alih-alih `reload`, boundary di `runtime/hydra.ts` menjaga identitas
+fungsi komponen, dan pohon yang sudah ter-mount mempertahankan hook-nya. Itu
+terukur — `scripts/fast-refresh-probe.mjs` menggerakkan browser sungguhan,
+mengklik counter sampai 3, mengedit komponennya, lalu membaca 3 lagi dengan
+`window` halaman tetap utuh.
+
+Yang **belum** selesai adalah bagian keduanya: markup baru tidak sampai ke pohon
+yang hidup. Rebuild menghasilkan bundel baru dan klien mengimpornya ulang, tapi
+pohon yang ter-mount tetap merender implementasi sebelumnya — counter tetap
+menyimpan state sementara labelnya basi. Sisa pekerjaannya ada di penukaran modul,
+bukan di boundary-nya. Sampai itu selesai, barisnya berbunyi `terbuka`, bukan
+`rilis`.
 
 Tidak direncanakan, dan bukan kekurangan: React Server Components, islands,
 streaming SSR, dan adapter deploy multi-platform. Keluaran compiler ini React
 biasa di klien, dan itu fitur yang punya nama, bukan fitur yang belum selesai.
 
-`hydra-lsp` perlu catatan karena dokumen lama di riwayat repo ini
-menggambarkannya seolah sudah ada. Tidak ada. `editors/vscode` menyediakan
-syntax highlighting dan diagnostik inline dengan memanggil biner `hydra` — itu
-bukan language server, dan tidak mengklaim begitu.
+`hydra-lsp` adalah language server sungguhan: framing `Content-Length` di stdio,
+diagnostik dari checker compiler itu sendiri (lewat `hydra check --json -`, jadi
+tidak mungkin berbeda pendapat dengan build), hover, go-to-definition, dan rename
+lintas berkas. `editors/vscode` adalah hal yang BERBEDA — syntax highlighting dan
+diagnostik inline dengan memanggil biner `hydra`; ekstensi itu tidak menyalakan
+server untukmu.
+
+Yang dilakukannya: rename mengembalikan WorkspaceEdit untuk deklarasi DAN setiap
+importer relatifnya, karena rename yang hanya menyentuh salah satunya membuat
+import di berkas lain menamai sesuatu yang modulnya sudah tidak mengekspor.
+Import dari paket ditolak dengan alasannya. Completion menawarkan nama di berkas
+itu, builtin Python yang diturunkan compiler (dibaca dari `check.rs`, bukan
+disalin), export asli sebuah modul setelah `from "x" import `, dan metode dari
+literal list/dict/string setelah titik. Signature help menyebut parameter dan
+argumen yang aktif, dari deklarasi callable itu sendiri.
+
+Yang TIDAK dilakukannya, ditulis terang: formatting (pakai `hydra fmt`), semantic
+tokens, code actions, workspace symbols. Request yang tidak diimplementasikan
+menjawab `method not found`, bukan diam.
 
 ---
 
