@@ -1079,6 +1079,18 @@ impl Emitter {
                                         self.js(value).unwrap_or_default()
                                     ))
                                 })?;
+                                // The translator emits runtime calls for the
+                                // specs `toFixed` gets wrong (Python rounds a
+                                // tie to even; `toFixed` rounds away from zero).
+                                // Those names have to be imported here, because
+                                // unlike the other helpers there is no AST node
+                                // that mentions them — the call is invented by
+                                // the translator.
+                                for helper in ["py_fixed", "py_group"] {
+                                    if e.contains(&format!("{helper}(")) {
+                                        self.used_helpers.borrow_mut().insert(helper.to_string());
+                                    }
+                                }
                             }
                             out.push_str("${");
                             out.push_str(&e);

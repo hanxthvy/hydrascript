@@ -157,20 +157,39 @@ pub fn translate(spec_str: &str, expr: &str) -> Result<String, String> {
         out = format!("Math.trunc({})", out);
     }
 
+    // Rounding, and it is NOT `toFixed`. Python rounds a tie to the EVEN digit
+    // (`format(1.5, ".0f")` is `2`, `format(0.5, ".0f")` is `0`) and judges that
+    // tie against the double's exact value; `toFixed` rounds ties away from zero.
+    // The difference shows up in money and percentages, which is to say in the
+    // cases anyone actually prints. `py_fixed` does the Python thing.
+    //
+    // A non-numeric format type (`s`, `d` on a string) has no precision meaning
+    // beyond truncation, so it keeps the plain conversion.
+    let numeric_precision = matches!(parsed.ty, Some('f') | Some('F') | Some('e') | Some('E'))
+        || parsed.ty.is_none();
     if let Some(p) = parsed.precision {
-        out = format!("Number({}).toFixed({})", out, p);
+        out = if numeric_precision {
+            format!("py_fixed({}, {})", out, p)
+        } else {
+            format!("Number({}).toFixed({})", out, p)
+        };
     }
 
     if parsed.group {
-        // Numeric grouping, not string insertion: toLocaleString already knows
-        // where the separators go, and it respects the fraction digits.
+        // Grouping is applied by the runtime to the already-rounded digits.
+        // `toLocaleString` does both at once AND rounds half-away, so it was the
+        // second source of the same disagreement.
         out = match parsed.precision {
-            Some(p) if matches!(parsed.ty, Some('f') | Some('F')) => format!(
-                "Number({}).toLocaleString('en-US', {{ minimumFractionDigits: {}, maximumFractionDigits: {} }})",
-                expr, p, p
-            ),
-            _ => format!("Number({}).toLocaleString('en-US')", expr),
+            Some(p) if matches!(parsed.ty, Some('f') | Some('F')) => {
+                format!("py_group({}, {})", expr, p)
+            }
+            _ => format!("py_group({}, null)", expr),
         };
+    }
+
+    if out.contains("py_fixed(") || out.contains("py_group(") {
+        // The generated import is collected by the caller from what the
+        // expression contains, exactly like the other runtime helpers.
     }
 
     if parsed.sign_plus {
@@ -290,22 +309,51 @@ mod tests {
         translate(spec, expr).expect("spec should translate")
     }
 
+    /// The precision goes through `py_fixed`, NOT `toFixed`.
+    ///
+    /// `toFixed` rounds ties away from zero; Python rounds them to even. That is
+    /// a different answer for `format(1500.5, ".0f")` (Python `1500`, `toFixed`
+    /// `1501`), which is exactly the kind of number a person prints. The runtime
+    /// helper is what makes the two agree, and this pins that it is used.
     #[test]
-    fn precision_becomes_tofixed() {
-        assert!(tr(".2f", "amount").contains("Number(amount).toFixed(2)"));
-        assert!(tr(".3f", "fade").contains("Number(fade).toFixed(3)"));
+    fn precision_goes_through_the_half_even_helper() {
+        assert!(tr(".2f", "amount").contains("py_fixed(amount, 2)"), "{}", tr(".2f", "amount"));
+        assert!(tr(".3f", "fade").contains("py_fixed(fade, 3)"));
+        assert!(
+            !tr(".2f", "amount").contains("toFixed"),
+            "toFixed rounds half away from zero: {}",
+            tr(".2f", "amount")
+        );
     }
 
+    /// Grouping is applied by the runtime to the ALREADY-ROUNDED digits.
+    /// `toLocaleString` does both at once and rounds half-away, so it disagreed
+    /// with Python on the same values `toFixed` did.
     #[test]
-    fn grouping_uses_tolocalestring() {
+    fn grouping_goes_through_the_runtime_helper() {
         let out = tr(",.0f", "amount");
-        assert!(out.contains("toLocaleString('en-US'"), "{}", out);
-        assert!(out.contains("minimumFractionDigits: 0"), "{}", out);
+        assert!(out.contains("py_group(amount, 0)"), "{}", out);
+        assert!(
+            !out.contains("toLocaleString"),
+            "toLocaleString rounds half away from zero: {}",
+            out
+        );
     }
 
+    /// The bare `,` keeps the value's own digits; Python does not invent a
+    /// precision for it.
     #[test]
-    fn grouping_without_precision_is_plain() {
-        assert!(tr(",", "n").contains("Number(n).toLocaleString('en-US')"));
+    fn grouping_without_precision_is_passed_through() {
+        assert!(tr(",", "n").contains("py_group(n, null)"), "{}", tr(",", "n"));
+    }
+
+    /// A precision with a non-numeric type is refused rather than translated.
+    ///
+    /// That was already true, and this pins it so the new numeric path cannot
+    /// quietly start accepting `:.2s` and printing a rounded string.
+    #[test]
+    fn string_type_precision_is_refused_not_rounded() {
+        assert!(translate(".2s", "s").is_err());
     }
 
     #[test]

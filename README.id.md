@@ -613,12 +613,19 @@ yang ada karena temuan profil itu, dan cara mengerjakan runtime gate ada di
 Daftar jujur, per 0.3.5:
 
 - **Format spec f-string diterjemahkan, bukan dibuang.** `f"{x:.2f}"` jadi
-  `Number(x).toFixed(2)`, `f"{n:,.0f}"` mengelompokkan ribuan lewat
-  `toLocaleString`, dan `%`, lebar, fill/align, `+`, `0` serta `d`/`i`/`s` semua
-  ditangani. Spec di luar subset itu jadi **error kompilasi yang menyebut
-  specnya**, bukan hilang diam-diam. `!r` / `!s` / `!a` berarti `String(x)`.
-  Satu catatan: `toLocaleString` membulatkan tie `.0f` menjauh dari nol,
-  sedangkan Python membulatkan ke genap, jadi `1500.5` mencetak `1,501`.
+  pemanggilan runtime yang membulatkan seperti Python, `f"{n:,.0f}"`
+  mengelompokkan ribuan dari digit yang sudah dibulatkan, dan `%`, lebar,
+  fill/align, `+`, `0` serta `d`/`i`/`s` semua ditangani. Spec di luar subset itu
+  jadi **error kompilasi yang menyebut specnya**, bukan hilang diam-diam.
+  `!r` / `!s` / `!a` berarti `String(x)`.
+- **Pembulatan mengikuti Python, sampai ke tie-nya.** `format(1.5, ".0f")` = `2`
+  dan `format(0.5, ".0f")` = `0`: tie dibulatkan ke digit genap, dinilai
+  terhadap ekspansi biner eksak nilainya. `toFixed` JS membulatkan tie menjauh
+  dari nol, dan itu jawaban berbeda untuk uang serta persentase, jadi tidak
+  dipakai untuk spec `f`/`F`/`e`/`E`. Tie-nya dideteksi setelah double
+  diekspansi ke 100 digit pecahan — di luar `1e-100` bedanya di bawah presisi
+  apa pun yang bisa dinyatakan f-string, dan itu batas yang disebut, bukan
+  tebakan.
 - Tidak ada multiple inheritance. Compiler mengatakannya dengan menyebut
   namanya, bukan mengirim kode yang meledak saat konstruksi (lihat
   [MIGRATING.md](MIGRATING.md)).

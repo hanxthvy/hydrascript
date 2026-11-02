@@ -620,12 +620,17 @@ the runtime gate are in
 Honest list, current as of 0.3.5:
 
 - **f-string format specs are translated, not dropped.** `f"{x:.2f}"` compiles to
-  `Number(x).toFixed(2)`, `f"{n:,.0f}"` groups with `toLocaleString`, and `%`,
-  width, fill/align, `+`, `0` and `d`/`i`/`s` are all handled. A spec outside
-  that subset is a **compile error naming the spec**, never a silent drop.
-  `!r` / `!s` / `!a` mean `String(x)`. One caveat: `toLocaleString` rounds a
-  `.0f` tie away from zero where Python rounds to even, so `1500.5` prints
-  `1,501` rather than `1,500`.
+  a runtime call that rounds the way Python does, `f"{n:,.0f}"` groups the
+  already-rounded digits, and `%`, width, fill/align, `+`, `0` and `d`/`i`/`s`
+  are all handled. A spec outside that subset is a **compile error naming the
+  spec**, never a silent drop. `!r` / `!s` / `!a` mean `String(x)`.
+- **Rounding is Python's, to the tie.** `format(1.5, ".0f")` is `2` and
+  `format(0.5, ".0f")` is `0`: ties go to the even digit, judged against the
+  value's exact binary expansion. JavaScript's `toFixed` rounds ties away from
+  zero, which is a different answer on money and percentages, so it is not used
+  for a `f`/`F`/`e`/`E` spec. The tie is detected after expanding the double to
+  100 fraction digits — beyond `1e-100` the difference is under any precision an
+  f-string can express, which is a bound rather than a guess.
 - No multiple inheritance. The compiler says so by name rather than emitting
   something that throws at construction time (see
   [MIGRATING.md](MIGRATING.md)).

@@ -20,6 +20,121 @@ import {
   pickPageComponent as core_pick_page,
 } from './router-core.js'
 
+/* ------------------------------------------------- f-string number format
+ *
+ * Python's `format(1.5, ":.0f")` is `2`, and `format(0.5, ":.0f")` is `0`:
+ * ties go to the EVEN digit, and the tie is judged against the double's exact
+ * binary value, not against its shortest printed form. JavaScript's `toFixed`
+ * rounds ties AWAY from zero, which is a different answer for exactly the cases
+ * a person notices — money, percentages, anything ending in .5.
+ *
+ * There is no option to make `toFixed` do it, so it is done here: expand the
+ * double to plain decimal, look at the digit after the one being kept, and if it
+ * is exactly a tie (5 followed by nothing), pick the even neighbour.
+ *
+ * `toFixed(100)` is what makes the expansion usable. Its spec picks the n
+ * closest to the true value, and a double's exact decimal expansion needs at
+ * most ~767 fraction digits, so 100 digits still separates a real tie from a
+ * near one. Beyond |x| < 1e-100 the difference is below the precision any
+ * f-string spec can express; that bound is stated rather than implied.
+ */
+
+/** Decimal digits of `Math.abs(x)`, without exponent notation. */
+function plainDecimal(abs: number, digits: number): string {
+  return abs.toFixed(digits)
+}
+
+/**
+ * `py_fixed(x, n)` — Python's `format(x, "<spec>.Nf")`.
+ *
+ * Round-half-to-even on the exact value, negative zero preserved (`-0`), and
+ * the non-finite spellings Python uses (`inf`, `-inf`, `nan`).
+ */
+export function py_fixed(x: any, n: number): string {
+  const v = Number(x)
+  const digits = Math.max(0, Math.trunc(n))
+  if (Number.isNaN(v)) return 'nan'
+  if (!Number.isFinite(v)) return v > 0 ? 'inf' : '-inf'
+
+  const negative = v < 0 || Object.is(v, -0)
+  const plain = plainDecimal(Math.abs(v), 100)
+  const dot = plain.indexOf('.')
+  const intPart = plain.slice(0, dot)
+  const fracAll = plain.slice(dot + 1)
+
+  const keep = fracAll.slice(0, digits)
+  const rest = fracAll.slice(digits)
+  // A tie is exactly `5` followed by zeros, or nothing at all.
+  const isTie = rest.length > 0 && rest[0] === '5' && /^0*$/.test(rest.slice(1))
+  const roundUpWithoutTie = rest.length > 0 && !isTie && rest[0] >= '5'
+  const lastKept = keep.length > 0 ? Number(keep[keep.length - 1]) : Number(intPart[intPart.length - 1])
+
+  let bumped = keep === '' ? intPart : intPart + keep
+  const shouldCarry = roundUpWithoutTie || (isTie && lastKept % 2 === 1)
+  if (shouldCarry) {
+    // String arithmetic: adding 1 to a 100-digit integer exceeds Number.
+    const asInt = bumped
+    let carry = ''
+    let i = asInt.length - 1
+    let add = 1
+    const chars = asInt.split('')
+    for (; i >= 0 && add === 1; i--) {
+      const d = Number(chars[i]) + 1
+      if (d === 10) {
+        chars[i] = '0'
+      } else {
+        chars[i] = String(d)
+        add = 0
+      }
+    }
+    carry = chars.join('')
+    if (add === 1) carry = '1' + carry
+    bumped = carry
+  }
+
+  const cut = bumped.length - digits
+  let outInt = cut > 0 ? bumped.slice(0, cut) : '0'
+  let outFrac = cut > 0 ? bumped.slice(cut) : bumped.padStart(digits, '0')
+  if (digits === 0) outFrac = ''
+  // A carry can lengthen the integer part; that is the point of doing it by
+  // string and not by arithmetic.
+  outInt = outInt.replace(/^0+(?=\d)/, '') || '0'
+
+  const body = digits > 0 ? `${outInt}.${outFrac}` : outInt
+  if (!negative) return body
+  // Python prints `-0` for a negative zero, so `negative` is NOT reduced to
+  // "less than zero" above.
+  return '-' + body
+}
+
+/** Group the integer part in threes, as `,` does in Python's format spec. */
+function groupThousands(intPart: string): string {
+  const neg = intPart.startsWith('-')
+  const digits = neg ? intPart.slice(1) : intPart
+  const grouped = digits.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+  return neg ? '-' + grouped : grouped
+}
+
+/**
+ * `py_group(x, n)` — Python's `format(x, ",.Nf")` / `format(x, ",")`.
+ *
+ * Grouping is applied to the ALREADY-ROUNDED digits. `toLocaleString` does both
+ * at once and rounds half-away, so it was the source of the same
+ * disagreement `py_fixed` fixes. `n` of `null` means "no fixed precision",
+ * which is Python's bare `,`.
+ */
+export function py_group(x: any, n: number | null): string {
+  if (n === null || n === undefined) {
+    const v = Number(x)
+    if (!Number.isFinite(v)) return py_fixed(v, 0)
+    return groupThousands(py_fixed(v, 0).split('.')[0])
+  }
+  const fixed = py_fixed(x, n)
+  const [intPart, frac] = fixed.split('.')
+  const grouped = groupThousands(intPart)
+  return frac === undefined ? grouped : `${grouped}.${frac}`
+}
+
 /* ------------------------------------------------------- python builtins
  *
  * The handful of Python builtins that have no JavaScript equivalent but DO have

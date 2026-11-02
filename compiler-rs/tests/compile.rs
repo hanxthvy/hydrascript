@@ -1281,23 +1281,29 @@ fn test_feature_comprehension_parenthesised_tuple_target() {
 #[test]
 fn test_fstring_precision_is_translated() {
     let src = "component A(amount: float):\n    div: f\"{amount:.2f}\"\n";
-    assert_contains(&comp(src), &["${Number(amount).toFixed(2)}"]);
+    // `py_fixed`, not `toFixed`: Python rounds a tie to the even digit and
+    // `toFixed` rounds it away from zero, so `1500.5` would print `1501` where
+    // Python prints `1500`.
+    assert_contains(
+        &comp(src),
+        &["py_fixed(amount, 2)", "from 'hydra'"],
+    );
 }
 
 #[test]
 fn test_fstring_grouping_and_precision_together() {
     let src = "component A(amount: float):\n    div: f\"Rp {amount:,.0f}\"\n";
     let out = comp(src);
-    assert_contains(
-        &out,
-        &["toLocaleString('en-US'", "minimumFractionDigits: 0"],
-    );
+    // Grouping happens in the runtime, on the already-rounded digits, so it
+    // cannot disagree with the rounding on which tie it kept.
+    assert_contains(&out, &["py_group(amount, 0)", "Rp "]);
+    assert_not_contains(&out, &["toLocaleString"]);
 }
 
 #[test]
 fn test_fstring_precision_survives_a_long_expression() {
     let src = "component A(p: float):\n    div: f\"{Math.max(0.0, 1 - p / 0.34):.3f}\"\n";
-    assert_contains(&comp(src), &[".toFixed(3)"]);
+    assert_contains(&comp(src), &["py_fixed(Math.max(0.0, (1 - (p / 0.34))), 3)"]);
 }
 
 #[test]

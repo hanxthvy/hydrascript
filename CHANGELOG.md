@@ -12,6 +12,36 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## 0.6.1 — 2026-11-02
+
+**`1500.5` with `.0f` now prints `1500`, not `1501`.** A patch, because the only
+question is "does this match Python", and the answer used to be "not always".
+
+### Fixed
+- **Rounding a tie follows Python, not `toFixed`.** Python rounds a tie to the
+  even digit — `format(1.5, ".0f")` is `2`, `format(0.5, ".0f")` is `0` — and it
+  judges that tie against the value's exact binary expansion, so `format(1.005,
+  ".2f")` is `1.00` (the double is slightly below the tie) while `format(0.135,
+  ".2f")` is `0.14`. `toFixed` rounds every tie away from zero, which is a
+  different answer on money and percentages. A `f` / `F` / `e` / `E` spec now
+  goes through the runtime's `py_fixed`, which does the Python thing.
+- **Grouping is applied after rounding, by the runtime.** `toLocaleString` did
+  both at once and rounded half-away, so it disagreed with Python on the same
+  values. `,` now goes through `py_group`, which groups the already-rounded
+  digits.
+
+Verified against Python itself rather than against a table I wrote: 21 value/spec
+pairs and 12 grouped pairs, including the ties and the near-ties
+(`0.125`→`0.12`, `0.135`→`0.14`, `2.675`→`2.67`, `1.005`→`1.00`, `9.995`→`9.99`,
+`99.95`→`100.0`, `-0.5`→`-0`), all identical to `format()`.
+
+### Notes
+- The tie is detected after expanding the double to 100 fraction digits, which is
+  past the ~767 a double can need; beyond `1e-100` the difference is under any
+  precision an f-string can express. The bound is stated in the README.
+
+---
+
 ## 0.6.0 — 2026-11-02
 
 **File-based routing, and the limitations list got smaller.** Existing `.hyx` and
