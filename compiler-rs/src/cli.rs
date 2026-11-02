@@ -602,6 +602,12 @@ fn check(args: &[String]) -> ExitCode {
             .file_name()
             .map_or_else(|| "out.hyx".into(), |n| n.to_string_lossy().to_string());
         if let Err(e) = compile(&src, &name) {
+            // Name the FILE. The compiler is handed one file at a time and its
+            // spans are relative to that file, so `line 4, col 1` alone is not
+            // actionable: a project with 200 pages printed a caret and no way to
+            // find which one it belonged to. `check` already knew the path — it
+            // was only used for warnings.
+            eprintln!("\x1b[1;31m{}\x1b[0m", path.display());
             eprintln!("{}", e.pretty());
             errors += 1;
             continue;
@@ -615,7 +621,11 @@ fn check(args: &[String]) -> ExitCode {
                 }
                 warnings += ws.len();
             }
-            Err(e) => eprintln!("{}", e.pretty()),
+            Err(e) => {
+                eprintln!("\x1b[1;31m{}\x1b[0m", path.display());
+                eprintln!("{}", e.pretty());
+                errors += 1;
+            }
         }
     }
     if errors > 0 {

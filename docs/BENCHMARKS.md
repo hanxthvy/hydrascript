@@ -44,3 +44,30 @@ the page.
 - No AI/LLM token-efficiency study. The old "12.6% fewer tokens across 5
   production components" had no script, no corpus, and no commit behind it. One
   component is measured instead, and the number is labelled as one component.
+
+
+## Route matching, and why it is a linear scan
+
+`matchRoute` walks the generated table and returns the first hit. That is O(n) in
+the number of routes, and a trie would be O(1). Here is what the scan actually
+costs, measured with `node benchmarks/routes.mjs` on this box:
+
+| Routes | Early hit | Late hit | No match |
+|---|---|---|---|
+| 50 | 2.1 us | 3.2 us | 2.2 us |
+| 500 | 1.2 us | 18 us | 21 us |
+| 2000 | 1.5 us | 41 us | 68 us |
+
+The table is sorted most-specific-first, so a real URL matches its route early and
+costs roughly a microsecond. The expensive columns are a URL that matches nothing
+or matches only near the end, which is one navigation, not one render.
+
+So there is no trie yet, and the reason is that no measurement asks for one:
+68 us on a 2000-route site is under a frame, on the one navigation that hits it.
+What would change the answer is a site with thousands of routes where most
+navigations MISS, which is not a shape this has seen. When it is, the fix is a
+literal-first index before the scan, and this table is what would justify it.
+
+Generation is the other half, and it is per build rather than per navigation:
+scan plus emit of 2000 routes is ~85 ms and produces a ~460 KB module, measured
+with `node benchmarks/route-table.mjs`.

@@ -1,6 +1,6 @@
 {
   "name": "hydrascript",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Pythonic Syntax for React & Modern Web Applications \u2014 Standalone native Rust compiler with zero runtime overhead",
   "type": "module",
   "bin": {
@@ -43,6 +43,7 @@
     "test:rust": "cd compiler-rs && cargo test",
     "test:node": "node --test packages/cli/plugin.test.mjs packages/cli/server.test.mjs packages/cli/entrypoint.test.mjs packages/cli/dts.test.mjs",
     "test:examples": "bash scripts/hx-examples-check.sh",
+    "bench:routes": "node benchmarks/routes.mjs && node benchmarks/route-table.mjs",
     "types": "hydra types",
     "prepublishOnly": "node --test packages/cli/plugin.test.mjs packages/cli/server.test.mjs packages/cli/entrypoint.test.mjs packages/cli/dts.test.mjs && bash scripts/pack-install-check.sh"
   },

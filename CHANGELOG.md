@@ -12,6 +12,34 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## 0.6.3 — 2026-11-02
+
+**Every compiler error names its file now, and the docs stopped mixing two
+different kinds of "not yet".** No behaviour change to emitted code.
+
+### Fixed
+- **`hydra check` and a failed build printed a caret with no filename.** The
+  compiler is handed one file at a time and its spans are relative to that file,
+  so `line 4, col 1` on a project with 200 pages was not actionable — the path
+  was already known and used only for warnings. Both paths name the file now.
+- **The CLI reference did not list `hydra routes`**, which had shipped two
+  releases earlier and is documented above it in the same file.
+
+### Changed
+- **"Known limitations" is now two sections.** It mixed permanent design
+  decisions with features that are simply not built yet, which made every future
+  item look like a flaw. "Permanent limitations" holds the decisions and the
+  reason for each; "Roadmap" holds what is coming, with target versions and an
+  honest state, and names what is NOT planned (RSC, islands, streaming, deploy
+  adapters) as a choice rather than a gap.
+
+### Docs
+- `MIGRATING.md` states plainly that no entry has needed a codemod yet, and why
+  each one did not. There is no `hydra migrate`, and the file says so rather than
+  leaving a rule that reads like a promise.
+
+---
+
 ## 0.6.2 — 2026-11-02
 
 **Keyword arguments stopped being a file-local feature.** The list said imported

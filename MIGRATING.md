@@ -9,6 +9,15 @@ without a written path is a reason to stay put, and authors undercount how long
 Automate it when it can be automated (a codemod under `scripts/`), and describe it
 precisely when it cannot. "Some things changed" is not an entry.
 
+Honest state of that rule: **no entry here has needed a codemod yet**, and every
+one of them says in its own words why. Three of the changes only ever removed a
+failure (`getattr`, `any`, `super().method()` — there is nothing to edit), and
+the rest were fixed by deleting a workaround. There is no `hydra migrate`
+command, and there will not be one until a breaking change is genuinely
+mechanical — a rename or a signature change. A command that exists but has
+nothing to run is a promise with no content, which is the thing this file is
+written to avoid.
+
 ---
 
 ## 0.5.x -> 0.6.0

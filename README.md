@@ -53,7 +53,8 @@ stop daring to upgrade, not because of missing features.
 - [Installation](#installation)
 - [Editor support](#editor-support)
 - [Testing](#testing)
-- [Known limitations](#known-limitations)
+- [Permanent limitations](#permanent-limitations)
+- [Roadmap](#roadmap)
 - [License](#license)
 - [Benchmarks, and what they do not claim](docs/BENCHMARKS.md)
 - [Developing HydraScript](docs/DEVELOPING.md)
@@ -423,11 +424,19 @@ The runtime gate now loads **every** `index.html` the build produced, not only t
 root one: with per-route HTML, checking one page leaves every other route
 unchecked, which is exactly where a route bug lives.
 
-**On SSG:** pre-rendering is opt-in per project (`"rendering": { "ssg": true }`)
-and the example projects ship with it off, so their `dist/index.html` is a
-~400-byte shell that renders on the client. With `ssg: true`, React's
-`renderToString` output is injected and the build prints
-`SSG: Pre-rendered HTML injected`.
+**On SSG, and why the examples turn it off.** Pre-rendering is opt-in per project
+(`"rendering": { "ssg": true }`), and the four example projects ship with it off:
+their `dist/index.html` is a ~400-byte shell that renders on the client. With
+`ssg: true` the build pre-renders and prints what it did. The examples are off
+because each one is a single-page app exercising the runtime, not a site with
+URLs a crawler would want, so pre-rendering them would demonstrate the feature
+without exercising it. A project with `src/pages` and a `Router()` gets
+pre-rendering per route by default; see "File-based routing" above.
+
+**Changing that default is on the roadmap for 0.8** — SSG for static routes, SSR
+for dynamic ones, CSR as an explicit opt-out — and it is not done yet. Saying so
+here is cheaper than letting a reader assume the current default is the
+considered one.
 
 Build output: `dist/index.html`, `dist/assets/index-<hash>.js`, `dist/assets/index.css`,
 plus chunks for dynamic `import()`.
@@ -490,6 +499,7 @@ hydra watch [dir]            watch and recompile on change
 hydra fmt [--check] [files]  format sources (idempotent)
 hydra stats [dir]            file/line/definition counts
 hydra doctor                 report toolchain and project health
+hydra routes [--json]        print the file-based route table
 hydra init [dir]             scaffold a project
 hydra add <pkg> [--dev]      install a dependency
 hydra remove <pkg>           remove a dependency
@@ -615,50 +625,61 @@ the runtime gate are in
 
 ---
 
-## Known limitations
+## Permanent limitations
 
-Honest list, current as of 0.6.2:
+Design decisions that will not change. Each one is a choice, and the reason is
+here so it can be argued with rather than guessed at.
 
-- **f-string format specs are translated, not dropped.** `f"{x:.2f}"` compiles to
-  a runtime call that rounds the way Python does, `f"{n:,.0f}"` groups the
-  already-rounded digits, and `%`, width, fill/align, `+`, `0` and `d`/`i`/`s`
-  are all handled. A spec outside that subset is a **compile error naming the
-  spec**, never a silent drop. `!r` / `!s` / `!a` mean `String(x)`.
+- **No multiple inheritance.** A second base would have to be emulated, and every
+  emulation differs from Python somewhere the author cannot see: which base wins
+  in a diamond, whether `super()` follows the MRO, what `isinstance(x, Both)`
+  answers. Refused by name at parse time, on both targets.
+- **Keyword arguments only where a signature can be read.** A function defined in
+  the file, a function imported from a RELATIVE `.hys`/`.hyx` file, and a method
+  whose name only one class in the file declares. A call into a package has no
+  source to read; a method whose name two classes declare needs the receiver's
+  type, which is not tracked. Both are compile errors, never silent miscompiles.
+- **Builtins with no exact JS equivalent keep their differences, stated not
+  hidden.** `any` / `all` short-circuit and answer the empty-sequence cases the
+  way Python does (`any([])` is `False`, `all([])` is `True`). `getattr(x, "y")`
+  with no default raises `AttributeError` rather than returning `undefined`,
+  which is what makes the three-argument form mean anything. `repr` is JSON for
+  plain data and `String(x)` elsewhere, because a JS object has no `__repr__`.
+- **Prebuilt binary is Linux x86_64 only.** macOS, Windows and ARM build the
+  compiler from source; the npm package says so and CI has never published a
+  binary it did not build for that target.
 - **Rounding is Python's, to the tie.** `format(1.5, ".0f")` is `2` and
   `format(0.5, ".0f")` is `0`: ties go to the even digit, judged against the
-  value's exact binary expansion. JavaScript's `toFixed` rounds ties away from
-  zero, which is a different answer on money and percentages, so it is not used
-  for a `f`/`F`/`e`/`E` spec. The tie is detected after expanding the double to
-  100 fraction digits — beyond `1e-100` the difference is under any precision an
+  value's exact binary expansion. `toFixed` rounds ties away from zero, which is
+  a different answer on money and percentages, so it is not used for a
+  `f`/`F`/`e`/`E` spec. The tie is detected after expanding the double to 100
+  fraction digits; beyond `1e-100` the difference is under any precision an
   f-string can express, which is a bound rather than a guess.
-- **No multiple inheritance, on purpose.** A second base would have to be
-  emulated, and every emulation differs from Python somewhere the author cannot
-  see: which base wins in a diamond, whether `super()` follows the MRO, what
-  `isinstance(x, Both)` answers. This is refused by name at parse time, on both
-  targets (the hint used to suggest a `.hys` file, which failed identically — a
-  bug, fixed in 0.6.1).
-- **Keyword arguments work wherever a signature can be read**: a function
-  defined in the file, a function imported from a RELATIVE `.hys`/`.hyx` file,
-  and a method whose name only one class in the file declares. What is left is
-  narrower and named precisely: a call into a package (there is no source to
-  read), and a method whose name two classes both declare (only the receiver's
-  type would decide, and that is not tracked). Both are compile errors, not
-  silent miscompiles.
-- Prebuilt binary is Linux x86_64 only, so macOS/Windows/ARM builds from source.
-- The builtins with no exact JS equivalent are provided, and their differences
-  are stated rather than hidden: `any` / `all` short-circuit and answer the
-  empty-sequence cases the way Python does (`any([])` is `False`, `all([])` is
-  `True`); `getattr(x, "y")` with no default raises `AttributeError` rather than
-  returning `undefined`; `repr` is JSON for plain data and `String(x)`
-  elsewhere, because a JS object has no `__repr__`. Names with genuinely no
-  answer (`frobnicate`, a typo) still fail the build rather than shipping a
-  `ReferenceError`.
-- `hydra-lsp` is planned, not present. Older documents in this repo's history
-  described it as if it existed; it does not.
-- File-based routing exists and is documented above, but it is new: the
-  `_layout` / `_404` / `_error` conventions and pre-rendering have not been used
-  at scale, and `hydra dev` still rebuilds without pushing updates to the
-  browser.
+
+## Roadmap
+
+What is coming, and what is deliberately not. Nothing here is a promise about
+dates; the version numbers are targets and the order is the honest part.
+
+| Target | Item | State |
+|---|---|---|
+| 0.6.2 | File-based routing, per-route SSG | shipped |
+| 0.6.2 | `hydra routes`, route table printed and generated | shipped |
+| 0.6.2 | Keyword arguments across files and for methods | shipped |
+| 0.7 | HMR: a websocket push, an error overlay, React Fast Refresh | not started |
+| 0.8 | Rendering defaults: SSG for static routes, SSR for dynamic, CSR opt-out | not started |
+| 0.9 | `hydra-lsp`: hover, go-to-definition, rename | not started |
+| 0.9 | `hydra test`: unit, route and snapshot tests for components | not started |
+| 1.0 | Incremental build cache, parallel compilation | not started |
+
+Not planned, and not a gap: React Server Components, islands, streaming SSR and
+multi-platform deploy adapters. The compiler's output is ordinary React on the
+client, and that is a feature with a name rather than an unfinished one.
+
+`hydra-lsp` deserves a note because older documents in this repository's history
+described it as if it existed. It does not. `editors/vscode` provides syntax
+highlighting and inline diagnostics by shelling out to the `hydra` binary, which
+is not a language server and does not claim to be one.
 
 ---
 

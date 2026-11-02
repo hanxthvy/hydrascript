@@ -54,7 +54,8 @@ berani naik versi.
 - [Instalasi](#instalasi)
 - [Dukungan editor](#dukungan-editor)
 - [Pengujian](#pengujian)
-- [Keterbatasan yang diketahui](#keterbatasan-yang-diketahui)
+- [Keterbatasan permanen](#keterbatasan-permanen)
+- [Roadmap](#roadmap)
 - [Lisensi](#lisensi)
 - [Benchmark, dan apa yang tidak diklaim](docs/BENCHMARKS.md)
 - [Mengembangkan HydraScript](docs/DEVELOPING.md)
@@ -425,11 +426,20 @@ Runtime gate sekarang memeriksa **setiap** `index.html` yang dihasilkan, bukan
 hanya yang di akar: dengan HTML per-route, memeriksa satu halaman meninggalkan
 setiap route lain tanpa pemeriksaan.
 
-**Soal SSG:** pra-render bersifat opt-in per proyek
-(`"rendering": { "ssg": true }`) dan proyek contoh dikirim dengan itu mati, jadi
-`dist/index.html` mereka adalah cangkang ~400 byte yang render di klien. Dengan
-`ssg: true`, keluaran `renderToString` React disuntikkan dan build mencetak
-`SSG: Pre-rendered HTML injected`.
+**Soal SSG, dan kenapa proyek contoh mematikannya.** Pra-render bersifat opt-in
+per proyek (`"rendering": { "ssg": true }`), dan empat proyek contoh dikirim
+dengan itu mati: `dist/index.html` mereka cangkang ~400 byte yang render di
+klien. Dengan `ssg: true`, build pra-render dan mencetak apa yang dilakukannya.
+Contoh-contohnya mati karena masing-masing adalah satu-halaman yang menguji
+runtime, bukan situs dengan URL yang diinginkan crawler — pra-render di situ hanya
+akan memamerkan fiturnya tanpa mengujinya. Proyek dengan `src/pages` dan
+`Router()` mendapat pra-render per route secara default; lihat "Routing berbasis
+berkas" di atas.
+
+**Mengubah default itu ada di roadmap untuk 0.8** — SSG untuk route statis, SSR
+untuk yang dinamis, CSR sebagai opt-out eksplisit — dan itu belum dikerjakan.
+Mengatakannya di sini lebih murah daripada membiarkan pembaca menyangka default
+sekarang adalah pilihan yang sudah dipikirkan.
 
 Keluaran build: `dist/index.html`, `dist/assets/index-<hash>.js`,
 `dist/assets/index.css`, plus chunk untuk `import()` dinamis.
@@ -492,6 +502,7 @@ hydra watch [dir]            pantau dan kompilasi ulang saat berubah
 hydra fmt [--check] [files]  format sumber (idempoten)
 hydra stats [dir]            hitung berkas/baris/definisi
 hydra doctor                 laporkan kesehatan toolchain dan proyek
+hydra routes [--json]        cetak tabel route berbasis berkas
 hydra init [dir]             scaffold proyek
 hydra add <pkg> [--dev]      pasang dependensi
 hydra remove <pkg>           hapus dependensi
@@ -608,51 +619,63 @@ yang ada karena temuan profil itu, dan cara mengerjakan runtime gate ada di
 
 ---
 
-## Keterbatasan yang diketahui
+## Keterbatasan permanen
 
-Daftar jujur, per 0.6.2:
+Keputusan desain yang tidak akan berubah. Semuanya pilihan, dan alasannya ditulis
+di sini biar bisa dibantah, bukan ditebak.
 
-- **Format spec f-string diterjemahkan, bukan dibuang.** `f"{x:.2f}"` jadi
-  pemanggilan runtime yang membulatkan seperti Python, `f"{n:,.0f}"`
-  mengelompokkan ribuan dari digit yang sudah dibulatkan, dan `%`, lebar,
-  fill/align, `+`, `0` serta `d`/`i`/`s` semua ditangani. Spec di luar subset itu
-  jadi **error kompilasi yang menyebut specnya**, bukan hilang diam-diam.
-  `!r` / `!s` / `!a` berarti `String(x)`.
+- **Tidak ada multiple inheritance.** Base kedua harus diemulasi, dan tiap
+  emulasi berbeda dari Python di tempat yang tidak bisa dilihat penulisnya: base
+  mana yang menang di diamond, apakah `super()` mengikuti MRO, apa jawaban
+  `isinstance(x, Both)`. Ditolak dengan menyebut namanya saat parse, di kedua
+  target.
+- **Argumen kata kunci hanya di mana signature-nya bisa dibaca.** Fungsi di
+  berkas yang sama, fungsi dari impor relatif `.hys`/`.hyx`, dan metode yang
+  namanya cuma dideklarasikan satu kelas di berkas itu. Panggilan ke paket tidak
+  punya sumber untuk dibaca; metode yang namanya dideklarasikan dua kelas
+  butuh tipe receiver, dan itu tidak dilacak. Keduanya error kompilasi, bukan
+  salah-kompilasi diam-diam.
+- **Builtin tanpa padanan JS persis menyimpan bedanya, dan bedanya disebut.**
+  `any` / `all` short-circuit dan menjawab kasus urutan kosong seperti Python
+  (`any([])` = `False`, `all([])` = `True`). `getattr(x, "y")` tanpa default
+  melempar `AttributeError`, bukan mengembalikan `undefined` — itulah yang bikin
+  bentuk tiga-argumen punya arti. `repr` adalah JSON untuk data biasa dan
+  `String(x)` untuk sisanya, karena objek JS tidak punya `__repr__`.
+- **Biner prabangun hanya Linux x86_64.** macOS, Windows dan ARM membangun
+  compiler dari sumber; paket npm-nya bilang begitu, dan CI tidak pernah
+  menerbitkan biner yang tidak dibangun untuk target itu.
 - **Pembulatan mengikuti Python, sampai ke tie-nya.** `format(1.5, ".0f")` = `2`
-  dan `format(0.5, ".0f")` = `0`: tie dibulatkan ke digit genap, dinilai
-  terhadap ekspansi biner eksak nilainya. `toFixed` JS membulatkan tie menjauh
-  dari nol, dan itu jawaban berbeda untuk uang serta persentase, jadi tidak
-  dipakai untuk spec `f`/`F`/`e`/`E`. Tie-nya dideteksi setelah double
-  diekspansi ke 100 digit pecahan — di luar `1e-100` bedanya di bawah presisi
-  apa pun yang bisa dinyatakan f-string, dan itu batas yang disebut, bukan
-  tebakan.
-- **Tidak ada multiple inheritance, dan itu sengaja.** Base kedua harus
-  diemulasi, dan tiap emulasi berbeda dari Python di tempat yang tidak bisa
-  dilihat penulisnya: base mana yang menang di diamond, apakah `super()`
-  mengikuti MRO, apa jawaban `isinstance(x, Both)`. Ini ditolak dengan
-  menyebut namanya saat parse, di kedua target (hint-nya dulu menyarankan berkas
-  `.hys`, yang gagal sama persis — bug, diperbaiki di 0.6.1).
-- **Argumen kata kunci bekerja di mana pun signature-nya bisa dibaca**: fungsi
-  di berkas yang sama, fungsi dari impor relatif `.hys`/`.hyx`, dan metode yang
-  namanya hanya dideklarasikan satu kelas di berkas itu. Sisa yang belum:
-  panggilan ke paket (tidak ada sumber untuk dibaca), dan metode yang namanya
-  dideklarasikan dua kelas (hanya tipe receiver yang menentukan, dan itu tidak
-  dilacak). Keduanya error kompilasi, bukan salah-kompilasi diam-diam.
-- Biner prabangun hanya Linux x86_64, jadi macOS/Windows/ARM membangun dari
-  sumber.
-- Builtin yang tidak punya padanan JS persis **disediakan**, dan bedanya
-  dinyatakan alih-alih disembunyikan: `any` / `all` short-circuit dan menjawab
-  kasus urutan kosong seperti Python (`any([])` = `False`, `all([])` = `True`);
-  `getattr(x, "y")` tanpa default **melempar** `AttributeError`, bukan
-  mengembalikan `undefined`; `repr` adalah JSON untuk data biasa dan `String(x)`
-  untuk sisanya, karena objek JS tidak punya `__repr__`. Nama yang benar-benar
-  tidak punya jawaban (salah ketik) tetap menggagalkan build alih-alih mengirim
-  `ReferenceError`.
-- `hydra-lsp` masih rencana, belum ada. Dokumen lama di riwayat repo ini
-  menggambarkannya seolah sudah ada; tidak.
-- File-based routing sudah ada dan didokumentasikan di atas, tapi masih baru:
-  konvensi `_layout` / `_404` / `_error` dan pra-render belum dipakai dalam
-  skala, dan `hydra dev` masih build ulang tanpa mendorong update ke browser.
+  dan `format(0.5, ".0f")` = `0`: tie ke digit genap, dinilai terhadap ekspansi
+  biner eksak. `toFixed` membulatkan tie menjauh dari nol, jawaban berbeda untuk
+  uang dan persentase, jadi tidak dipakai untuk spec `f`/`F`/`e`/`E`. Tie-nya
+  dideteksi setelah double diekspansi ke 100 digit pecahan; di luar `1e-100`
+  bedanya di bawah presisi apa pun yang bisa dinyatakan f-string, dan itu batas
+  yang disebut, bukan tebakan.
+
+## Roadmap
+
+Yang akan datang, dan yang sengaja tidak. Tidak ada janji tanggal di sini; nomor
+versinya target, dan urutannya bagian yang jujur.
+
+| Target | Item | Keadaan |
+|---|---|---|
+| 0.6.2 | Routing berbasis berkas, SSG per-route | rilis |
+| 0.6.2 | `hydra routes`: tabel route dicetak dan di-generate | rilis |
+| 0.6.2 | Argumen kata kunci lintas berkas dan untuk metode | rilis |
+| 0.7 | HMR: push websocket, error overlay, React Fast Refresh | belum mulai |
+| 0.8 | Default rendering: SSG untuk route statis, SSR untuk dinamis, CSR opt-out | belum mulai |
+| 0.9 | `hydra-lsp`: hover, go-to-definition, rename | belum mulai |
+| 0.9 | `hydra test`: unit, route dan snapshot test untuk komponen | belum mulai |
+| 1.0 | Cache build inkremental, kompilasi paralel | belum mulai |
+
+Tidak direncanakan, dan bukan kekurangan: React Server Components, islands,
+streaming SSR, dan adapter deploy multi-platform. Keluaran compiler ini React
+biasa di klien, dan itu fitur yang punya nama, bukan fitur yang belum selesai.
+
+`hydra-lsp` perlu catatan karena dokumen lama di riwayat repo ini
+menggambarkannya seolah sudah ada. Tidak ada. `editors/vscode` menyediakan
+syntax highlighting dan diagnostik inline dengan memanggil biner `hydra` — itu
+bukan language server, dan tidak mengklaim begitu.
 
 ---
 
