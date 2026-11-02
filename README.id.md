@@ -753,8 +753,15 @@ versinya target, dan urutannya bagian yang jujur.
 | 0.7 | `loader` / `action` (`.server.hys` di samping halaman) | rilis |
 | 0.7 | `hydra/server` dan `hydra/client`, ditegakkan per modul | rilis |
 | 0.7 | SSG default untuk route statis, opt-out `rendering = "csr"` | rilis |
-| 0.7 | React Fast Refresh (state dipertahankan lintas edit) | belum mulai |
-| 0.8 | SSR untuk route dinamis; loader jalan ulang saat navigasi klien | belum mulai |
+| 0.8 | SSR untuk route dinamis, dirender per request | rilis |
+| 0.8 | Loader jalan ulang saat navigasi klien | rilis |
+| 0.9 | `hydra-lsp`: diagnostik, hover, go-to-definition, rename | rilis |
+| 0.9 | `hydra test`: tes komponen, route dan snapshot | rilis |
+| 1.0 | Cache kompilasi inkremental (content-addressed, di disk) | rilis |
+| 1.0 | Kompilasi paralel (worker pool, diukur, mati di bawah skala) | rilis |
+| berikutnya | React Fast Refresh (state dipertahankan lintas edit) | belum mulai |
+| berikutnya | Rename lintas berkas di `hydra-lsp` | belum mulai |
+| berikutnya | Completion dan signature help di `hydra-lsp` | belum mulai |
 | 0.9 | `hydra-lsp`: hover, go-to-definition, rename | belum mulai |
 | 0.9 | `hydra test`: unit, route dan snapshot test untuk komponen | belum mulai |
 | 1.0 | Cache build inkremental, kompilasi paralel | belum mulai |
