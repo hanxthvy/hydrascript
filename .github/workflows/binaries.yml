@@ -135,10 +135,31 @@ jobs:
         working-directory: pkg
         run: |
           set -euo pipefail
-          npm install -g 'npm@^11.5.1'
+          # The runner's own npm, not a global upgrade.
+          #
+          # `npm install -g npm@^11.5.1` needs write access to the system prefix
+          # (`/usr/local/share/man`) and fails with EACCES on the macOS runners,
+          # which is how every darwin job died at this step while the linux ones
+          # passed. Trusted publishing needs npm >= 11.5.1, and the Node 22 image
+          # already ships a new enough npm — so the version is CHECKED, not
+          # replaced, and a too-old one says so instead of failing at publish.
+          node -e '
+            const { execFileSync } = require("child_process");
+            const v = execFileSync("npm", ["--version"], { encoding: "utf8" }).trim();
+            const [maj, min, patch] = v.split(".").map(Number);
+            const ok = maj > 11 || (maj === 11 && (min > 5 || (min === 5 && patch >= 1)));
+            if (!ok) {
+              console.error(`npm ${v} is too old for trusted publishing (needs >= 11.5.1)`);
+              process.exit(1);
+            }
+            console.log(`npm ${v} supports trusted publishing`);
+          '
           npm publish --provenance --access public
 
       - uses: actions/upload-artifact@v4
+        # Always: a failed publish still leaves a binary somebody can download
+        # and run, which is the difference between debugging this and guessing.
+        if: ${{ always() }}
         with:
           name: ${{ matrix.target }}
           path: pkg/
