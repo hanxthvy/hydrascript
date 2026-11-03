@@ -70,6 +70,56 @@ in ways a project can notice, and each one is listed as a breaking change below.
 - **Dotfiles are not served.** `/.hydra-build.json` (the esbuild metafile: the
   whole module graph) answered 200.
 
+## Added after the first pass, from verifying every finding
+
+A second pass checked all 41 findings against the CODE and the running server
+instead of against the commit message. Six were still open and are closed here;
+five remain open on purpose and are named at the end of this entry.
+
+- **Security headers and a cache policy** on every response: `nosniff`,
+  `Referrer-Policy`, `X-Frame-Options`, `Permissions-Policy`; hashed assets are
+  `immutable`, HTML revalidates, a server-rendered page is `no-store`.
+  `server.headers` adds a project's own (CSP belongs there: a wrong policy
+  silently breaks fonts and analytics, which is worse than an absent one).
+- **gzip** for text responses when the client asks: a 143 KB entry chunk goes out
+  as 44 KB. Below 1 KB it is skipped, where the header costs more than it saves.
+- **Cross-origin action POSTs are refused.** Nothing to steal today; the guard
+  goes in now because the day a project adds session cookies, an action that
+  accepts any origin is a CSRF hole the framework would have created.
+- **`Link` and `navigate` are base-aware.** With `base: "/sub/"` the href was
+  `/about`, which worked with JavaScript and 404'd without — the one case `Link`
+  exists to keep working.
+- **The runtime gate serves the project's `base`.** A project with `base` was
+  failing the gate on asset 404s, which was the gate being right and its server
+  being wrong.
+- **`hydra build` no longer prints the gate's own "Server running at
+  http://127.0.0.1:0/"** into the build log.
+- **Pre-rendered pages carry the stylesheet.** The tag was injected into
+  `dist/index.html` and then SSG wrote that file again from the source template,
+  which cannot name a content hash: the first page had styles and every route
+  after it did not.
+- **`/` and `//` raise `ZeroDivisionError`.** They answered `Infinity`/`NaN`, and
+  the `except ZeroDivisionError:` block an author wrote never ran.
+- **The compile cache is pruned**: wiped when the compiler identity changes, and
+  capped by file count. It grew forever, gitignored, invisible to `hydra clean`.
+- **One lockfile.** `bun.lock` sat beside `package-lock.json` while every
+  workflow ran `npm ci`.
+
+## Still open, and why
+
+- **Nested API folders and `/api/[param]`.** A naming convention for a second
+  matcher; worth doing, not a production blocker.
+- **Two error envelopes.** `fail()` answers its status now, but a thrown handler
+  answers `{error}` and a `fail()` answers its data. One envelope is a breaking
+  change and was left for the release that can carry it.
+- **`xs[5]` past the end is still `undefined`.** Division raises, a negative
+  out-of-range index raises, but a plain subscript cannot: the compiler does not
+  know `list` from `dict` statically, and a bounds check on every subscript would
+  break dict access.
+- **Keyword arguments across files** is a compile error, documented in SPEC §7.
+- **Per-platform binaries.** Still linux-x64 glibc 2.34 only; the matrix is a
+  release-engineering job, not a code change.
+
 ## Performance
 
 - **`delete require.cache` only happens in development.** In production it

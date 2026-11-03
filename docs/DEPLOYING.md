@@ -113,6 +113,37 @@ All four are gitignored.
 | a missing file with an extension | 404, never the SPA shell |
 | `.hydra-build.json`, any dotfile | 404 |
 
+## Response headers
+
+Every answer carries `X-Content-Type-Options: nosniff`, `Referrer-Policy:
+strict-origin-when-cross-origin`, `X-Frame-Options: SAMEORIGIN` and a
+`Permissions-Policy` that denies camera, microphone and geolocation.
+
+| Response | Cache-Control |
+|---|---|
+| `assets/index-<hash>.js`, `assets/index-<hash>.css` | `public, max-age=31536000, immutable` — the name changes when the bytes do |
+| any other `.html` | `no-cache` (revalidate; it names the hashed assets) |
+| a server-rendered route | `no-store` (two visitors can get different pages) |
+| anything else | `public, max-age=3600` |
+
+Text responses are gzipped when the client sends `Accept-Encoding: gzip` and the
+body is over 1 KB — a 143 KB entry chunk goes out as 44 KB. Images, fonts and
+video are not re-compressed.
+
+```json
+{
+  "server": {
+    "bodyLimit": 2097152,
+    "headers": { "Content-Security-Policy": "default-src 'self'" }
+  }
+}
+```
+
+A cross-origin `POST` to a route with an `action` is refused with 403. A request
+with no `Origin` header (curl, a test, a server-to-server call) is allowed: the
+guard exists for the browser case, which is the one that carries a victim's
+cookies.
+
 ## What a loader can see
 
 ```python
@@ -138,5 +169,8 @@ endpoint cannot disagree with a page about what a redirect means.
   written. A slow loader is a slow TTFB, in full.
 - No ISR or cache revalidation. A loader runs per request; caching is the
   project's decision, not the framework's.
-- The built-in server sends no compression and no `Cache-Control`. Put a reverse
-  proxy in front for those, or the bytes are sent exactly as they sit on disk.
+- No `ETag` and no conditional requests: a cached HTML document revalidates by
+  refetching it, not with a 304. Compression and `Cache-Control` ARE handled
+  (see below), so a proxy in front is an optimisation rather than a requirement.
+- CSP is not set. `server.headers` in `hydraconfig.json` is where a project puts
+  its own policy, because a correct one depends on what that project loads.

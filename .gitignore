@@ -55,3 +55,8 @@ target/
 # editor extension build artifacts
 *.vsix
 editors/**/out/
+
+# One lockfile. `bun.lock` sat beside `package-lock.json` while every workflow
+# ran `npm ci`, so one of them was always stale and nothing said which. npm is
+# what CI, the release and the install check use, so npm is the one kept.
+bun.lock

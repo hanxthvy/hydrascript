@@ -87,6 +87,13 @@
           "type": "integer",
           "minimum": 1024,
           "description": "Largest request body an API route or action will read, in bytes. Default 1048576 (1 MiB). A bigger body is answered with 413 and `Connection: close`, never a dropped socket."
+        },
+        "headers": {
+          "type": "object",
+          "description": "Extra response headers, added to every answer. The framework sets nosniff, Referrer-Policy, X-Frame-Options and Permissions-Policy itself; this is where a project adds its own, most usefully Content-Security-Policy.",
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       }
     },

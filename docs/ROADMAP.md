@@ -39,8 +39,8 @@ src/pages/index.hyx            -> /
 src/pages/about.hyx            -> /about
 src/pages/blog/index.hyx       -> /blog
 src/pages/blog/[slug].hyx      -> /blog/:slug
-src/pages/docs/[...rest].hyx   -> /docs/*  (juga /docs)
-src/pages/docs/[[...rest]].hyx -> /docs/*  (boleh, dan boleh juga /docs)
+src/pages/docs/[...rest].hyx   -> /docs/*  (satu segmen atau lebih; `/docs` sendiri TIDAK match)
+src/pages/docs/[[...rest]].hyx -> /docs/*  (boleh nol segmen, jadi `/docs` juga match)
 src/pages/(marketing)/price.hyx -> /price  (grup, tidak masuk URL)
 src/pages/_partials/Hero.hyx   -> tidak routable (awalan `_`)
 ```

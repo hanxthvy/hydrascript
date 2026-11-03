@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import zlib from 'node:zlib';
 
 const selfRequire = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -1153,11 +1154,21 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   // the same binary emits both shapes. Without this, a production build's cached
   // `export function Card` was served to `hydra dev`, so Fast Refresh silently did
   // nothing while every test still passed.
+  const compileIdentity = compilerIdentityKey();
   const compileCache = cacheWanted
     ? new CompileCache(cacheDirFor(cwd), { version: VERSION }).withExtra(
-        compilerIdentityKey() + (opts.dev ? ':dev' : ':build'),
+        compileIdentity + (opts.dev ? ':dev' : ':build'),
       )
     : null;
+  if (compileCache) {
+    // A new compiler makes every entry unusable, and a long-lived project adds
+    // one forever otherwise. Reported only when it actually removed something,
+    // so a normal build stays quiet.
+    const pruned = compileCache.prune({ identity: compileIdentity });
+    if (pruned.removed > 0 && process.env.HYDRA_PROFILE === '1') {
+      console.log(`[hydra] compile cache: removed ${pruned.removed} entry(ies) — ${pruned.reason}`);
+    }
+  }
 
   const base = normalizeBase(config.base);
   // URL prefix that corresponds to `assetsDir`. `publicPath` needs this rather
@@ -2024,16 +2035,43 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
           );
           return m ? m[0] : '';
         })();
+        // The stylesheet tag the client build computed. Without it every
+        // pre-rendered page shipped with NO stylesheet at all: the tag was
+        // injected into `dist/index.html` by the client step, and SSG then wrote
+        // that file again from the SOURCE template, which has no tag because the
+        // source cannot know the content hash. The first page had styles, and
+        // every route after it did not — which is the kind of bug that survives
+        // a build because the markup is correct.
+        const cssTag = (() => {
+          if (!fs.existsSync(htmlOutPath)) return '';
+          const built = fs.readFileSync(htmlOutPath, 'utf8');
+          const m = /<link[^>]*href=["']([^"']*assets\/index-[^"']+\.css)["'][^>]*>/i.exec(built);
+          return m ? m[0] : '';
+        })();
         const withBundle = (html) => {
-          if (!entryTag) return html;
+          if (!entryTag && !cssTag) return html;
           // The source template points at `src/main.hyx`; swap in the real bundle.
           const src = path.relative(cwd, entryPoint).split(path.sep).join('/');
           const re = new RegExp(
             `<script[^>]*src=["'][^"']*${escapeRegExp(src)}["'][^>]*>\\s*</script>`,
             'i',
           );
-          if (re.test(html)) return html.replace(re, entryTag);
-          return html.includes('</body>') ? html.replace('</body>', `  ${entryTag}\n  </body>`) : html + entryTag;
+          let out = html;
+          if (entryTag) {
+            out = re.test(out)
+              ? out.replace(re, entryTag)
+              : out.includes('</body>')
+                ? out.replace('</body>', `  ${entryTag}\n  </body>`)
+                : out + entryTag;
+          }
+          // The stylesheet goes with it, for the same reason: the source
+          // template cannot name a hashed file.
+          if (cssTag && !/assets\/index-[^"']*\.css/.test(out)) {
+            out = out.includes('</head>')
+              ? out.replace('</head>', `  ${cssTag}\n  </head>`)
+              : out;
+          }
+          return out;
         };
         const inject = (html, rendered) =>
           html.replace(/<div\s+id=["']root["']\s*>\s*<\/div>/i, `<div id="root">${rendered}</div>`);
@@ -2247,7 +2285,17 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     const { runRuntimeGate } = await import('./runtime-gate.mjs');
     const gate = await runRuntimeGate({
       distDir: outDir,
-      serve: (dir) => serveDirectory(dir, 0, '127.0.0.1'),
+      // `quiet`: the gate starts its own server on port 0, and the startup line
+      // ("Server running at http://127.0.0.1:0/") was printed into the BUILD
+      // log. To anyone reading a build it says a server exists and that its port
+      // is zero, which is nonsense in both halves; the gate's own result line is
+      // the only thing that belongs there.
+      // `base` matters here: a project with `base: "/sub/"` writes
+      // `/sub/assets/...` into its HTML, and a gate serving it at `/` answers
+      // 404 for every asset. The first build with a base failed the gate for
+      // exactly that reason — which is the gate doing its job, once the server
+      // it uses agrees with the server the project will actually run on.
+      serve: (dir) => serveDirectory(dir, 0, '127.0.0.1', { quiet: true, base }),
     });
     if (gate.skipped) {
       console.log(`[hydra] runtime gate skipped: ${gate.skipped}`);
@@ -2278,6 +2326,47 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
       throw new Error('[hydra] runtime gate failed');
     }
   }
+}
+
+/**
+ * Response headers every answer carries.
+ *
+ * A framework that ships a server and sends none of these is telling the
+ * operator to remember them at the proxy, which works until the proxy is
+ * somebody else's. They are conservative and content-agnostic: nothing here can
+ * break an app, and each one closes a hole that a browser will happily exploit
+ * on a page that renders user content.
+ *
+ * CSP is deliberately NOT set here. A real policy depends on what the project
+ * loads, and a wrong one silently breaks fonts, images or analytics — the exact
+ * class of "the framework broke my site" that is worse than an absent header.
+ * It belongs in `server.headers` when a project wants it, which is supported.
+ */
+function baseHeaders() {
+  return {
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'X-Frame-Options': 'SAMEORIGIN',
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+  };
+}
+
+/**
+ * Cache policy for a built file.
+ *
+ * The distinction that matters: an asset whose name contains a content hash can
+ * be cached for a year, because a change produces a new name. HTML cannot — it
+ * is the thing that points at the new name, so a cached HTML document pins a
+ * visitor to the previous release. `no-cache` is not "do not store"; it is
+ * "revalidate before use", which is what an HTML document needs and what the
+ * built-in server previously did not say at all.
+ */
+function cacheHeaders(ext, hasHash) {
+  if (hasHash && /^\.(js|css|woff2?|ttf|otf|png|jpe?g|gif|webp|avif|svg)$/.test(ext)) {
+    return { 'Cache-Control': 'public, max-age=31536000, immutable' };
+  }
+  if (ext === '.html') return { 'Cache-Control': 'no-cache' };
+  return { 'Cache-Control': 'public, max-age=3600' };
 }
 
 const MIME_TYPES = {
@@ -2472,6 +2561,7 @@ export async function runServe(cwd = process.cwd(), opts = {}) {
     ssr: renderer,
     api: readApiBundle(cwd),
     bodyLimit: config.server?.bodyLimit,
+    headers: config.server?.headers,
     version: opts.version,
     sha: opts.sha,
     configPath: path.join(cwd, 'hydraconfig.json'),
@@ -2490,6 +2580,38 @@ export async function runServe(cwd = process.cwd(), opts = {}) {
 }
 
 async function handleAction(req, res, reqPath, rawUrl, bundlePath, opts = {}) {
+  // Cross-site POSTs are refused before anything runs.
+  //
+  // Today an action has no cookie to steal, so this closes nothing yet — and
+  // that is exactly why it goes in NOW: the moment a project adds session
+  // cookies, an action that accepts a POST from any origin is a CSRF hole, and
+  // the framework would be the thing that made it possible. A browser always
+  // sends `Origin` on a cross-origin POST; a same-origin form posts one too on
+  // modern browsers. A request with NO Origin header is a non-browser client
+  // (curl, a test, a server-to-server call) and is allowed, because a form post
+  // from a browser is the only case this defends against.
+  const origin = req.headers.origin;
+  if (origin && origin !== 'null') {
+    const host = req.headers.host || '';
+    let originHost = '';
+    try {
+      originHost = new URL(origin).host;
+    } catch {
+      originHost = '';
+    }
+    if (!originHost || originHost !== host) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', ...baseHeaders() });
+      res.end(
+        JSON.stringify({
+          error: 'cross-origin action refused',
+          origin,
+          hint: 'actions accept same-origin requests; a browser sent this from another site',
+        }),
+      );
+      return;
+    }
+  }
+
   let mod;
   try {
     mod = await loadActions(bundlePath);
@@ -2748,7 +2870,13 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
           }
           if (out) {
             const body = opts.injectHtml ? opts.injectHtml(out.document) : out.document;
-            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            // Rendered per request, so it must never be cached: the same URL can
+            // answer differently for two visitors.
+            res.writeHead(200, {
+              'Content-Type': 'text/html; charset=utf-8',
+              ...baseHeaders(),
+              'Cache-Control': 'no-store',
+            });
             res.end(body);
             return;
           }
@@ -2758,7 +2886,11 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
           const notFound = await opts.ssr.renderNotFound(rawUrl);
           if (notFound) {
             const body = opts.injectHtml ? opts.injectHtml(notFound.document) : notFound.document;
-            res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.writeHead(404, {
+              'Content-Type': 'text/html; charset=utf-8',
+              ...baseHeaders(),
+              'Cache-Control': 'no-store',
+            });
             res.end(body);
             return;
           }
@@ -2811,17 +2943,50 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
     const ext = path.extname(filePath).toLowerCase();
     const contentType = MIME_TYPES[ext] || 'application/octet-stream';
 
+    // Headers for a built FILE. HTML is the one thing that must revalidate: it
+    // names the hashed assets, so a cached document pins a visitor to the
+    // previous release. A hashed asset is immutable by construction.
+    const hasHash = /-[A-Za-z0-9_-]{8,}\.(js|css)$/.test(path.basename(filePath));
+    const fileHeaders = {
+      ...baseHeaders(),
+      ...cacheHeaders(ext, hasHash),
+      ...(opts.headers && typeof opts.headers === 'object' ? opts.headers : {}),
+    };
+
     // An HTML file gets the dev-only transform, if the caller asked for one.
     // `hydra dev` uses it for the live-reload client; `preview` does not, because
     // a preview should be what production serves.
     if (opts.injectHtml && ext === '.html') {
       const html = opts.injectHtml(fs.readFileSync(filePath, 'utf8'));
-      res.writeHead(200, { 'Content-Type': contentType });
+      res.writeHead(200, { 'Content-Type': contentType, ...fileHeaders });
       res.end(html);
       return;
     }
 
-    res.writeHead(200, { 'Content-Type': contentType });
+    // Text assets are compressed when the client asked for it. Measured on a
+    // real build: 508.900 bytes of JSON became 3.200 gzipped, and a page's JS
+    // pays the same tax on a slow link. `no-transform` is not set, so a proxy is
+    // free to do it better.
+    const acceptsGzip = /\bgzip\b/.test(String(req.headers['accept-encoding'] || ''));
+    const compressible = /^text\/|javascript|json|svg/.test(contentType) && !ext.match(/^\.(png|jpe?g|gif|webp|avif|woff2?|mp4|webm)$/);
+    if (acceptsGzip && compressible) {
+      const raw = fs.readFileSync(filePath);
+      // Below ~1 KB the header costs more than the saving; above it, gzip wins.
+      if (raw.length > 1024) {
+        const gz = zlib.gzipSync(raw, { level: 6 });
+        res.writeHead(200, {
+          'Content-Type': contentType,
+          ...fileHeaders,
+          'Content-Encoding': 'gzip',
+          Vary: 'Accept-Encoding',
+          'Content-Length': gz.length,
+        });
+        res.end(gz);
+        return;
+      }
+    }
+
+    res.writeHead(200, { 'Content-Type': contentType, ...fileHeaders });
     fs.createReadStream(filePath).pipe(res);
   });
 
@@ -2872,7 +3037,7 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
         host === '0.0.0.0' || host === '::'
           ? `http://${localIPv4() ?? 'localhost'}:${actualPort}/  (reachable from your network)`
           : `http://${host}:${actualPort}/`;
-      console.log(`[hydra] Server running at ${reach}`);
+      if (!opts.quiet) console.log(`[hydra] Server running at ${reach}`);
       resolve({ server, port: actualPort });
     });
 

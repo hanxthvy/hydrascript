@@ -139,7 +139,36 @@ export function pop_of(x: any, key: any = -1, fallback: any = null): any {
  * negative indexes are rewritten (the compiler can see the sign), so this costs
  * nothing at a call site that was not written that way.
  */
-export const py_at = (xs: any, i: number): any => (i < 0 ? xs[xs.length + i] : xs[i])
+/**
+ * `xs[i]` with Python's bounds check.
+ *
+ * A negative literal index and a plain one both land here. The out-of-range
+ * case used to return `undefined`, which travels: it becomes "undefined" in a
+ * page, `NaN` in arithmetic, and a silent empty list in a loop. Python raises,
+ * and `except IndexError:` is the code an author already wrote for it.
+ */
+export function py_at(xs: any, i: number): any {
+  const idx = i < 0 ? (xs ? xs.length + i : -1) : i
+  if (xs == null || idx < 0 || idx >= xs.length) {
+    throw new IndexError(`list index out of range: ${i}`)
+  }
+  return xs[idx]
+}
+
+/**
+ * `d[key]` with Python's KeyError.
+ *
+ * The compiler emits this for a subscript whose base it can see is a dict. A
+ * missing key used to be `undefined`, so `except KeyError:` never fired and the
+ * bad value travelled until it broke something unrelated.
+ */
+export function py_key(d: any, k: any): any {
+  if (d == null) throw new KeyError(String(k))
+  const present =
+    d instanceof Map ? d.has(k) : Object.prototype.hasOwnProperty.call(d, k)
+  if (!present) throw new KeyError(String(k))
+  return d instanceof Map ? d.get(k) : d[k]
+}
 
 /**
  * `a * n` where the LEFT side is a string or a list — Python repeats.
@@ -198,6 +227,23 @@ export const py_ne = (a: any, b: any): boolean => !py_eq(a, b)
  * hash, a "which column is this" calculation all go one cell the wrong way for
  * negative input, and nothing throws.
  */
+/**
+ * `a / b` and `a // b` with Python's ZeroDivisionError.
+ *
+ * JavaScript answers `Infinity` and `NaN`, which are values that look like
+ * numbers and poison every expression downstream. Python raises, and the
+ * `except ZeroDivisionError:` block an author wrote is the handle for it.
+ */
+export function py_div(a: number, b: number): number {
+  if (b === 0) throw new ZeroDivisionError('division by zero')
+  return a / b
+}
+
+export function py_floordiv(a: number, b: number): number {
+  if (b === 0) throw new ZeroDivisionError('integer division or modulo by zero')
+  return Math.floor(a / b)
+}
+
 export function py_mod(a: number, b: number): number {
   const r = a % b
   return r !== 0 && (r < 0) !== (b < 0) ? r + b : r

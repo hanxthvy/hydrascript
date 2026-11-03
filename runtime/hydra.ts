@@ -430,9 +430,32 @@ export function use_path(): string {
  */
 export function navigate(to: string): void {
   if (typeof window !== 'undefined') {
-    window.history.pushState({}, '', to)
+    window.history.pushState({}, '', with_base(to))
     window.dispatchEvent(new PopStateEvent('popstate'))
   }
+}
+
+/**
+ * Prefix a project-relative path with the configured `base`.
+ *
+ * With `base: "/sub/"`, `Link(to="/about")` rendered `href="/about"` and
+ * `navigate()` pushed `/about` — both outside the app — while `navigate_to()`
+ * added the prefix correctly. Two navigation APIs, two answers, and the one
+ * used everywhere (`Link`) was the wrong one. `base` is `/` for most projects,
+ * where this is the identity.
+ */
+function with_base(to: string): string {
+  const base = (() => {
+    try {
+      return get_route_table_sync().base || '/'
+    } catch {
+      return '/'
+    }
+  })()
+  if (base === '/' || base === '') return to
+  if (!to.startsWith('/')) return to // external, hash, or relative: leave it
+  if (to === base || to.startsWith(base)) return to
+  return base.replace(/\/$/, '') + to
 }
 
 export interface LinkProps extends React.AnchorHTMLAttributes<HTMLAnchorElement> {
@@ -465,7 +488,7 @@ export function Link({ to, href, onClick, replace = false, children, ...rest }: 
       e.preventDefault()
       if (replace) {
         if (typeof window !== 'undefined') {
-          window.history.replaceState({}, '', targetUrl)
+          window.history.replaceState({}, '', with_base(targetUrl))
           window.dispatchEvent(new PopStateEvent('popstate'))
         }
       } else {
@@ -475,7 +498,10 @@ export function Link({ to, href, onClick, replace = false, children, ...rest }: 
   }
 
   return React.createElement('a', {
-    href: targetUrl,
+    // The href gets the base too. Without it the link works with JavaScript
+    // (the click handler navigates) and 404s without — which is exactly the
+    // case `Link` exists to keep working.
+    href: with_base(targetUrl),
     onClick: handleClick,
     ...rest,
   }, children)

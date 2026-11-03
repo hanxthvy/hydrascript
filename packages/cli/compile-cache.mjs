@@ -80,6 +80,64 @@ export class CompileCache {
     return this;
   }
 
+  /**
+   * Drop the cache when the compiler changed, and bound what stays.
+   *
+   * The key is a hash of `(source, version)`, so every edit and every release
+   * adds files that can never be read again — and nothing deleted them. On a
+   * 500-file project with a few hundred releases `.hydra/cache/` grows without
+   * a ceiling, is gitignored, and is invisible to `hydra clean` (which only
+   * takes `--all`). Measured: 496 KB / 66 files for a 61-file project after a
+   * handful of builds.
+   *
+   * Two rules, both cheap: identity changes wipe the directory (the entries are
+   * unusable anyway), and a run that finds more than `maxFiles` entries drops
+   * the oldest by mtime until it is under the ceiling.
+   */
+  prune({ maxFiles = 2000, identity = null } = {}) {
+    if (!this.dir || !fs.existsSync(this.dir)) return { removed: 0, reason: 'no cache dir' };
+    const stampFile = path.join(this.dir, '.identity');
+    const previous = (() => {
+      try {
+        return fs.readFileSync(stampFile, 'utf8').trim();
+      } catch {
+        return null;
+      }
+    })();
+    if (identity && previous && previous !== identity) {
+      let removed = 0;
+      for (const entry of fs.readdirSync(this.dir, { withFileTypes: true })) {
+        if (entry.name === '.identity') continue;
+        fs.rmSync(path.join(this.dir, entry.name), { recursive: true, force: true });
+        removed += 1;
+      }
+      fs.writeFileSync(stampFile, identity, 'utf8');
+      this.memory.clear();
+      return { removed, reason: 'compiler identity changed' };
+    }
+    if (identity && previous !== identity) fs.writeFileSync(stampFile, identity, 'utf8');
+
+    const files = [];
+    for (const shard of fs.readdirSync(this.dir, { withFileTypes: true })) {
+      if (!shard.isDirectory()) continue;
+      const shardDir = path.join(this.dir, shard.name);
+      for (const f of fs.readdirSync(shardDir)) {
+        if (!f.endsWith('.json')) continue;
+        const full = path.join(shardDir, f);
+        try {
+          files.push({ full, mtime: fs.statSync(full).mtimeMs });
+        } catch {
+          /* vanished between readdir and stat */
+        }
+      }
+    }
+    if (files.length <= maxFiles) return { removed: 0, reason: `${files.length} entries` };
+    files.sort((a, b) => a.mtime - b.mtime);
+    const drop = files.slice(0, files.length - maxFiles);
+    for (const f of drop) fs.rmSync(f.full, { force: true });
+    return { removed: drop.length, reason: `${files.length} entries, oldest removed` };
+  }
+
   keyFor(filename, source) {
     return cacheKey({ source, filename, version: this.version, extra: this.extra });
   }

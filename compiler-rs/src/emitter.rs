@@ -1353,6 +1353,14 @@ impl Emitter {
                     self.used_helpers.borrow_mut().insert("py_mod".into());
                     return Ok(format!("py_mod({}, {})", l, r));
                 }
+                // Plain `/` divides by zero into `Infinity` in JS and raises in
+                // Python. Same reasoning as `//` above: a value that looks like a
+                // number is worse than an exception, and the `except` block the
+                // author wrote is the handle for it.
+                if op == "/" {
+                    self.used_helpers.borrow_mut().insert("py_div".into());
+                    return Ok(format!("py_div({}, {})", l, r));
+                }
                 // `"ab" * 3` repeats in Python and is NaN in JS; `[0] * 3` is a
                 // number where a list was meant. Only a LITERAL left operand is
                 // rewritten: that is the case the author cannot see is wrong, and
@@ -1363,8 +1371,13 @@ impl Emitter {
                     self.used_helpers.borrow_mut().insert("py_repeat".into());
                     return Ok(format!("py_repeat({}, {})", l, r));
                 }
+                // `//` raises ZeroDivisionError in Python. `Math.floor(a / b)`
+                // answered Infinity, which is a number-shaped value that poisons
+                // everything downstream, and the `except ZeroDivisionError:`
+                // block the author wrote never ran.
                 if op == "floordiv" {
-                    return Ok(format!("Math.floor({} / {})", l, r));
+                    self.used_helpers.borrow_mut().insert("py_floordiv".into());
+                    return Ok(format!("py_floordiv({}, {})", l, r));
                 }
                 // Python's `is` / `is not` are identity tests. JavaScript has no
                 // `is` operator at all — leaving it in produced `(a is b)`, which

@@ -168,7 +168,10 @@ fn test_expr_all_arithmetic_and_unary_minus() {
     assert_contains(
         &out,
         &[
-            "const x = ((1 + (2 * 3)) - py_mod((4 / 2), 3));",
+            // `/` is `py_div` now: JavaScript answers Infinity for a zero
+            // divisor and Python raises, so the operator goes through the
+            // runtime that raises.
+            "const x = ((1 + (2 * 3)) - py_mod(py_div(4, 2), 3));",
             "const y = (-x);",
             "const z = (-1);",
         ],
@@ -1310,7 +1313,7 @@ fn test_fstring_grouping_and_precision_together() {
 #[test]
 fn test_fstring_precision_survives_a_long_expression() {
     let src = "component A(p: float):\n    div: f\"{Math.max(0.0, 1 - p / 0.34):.3f}\"\n";
-    assert_contains(&comp(src), &["py_fixed(Math.max(0.0, (1 - (p / 0.34))), 3)"]);
+    assert_contains(&comp(src), &["py_fixed(Math.max(0.0, (1 - py_div(p, 0.34))), 3)"]);
 }
 
 #[test]
