@@ -18,7 +18,7 @@ esbuild, PostCSS and Tailwind to produce a site.
 
 **Status: 0.11.0, pre-1.0.** The compiler, file-based router, prerendering,
 server rendering, language server and test runner are implemented and covered by
-408 Rust tests (271 unit + 137 integration) and 147 Node tests across 21 suites. The language syntax is frozen
+408 Rust tests (271 unit + 137 integration) and 155 Node tests across 22 suites. The language syntax is frozen
 (see below); what ships between now and 1.0 is tooling, not new constructs.
 
 Known limit, stated rather than implied: Fast Refresh preserves a mounted

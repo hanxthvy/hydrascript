@@ -127,10 +127,15 @@ function freePort() {
 /** Start `hydra serve` and resolve once it answers, or reject with its log. */
 function serve(dir, port) {
   return new Promise((resolve, reject) => {
+    // `detached` so the whole PROCESS GROUP can be signalled. `bin/hydra` is the
+    // native launcher and it spawns the Node runner as a child: killing only the
+    // launcher left the runner holding the port and its stdio pipes, which kept
+    // `node --test` alive after every test had passed.
     const child = spawn(BIN, ['serve', '--port', String(port)], {
       cwd: dir,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env },
+      detached: true,
     });
     let log = '';
     const onData = (b) => {
@@ -144,6 +149,9 @@ function serve(dir, port) {
     const poll = () => {
       const req = http.get({ host: '127.0.0.1', port, path: '/__hydra/healthz' }, (res) => {
         res.resume();
+        // The exit listener was only for the startup failure path; once serving,
+        // a later SIGTERM must not reject a promise nobody is waiting on.
+        child.removeAllListeners('exit');
         resolve({ child, log: () => log });
       });
       req.on('error', () => {
@@ -157,6 +165,37 @@ function serve(dir, port) {
     };
     poll();
   });
+}
+
+/**
+ * Stop a served project and wait for it to be gone.
+ *
+ * SIGTERM to the group, then a hard kill if it is still there after two
+ * seconds. Without the wait, the next test can start while the previous server
+ * still holds its port.
+ */
+async function stop(served) {
+  if (!served || !served.child.pid) return;
+  const { child } = served;
+  try {
+    process.kill(-child.pid, 'SIGTERM');
+  } catch {
+    /* already gone */
+  }
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(child.pid, 0);
+    } catch {
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  try {
+    process.kill(-child.pid, 'SIGKILL');
+  } catch {
+    /* already gone */
+  }
 }
 
 function request(port, method, pathName, { headers = {}, body = null } = {}) {
@@ -189,8 +228,8 @@ test('a loader sees the real headers, the query string and the full URL', async 
     build(dir);
     port = await freePort();
     served = await serve(dir, port);
-    t.after(() => {
-      served.child.kill('SIGTERM');
+    t.after(async () => {
+      await stop(served);
       fs.rmSync(dir, { recursive: true, force: true });
     });
 
@@ -225,8 +264,8 @@ test('redirect() from a loader is a real 303 with a Location, not a 200 page', a
     build(dir);
     const port = await freePort();
     const served = await serve(dir, port);
-    t.after(() => {
-      served.child.kill('SIGTERM');
+    t.after(async () => {
+      await stop(served);
       fs.rmSync(dir, { recursive: true, force: true });
     });
 
@@ -249,8 +288,8 @@ test('a URL nothing matches answers 404 with the project _404, not the home page
     assert.ok(fs.existsSync(path.join(dir, 'dist', '404.html')), '404.html is written for static hosts');
     const port = await freePort();
     const served = await serve(dir, port);
-    t.after(() => {
-      served.child.kill('SIGTERM');
+    t.after(async () => {
+      await stop(served);
       fs.rmSync(dir, { recursive: true, force: true });
     });
 
@@ -271,8 +310,8 @@ test('a missing asset is 404, never index.html with a 200', async (t) => {
     build(dir);
     const port = await freePort();
     const served = await serve(dir, port);
-    t.after(() => {
-      served.child.kill('SIGTERM');
+    t.after(async () => {
+      await stop(served);
       fs.rmSync(dir, { recursive: true, force: true });
     });
 
@@ -298,8 +337,8 @@ test('a body over the limit is 413 with a JSON answer, not a dead socket', async
     build(dir);
     const port = await freePort();
     const served = await serve(dir, port);
-    t.after(() => {
-      served.child.kill('SIGTERM');
+    t.after(async () => {
+      await stop(served);
       fs.rmSync(dir, { recursive: true, force: true });
     });
 
@@ -334,8 +373,8 @@ test('HEAD works, a list is a list, and fail() answers its own status', async (t
     build(dir);
     const port = await freePort();
     const served = await serve(dir, port);
-    t.after(() => {
-      served.child.kill('SIGTERM');
+    t.after(async () => {
+      await stop(served);
       fs.rmSync(dir, { recursive: true, force: true });
     });
 

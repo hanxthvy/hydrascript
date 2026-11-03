@@ -120,7 +120,11 @@ jobs:
           # letting it guess and depend on whichever copy it happens to find.
           export TSC="$(npm root -g)/typescript/lib/tsc.js"
           echo "tsc: $TSC"
-          node --test packages/cli/*.test.mjs
+          # `--test-concurrency=1` because the suites start real servers on real
+          # ports. Run in parallel they can take each other's port, and a leaked
+          # server answers a later test's health check — which is how a green
+          # suite reported another project's 500 as a failure.
+          node --test --test-concurrency=1 packages/cli/*.test.mjs
 
   examples:
     name: examples (build + runtime gate)

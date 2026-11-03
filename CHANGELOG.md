@@ -124,7 +124,7 @@ in ways a project can notice, and each one is listed as a breaking change below.
 - `hydra serve`'s absence from `bin/hydra.js`, the Rust CLI and `main.rs`'
   command list, each of which had to learn the word separately.
 - The three test counts in README, BENCHMARKS and CI disagreed with each other
-  and with the suite; all four now come from the same run (408 Rust, 147 Node).
+  and with the suite; all four now come from the same run (408 Rust, 155 Node).
 
 ## Notes
 

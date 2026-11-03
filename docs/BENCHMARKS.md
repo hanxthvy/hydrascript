@@ -11,7 +11,7 @@ believing any of it.
 | `hydra <file>` latency | ~1.9–2.0 ms median | 20 runs, process spawn included |
 | In-process compile (`hydra.node`) | ~0.063–0.067 ms median | 2000 warm iterations, no spawn |
 | Test suite | 408 Rust tests, all passing | `cargo test` (271 unit + 137 integration) |
-| Node suite | 147 tests, all passing | `node --test packages/cli/*.test.mjs` |
+| Node suite | 155 tests, all passing | `node --test --test-concurrency=1 packages/cli/*.test.mjs` |
 | CLI binary | 1.2 MB (1,225,880 bytes) | `bin/hydra`, stripped |
 | N-API addon | 901 KB (922,680 bytes) | `bin/hydra.node` |
 | Runtime cost of the `hydra` import | ~200 bytes | Built an identical app with and without it |
