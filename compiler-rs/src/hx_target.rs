@@ -241,6 +241,13 @@ impl JsEmitter {
                 // `self.x` -> `this.x` (see Kind::Name above) — routed through
                 // the same code path by rewriting the object first.
                 let o = self.js(obj)?;
+                // `type(x).__name__` — `type(x)` emits `py_type_name(x)`, a
+                // STRING, and a string has no `.name`. Recognised here so the
+                // emitted pair agrees (see emitter.rs).
+                if name == "__name__" && o.starts_with("py_type_name(") && o.ends_with(')') {
+                    let inner = &o["py_type_name(".len()..o.len() - 1];
+                    return Ok(format!("py_type_name({})", inner));
+                }
                 Ok(format!("{}.{}", o, str_method(name)))
             }
             Kind::OptAttr { obj, name } => {
@@ -638,16 +645,26 @@ impl JsEmitter {
                             "ord" => return Ok(format!("{}.charCodeAt(0)", arg)),
                             "chr" => return Ok(format!("String.fromCharCode({})", arg)),
                             "pow" => return Ok(format!("Math.pow({})", arg)),
-                            "str" => return Ok(format!("String({})", arg)),
+                            // `str(x)` — Python's spelling, not JS's. See the
+                            // same branch in emitter.rs.
+                            "str" => {
+                                self.used_helpers.borrow_mut().insert("py_str".into());
+                                return Ok(format!("py_str({})", arg));
+                            }
                             "abs" => return Ok(format!("Math.abs({})", arg)),
                             // Python's tie-to-even, not Math.round.
                             "round" => {
                                 self.used_helpers.borrow_mut().insert("round_py".into());
                                 return Ok(format!("round_py({})", arg));
                             }
-                            // `type(x)` -> the constructor; `type(x).__name__`
-                            // resolves through the `__name__` -> `name` map.
-                            "type" => return Ok(format!("({}).constructor", arg)),
+                            // `type(x)` -> `py_type_name(x)`. The constructor
+                            // answers the JAVASCRIPT class ("Object" for a dict,
+                            // "Number" for int and float alike) and throws on
+                            // None. See emitter.rs for the full note.
+                            "type" => {
+                                self.used_helpers.borrow_mut().insert("py_type_name".into());
+                                return Ok(format!("py_type_name({})", arg));
+                            }
                             "sum" => return Ok(format!("{}.reduce((a, b) => a + b, 0)", arg)),
                             // Numeric comparison, like the runtime helper.
                             "sorted" => {
@@ -702,6 +719,22 @@ impl JsEmitter {
                         let a = self.js(&args[0])?;
                         let b = self.js(&args[1])?;
                         return Ok(format!("{}.reduce((acc, x) => acc + x, {})", a, b));
+                    }
+                    // `format(value, spec)` — Python's builtin, two arguments.
+                    // It fell through every arm and emitted `format(...)`
+                    // verbatim: a green build and a `ReferenceError` on the first
+                    // request that used it (see emitter.rs).
+                    // Not when imported: `from "date-fns" import format` is that
+                    // library's pattern formatter, not Python's spec grammar.
+                    let format_imported = self
+                        .imports
+                        .iter()
+                        .any(|l| l.contains("import {") && l.contains("format") && l.contains("from '") && !l.contains("from 'hydra'"));
+                    if id == "format" && args.len() == 2 && !format_imported {
+                        self.used_helpers.borrow_mut().insert("py_format".into());
+                        let a = self.js(&args[0])?;
+                        let b = self.js(&args[1])?;
+                        return Ok(format!("py_format({}, {})", a, b));
                     }
                     // `divmod`, and the attribute trio. Present on both targets
                     // because the runtime helpers are target-agnostic; the only
@@ -837,13 +870,28 @@ impl JsEmitter {
                         });
                     }
                     if id == "isinstance" && args.len() == 2 {
-                        self.used_helpers.borrow_mut().insert("isinstance".into());
                         let a = self.js(&args[0])?;
                         let ty = &args[1];
+                        // `int` and `float` are different questions in Python and
+                        // the same `Number` in JavaScript, so the specific helper
+                        // is chosen from the type NAME while it is still visible.
+                        if let Kind::Name(n) = &ty.kind {
+                            match n.as_str() {
+                                "int" => {
+                                    self.used_helpers.borrow_mut().insert("isinstance_int".into());
+                                    return Ok(format!("isinstance_int({})", a));
+                                }
+                                "float" => {
+                                    self.used_helpers.borrow_mut().insert("isinstance_float".into());
+                                    return Ok(format!("isinstance_float({})", a));
+                                }
+                                _ => {}
+                            }
+                        }
+                        self.used_helpers.borrow_mut().insert("isinstance".into());
                         let mapped = match &ty.kind {
                             Kind::Name(n) => match n.as_str() {
                                 "str" => "String",
-                                "int" | "float" => "Number",
                                 "bool" => "Boolean",
                                 "list" => "Array",
                                 "dict" => "Object",

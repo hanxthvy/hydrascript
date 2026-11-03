@@ -13,6 +13,7 @@ const selfRequire = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 import { writeActionBundle, bundleActions, loadActions, readBody, requestFor } from './actions.mjs';
+import { httpIntent, sendHttpIntent } from './http.mjs';
 import { loadProjectEnv, publicEnvValues, clientEnvViolations, describeClientEnvViolation } from './env.mjs';
 import {
   API_BUNDLE,
@@ -182,6 +183,10 @@ function findCliBinary() {
  * the promise true: a different compiler is a different key.
  */
 let compilerIdentity = null;
+/** Short content hash, for a filename that has to change when the bytes do. */
+function shortHash(text) {
+  return createHash('sha256').update(text).digest('hex').slice(0, 8).toUpperCase();
+}
 function compilerIdentityKey() {
   if (compilerIdentity !== null) return compilerIdentity;
   try {
@@ -391,15 +396,17 @@ function createHydraEsbuildPlugin(options = {}) {
   return plugin;
 }
 
-function copyDirRecursive(src, dest) {
+function copyDirRecursive(src, dest, opts = {}) {
   if (!fs.existsSync(src)) return;
+  const skip = opts.skip || new Set();
   fs.mkdirSync(dest, { recursive: true });
   const entries = fs.readdirSync(src, { withFileTypes: true });
   for (const entry of entries) {
     const srcPath = path.join(src, entry.name);
+    if (skip.has(srcPath)) continue;
     const destPath = path.join(dest, entry.name);
     if (entry.isDirectory()) {
-      copyDirRecursive(srcPath, destPath);
+      copyDirRecursive(srcPath, destPath, opts);
     } else {
       fs.copyFileSync(srcPath, destPath);
     }
@@ -1156,17 +1163,26 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   // URL prefix that corresponds to `assetsDir`. `publicPath` needs this rather
   // than `base`; see the esbuild options below.
   const assetsPublicPath = base + 'assets/';
-  // Wipe the asset directory before writing into it.
+
+  // Wipe the OUTPUT directory before writing into it.
   //
   // esbuild's `outdir` ACCUMULATES: it never removes output it did not write
   // this run. Content-hashed names make that look harmless, and for the entry
   // it is, because `index.html` is rewritten with the new hash every time. What
-  // it broke is every DYNAMIC import: a chunk left over from a previous build
-  // stays on disk and keeps its own frozen list of the chunk names that existed
-  // then, so a route table resolved to a stale page chunk. That is a module
-  // graph that disagrees with itself across builds, and the symptom is a
-  // runtime error from code that is not in the source tree any more.
-  fs.rmSync(assetsDir, { recursive: true, force: true });
+  // it broke is everything else that is no longer produced: a page whose route
+  // was deleted stayed on disk and kept being served, with whatever data was in
+  // it, for the rest of the deployment's life. That is the failure mode that
+  // leaks something after somebody thought they had removed it.
+  //
+  // `--no-clean` (or `build.clean: false`) exists for the one case where the
+  // directory is shared with files this build does not own, and it is opt-in
+  // because the safe default is that `dist/` is DERIVED, not a workspace.
+  fs.mkdirSync(outDir, { recursive: true });
+  if (opts.clean !== false && config.build?.clean !== false) {
+    for (const entry of fs.readdirSync(outDir, { withFileTypes: true })) {
+      fs.rmSync(path.join(outDir, entry.name), { recursive: true, force: true });
+    }
+  }
   fs.mkdirSync(assetsDir, { recursive: true });
 
   // 0. File-based routes.
@@ -1274,6 +1290,16 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     path.join(runtimeDir, 'hydra.ts'),
     path.join(pkgRoot, 'runtime-js', 'hydra-js.js'),
   );
+  // The SERVER half of the same specifier. A `.hys` that imports `len` or
+  // `format` from `hydra` is a server module, and resolving it to `hydra.ts`
+  // dragged React, ReactDOM and the scheduler into the API bundle: 2 KB became
+  // 1.25 MB and answered 13x slower, for a helper with no UI in it.
+  // `hydra/core` is React-free by construction, so this is the honest target.
+  const coreAlias = pick(
+    'HYDRA_CORE_PATH',
+    path.join(runtimeDir, 'core.ts'),
+    path.join(pkgRoot, 'runtime-js', 'core.js'),
+  );
   const serverAlias = pick('HYDRA_SERVER_PATH', path.join(runtimeDir, 'server.ts'));
   const clientAlias = pick('HYDRA_CLIENT_PATH', path.join(runtimeDir, 'client.ts'));
 
@@ -1284,7 +1310,7 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
         outfile: path.join(cwd, '.hydra', 'actions.cjs'),
         cwd,
         pkgRoot,
-        hydraAlias,
+        hydraAlias: coreAlias,
         serverAlias,
         compilerPlugin: createHydraEsbuildPlugin,
       });
@@ -1308,7 +1334,7 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
         outfile: path.join(cwd, API_BUNDLE),
         cwd,
         pkgRoot,
-        hydraAlias,
+        hydraAlias: coreAlias,
         serverAlias,
         compilerPlugin: createHydraEsbuildPlugin,
       });
@@ -1588,11 +1614,13 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     bundle: true,
     minify: true,
     // Sourcemaps are ~900 ms of a production build on this box — the single
-    // most expensive option in this call. Projects that deploy straight to a
-    // server and debug from the deployed source can turn them off with
-    // `"build": { "sourcemap": false }`; the default stays `true` because
-    // silently dropping a debugger aid is worse than an opt-out.
-    sourcemap: config.build?.sourcemap !== false,
+    // most expensive option in this call. OFF by default, like every other
+    // bundler's production mode: a map carries every line of the application's
+    // source in `sourcesContent`, and `dist/` is what gets uploaded. A project
+    // that debugs from the deployed source can turn them on with
+    // `"build": { "sourcemap": true }`; shipping the source by default is the
+    // kind of "helpful" that has to be undone after an audit.
+    sourcemap: config.build?.sourcemap === true,
     jsx: 'automatic',
     format: 'esm',
     platform: 'browser',
@@ -1645,7 +1673,10 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
       // the pre-rendered HTML, and a conditional module would mean a lazy path
       // that renders nothing once and then fills in — a hydration mismatch on
       // every page that was correctly pre-rendered.
-      routesEsbuildPlugin(routesTable || EMPTY_ROUTES, { base, cwd }),
+      // `split: true` for the CLIENT bundle: each page becomes its own chunk so
+      // the initial download does not grow with the number of routes. The
+      // server bundle keeps static imports, because it renders synchronously.
+      routesEsbuildPlugin(routesTable || EMPTY_ROUTES, { base, cwd, split: true }),
     ],
     // The runtime file lives in this package, but it imports 'react' and
     // 'react-dom/client'. esbuild resolves those relative to the IMPORTING
@@ -1807,7 +1838,15 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     if (uncovered.length > 0) cssParts.push(contents);
   }
 
-  const cssOutPath = path.join(assetsDir, 'index.css');
+  // The stylesheet's filename carries the same content hash the JS entry does.
+  //
+  // Without it there were two cache strategies in one build: `index-ABC.js` can
+  // be cached forever (its name changes when it changes), while `index.css` can
+  // be cached for zero seconds, because its name never does. Every deploy then
+  // invalidated the CSS for every visitor, and — the worse half — a CDN holding
+  // the old `/assets/index.css` served it beside new HTML, so the layout was
+  // the previous release's.
+  const cssOutPath = path.join(assetsDir, `index-${shortHash(cssParts.join('\n'))}.css`);
   const wroteCss = cssParts.length > 0;
   if (wroteCss) {
     let css = cssParts.join('\n');
@@ -1818,6 +1857,10 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     }
     fs.writeFileSync(cssOutPath, css, 'utf8');
   }
+  /** `/assets/index-<hash>.css`, resolved against `base`, or null. */
+  const cssUrl = wroteCss
+    ? assetsPublicPath + path.basename(cssOutPath)
+    : null;
   // Every esbuild CSS bundle is now merged into the file above. Leaving them
   // would ship the same rules twice, and nothing references the copies: CSS
   // outputs are never imported by the JS. The sidecar maps go with them, or
@@ -1858,16 +1901,30 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
       else html += `\n${scriptTag}\n`;
     }
 
-    if (wroteCss && !html.includes('assets/index.css')) {
-      html = html.replace('</head>', `  <link rel="stylesheet" crossorigin href="${base}assets/index.css">\n  </head>`);
+    if (cssUrl && !/assets\/index-[^"']*\.css/.test(html)) {
+      html = html.replace('</head>', `  <link rel="stylesheet" crossorigin href="${cssUrl}">\n  </head>`);
     }
     fs.writeFileSync(htmlOutPath, html, 'utf8');
   }
 
   // 7. Copy public/ directory
+  //
+  // `public/index.html` would be copied here and then immediately overwritten
+  // by the build's own `index.html` (step 6 already ran), and by every
+  // pre-rendered route after that. That is not a merge, it is a silent
+  // deletion of the author's file, so it is reported instead of performed.
   const publicDir = path.join(cwd, 'public');
   if (fs.existsSync(publicDir)) {
-    copyDirRecursive(publicDir, outDir);
+    const shadowed = ['index.html', '404.html'].filter((f) => fs.existsSync(path.join(publicDir, f)));
+    for (const f of shadowed) {
+      console.warn(
+        `[hydra] public/${f} is ignored: the build generates that file. ` +
+          `Edit the project's own \`${f}\` instead (or a page's route for 404).`,
+      );
+    }
+    copyDirRecursive(publicDir, outDir, {
+      skip: new Set(shadowed.map((f) => path.join(publicDir, f))),
+    });
   }
 
   // 8. SSG Pre-rendering (default true for SEO)
@@ -1934,9 +1991,17 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
         // that ships a `/blog/:slug` and finds an empty shell in the served HTML
         // has to be able to read why, not infer it.
         const preRenderable = routesTable
-          ? routesTable.routes.filter((r) => !r.hasParams && r.rendering !== 'csr')
+          ? routesTable.routes.filter(
+              (r) => !r.hasParams && r.rendering !== 'csr' && r.rendering !== 'ssr',
+            )
           : [];
         const csrRoutes = routesTable ? routesTable.routes.filter((r) => r.rendering === 'csr') : [];
+        // `rendering = "ssr"` means exactly one thing: do NOT write a file for
+        // this route, render it per request instead. The scanner accepted the
+        // value and the build ignored it, so a page that asked to be dynamic
+        // shipped as static HTML — a promise the schema made and the build
+        // broke silently.
+        const ssrRoutes = routesTable ? routesTable.routes.filter((r) => r.rendering === 'ssr') : [];
         const staticRoutes = preRenderable;
         const dynamicRoutes = routesTable ? routesTable.routes.filter((r) => r.hasParams) : [];
 
@@ -2029,10 +2094,37 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
           console.log(
             `[hydra] SSG: pre-rendered ${renderedCount}/${staticRoutes.length} static route(s) into ${path.relative(cwd, outDir)}/`,
           );
+          // A STATIC host has no router: Netlify, Cloudflare Pages, GitHub
+          // Pages and nginx all look for `404.html` when nothing matches. The
+          // project's `_404` existed but only ever reached the browser through
+          // React, so a static deploy answered 404 with the host's own page
+          // while the app's design sat unused in the bundle.
+          if (typeof ssgMod.renderNotFound === 'function') {
+            try {
+              const element = ssgMod.renderNotFound('/__404');
+              if (element) {
+                const rendered = renderToString(element);
+                if (typeof ssgMod.__clear_seed === 'function') ssgMod.__clear_seed();
+                const html = applyMeta(withBundle(inject(sourceHtml, rendered)), {
+                  title: 'Not found',
+                });
+                fs.writeFileSync(path.join(outDir, '404.html'), html, 'utf8');
+                console.log(`[hydra] SSG: wrote 404.html for static hosts`);
+              }
+            } catch (err) {
+              console.error(`[hydra] SSG: could not render the 404 page: ${err.message || err}`);
+            }
+          }
           if (csrRoutes.length > 0) {
             console.log(
               `[hydra] render: ${csrRoutes.length} route(s) marked csr and left to the client ` +
                 `(${csrRoutes.map((r) => r.pattern).join(', ')})`,
+            );
+          }
+          if (ssrRoutes.length > 0) {
+            console.log(
+              `[hydra] render: ${ssrRoutes.length} route(s) marked ssr, rendered per request ` +
+                `(${ssrRoutes.map((r) => r.pattern).join(', ')})`,
             );
           }
           if (dynamicRoutes.length > 0) {
@@ -2103,7 +2195,23 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   try {
     fs.writeFileSync(
       path.join(cwd, '.hydra', 'build.json'),
-      JSON.stringify({ target, mode, api: apiTable.routes.map((r) => r.pattern) }, null, 2),
+      JSON.stringify(
+        {
+          target,
+          mode,
+          api: apiTable.routes.map((r) => r.pattern),
+          // The routes that have NO static HTML, so `serve` can name what breaks
+          // when the server half is missing instead of answering "SSR off" and
+          // handing every crawler an empty shell.
+          dynamic: routesTable
+            ? routesTable.routes
+                .filter((r) => r.hasParams || r.rendering === 'ssr')
+                .map((r) => r.pattern)
+            : [],
+        },
+        null,
+        2,
+      ),
       'utf8',
     );
   } catch (err) {
@@ -2147,7 +2255,13 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
       const extra = gate.warnings.length
         ? ` (${gate.warnings.length} console warning(s))`
         : '';
-      console.log(`[hydra] runtime gate passed: no uncaught exceptions${extra}`);
+      // How many pages were actually checked. Without this number "gate passed"
+      // reads as "every page works", and on a 61-route build it meant 25.
+      const scope =
+        typeof gate.checked === 'number'
+          ? ` [${gate.checked}/${gate.total ?? gate.checked} page(s)]`
+          : '';
+      console.log(`[hydra] runtime gate passed: no uncaught exceptions${scope}${extra}`);
       for (const w of gate.warnings.slice(0, 5)) {
         console.log(`  warning: ${w}`);
       }
@@ -2278,7 +2392,104 @@ function readActionBundle(cwd) {
   return fs.existsSync(f) ? f : null;
 }
 
-async function handleAction(req, res, reqPath, rawUrl, bundlePath) {
+/**
+ * `hydra serve` / `hydra start` — serve a built project.
+ *
+ * This used to be documented in the README and simply did not exist: `hydra
+ * serve` answered "cannot read serve: No such file or directory", because the
+ * native CLI treated the word as a file to compile. `preview` came first and is
+ * still here; `serve` is the name a deployment unit reaches for, and the two
+ * differ only in what they imply (preview may rebuild, serve must not).
+ *
+ * What it needs, and says so when it is missing:
+ *
+ *   dist/        the client build and every pre-rendered page
+ *   .hydra/      server.cjs, api.cjs, actions.cjs — the server half
+ *   node_modules with react/react-dom, because the server bundle requires them
+ *
+ * A missing server bundle is fatal HERE rather than a silent "SSR off": a
+ * deployment that answers every dynamic URL with an empty shell looks like a
+ * working site until a crawler reads it, and that is the one failure a startup
+ * check can prevent for free.
+ */
+export async function runServe(cwd = process.cwd(), opts = {}) {
+  loadProjectEnv(cwd);
+  const config = readConfig(cwd);
+  const outDir = path.resolve(cwd, config.outputDir || 'dist');
+  const port = opts.port || config.server?.port || 5173;
+  const host = opts.host || config.server?.host || '127.0.0.1';
+  const indexPath = path.join(outDir, 'index.html');
+
+  if (!fs.existsSync(outDir) || !fs.existsSync(indexPath)) {
+    throw new Error(
+      `[hydra] serve: no build at ${path.relative(cwd, outDir)}/. Run \`hydra build --target node\` first.`,
+    );
+  }
+
+  const buildTarget = readBuildRecord(cwd).target || 'static';
+  const hasServerHalf =
+    fs.existsSync(path.join(cwd, SERVER_BUNDLE)) || fs.existsSync(path.join(cwd, API_BUNDLE));
+
+  if (buildTarget !== 'node') {
+    throw new Error(
+      '[hydra] serve: this build is `--target static`, so it has no server half. ' +
+        'Rebuild with `hydra build --target node`, or deploy `dist/` to a static host.',
+    );
+  }
+
+  const renderer = await createRenderer({
+    cwd,
+    bundlePath: path.join(cwd, SERVER_BUNDLE),
+    shellPath: indexPath,
+  });
+  if (!renderer.available) {
+    // A dynamic route with no renderer is an empty shell and a 200 to every
+    // crawler. Refusing to start is the honest answer.
+    const routes = (() => {
+      try {
+        const table = JSON.parse(fs.readFileSync(path.join(cwd, '.hydra', 'build.json'), 'utf8'));
+        return Array.isArray(table.dynamic) ? table.dynamic : [];
+      } catch {
+        return [];
+      }
+    })();
+    throw new Error(
+      `[hydra] serve: the server half could not be loaded (${renderer.reason}). ` +
+        (routes.length > 0
+          ? `These dynamic routes would answer with an empty shell: ${routes.join(', ')}.`
+          : 'Run `hydra build --target node` in the project that owns this dist/.'),
+    );
+  }
+  if (!hasServerHalf) {
+    throw new Error('[hydra] serve: no .hydra/ server bundle beside the build.');
+  }
+
+  console.log(`[hydra] Serving ${path.relative(cwd, outDir) || 'dist'}/ (target ${buildTarget})`);
+  const served = await serveDirectory(outDir, port, host, {
+    base: normalizeBase(config.base),
+    proxy: config.server?.proxy,
+    actions: readActionBundle(cwd),
+    ssr: renderer,
+    api: readApiBundle(cwd),
+    bodyLimit: config.server?.bodyLimit,
+    version: opts.version,
+    sha: opts.sha,
+    configPath: path.join(cwd, 'hydraconfig.json'),
+    portFallback: false,
+  });
+
+  const shutdown = (signal) => {
+    console.log(`[hydra] ${signal}, closing server`);
+    served.server.close(() => process.exit(0));
+    // A hung keep-alive socket must not make a deploy wait forever.
+    setTimeout(() => process.exit(0), 5000).unref();
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  return served;
+}
+
+async function handleAction(req, res, reqPath, rawUrl, bundlePath, opts = {}) {
   let mod;
   try {
     mod = await loadActions(bundlePath);
@@ -2301,10 +2512,21 @@ async function handleAction(req, res, reqPath, rawUrl, bundlePath) {
 
   let rawBody = '';
   try {
-    rawBody = await readBody(req);
+    rawBody = await readBody(req, opts.bodyLimit);
   } catch (e) {
-    res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ error: e.message }));
+    // The same answered refusal the API layer gives. `req.destroy()` used to run
+    // before this line, so the client saw an empty reply and no status at all.
+    res.writeHead(413, {
+      'Content-Type': 'application/json; charset=utf-8',
+      Connection: 'close',
+    });
+    res.end(
+      JSON.stringify({
+        error: e.message,
+        limit: e.limit ?? null,
+        hint: 'raise server.bodyLimit in hydraconfig.json, or send less',
+      }),
+    );
     return;
   }
 
@@ -2314,11 +2536,9 @@ async function handleAction(req, res, reqPath, rawUrl, bundlePath) {
       url: reqPath,
       request: requestFor(req, rawUrl, rawBody),
     });
-    if (out && typeof out === 'object' && out.redirect) {
-      res.writeHead(out.status || 303, { Location: out.redirect });
-      res.end();
-      return;
-    }
+    // The same two helpers every other path reads, so an action and an API
+    // route cannot disagree about what `redirect()` means.
+    if (sendHttpIntent(res, httpIntent(out))) return;
     const status = out && typeof out === 'object' && out.status ? out.status : 200;
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify(out === undefined ? null : out));
@@ -2379,7 +2599,9 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
       // no handler matched, and the 404 below still has to be written. Calling
       // this and returning unconditionally left the request hanging with no
       // response at all — a timeout, which reads as "the server is down".
-      const answered = await handleApiRequest(req, res, rawUrl, opts.api);
+      const answered = await handleApiRequest(req, res, rawUrl, opts.api, {
+        bodyLimit: opts.bodyLimit,
+      });
       if (answered) return;
     }
 
@@ -2395,7 +2617,7 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
     // handler, because the alternative is serving index.html to a POST, which
     // "succeeds" and does nothing.
     if ((req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE') && opts.actions) {
-      handleAction(req, res, reqPath, rawUrl, opts.actions);
+      handleAction(req, res, reqPath, rawUrl, opts.actions, { bodyLimit: opts.bodyLimit });
       return;
     }
 
@@ -2467,6 +2689,18 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
       return;
     }
 
+    // Any dotfile is private: `.hydra-build.json` is the esbuild metafile, which
+    // lists every module in the graph, its size and its dependencies. It is in
+    // `dist/` because `hydra analyze` reads it there, and it must not be on the
+    // public internet — a build artifact that describes the build is free
+    // reconnaissance, and it is never something a visitor asked for.
+    const publicName = path.basename(reqPath);
+    if (publicName.startsWith('.')) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Not Found');
+      return;
+    }
+
     let exists = fs.existsSync(filePath);
     if (exists && fs.statSync(filePath).isDirectory()) {
       filePath = path.join(filePath, 'index.html');
@@ -2475,6 +2709,21 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
 
     if (!exists) {
       const isNavigation = req.method === 'GET' || req.method === 'HEAD';
+      // A request that asked for a FILE (`/assets/app.js`, `/logo.png`) is not
+      // a navigation, and answering it with index.html and a 200 is how a stale
+      // deploy turns into a blank page: the browser refuses to execute HTML as
+      // a module with a MIME error that names nothing useful, and an <img>
+      // silently renders broken with no 404 anywhere in the logs.
+      const wantsHtml = /text\/html|\*\/\*/.test(String(req.headers.accept || ''));
+      const hasExtension = path.extname(reqPath) !== '';
+      // Decided BEFORE the SSR block, because a missing asset must not be
+      // rendered as a page even when the client sent `Accept: text/html`.
+      // `*.html` stays eligible: a host may serve one by name.
+      if (hasExtension && path.extname(reqPath).toLowerCase() !== '.html') {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end(`Not Found: ${reqPath}`);
+        return;
+      }
 
       // A route the static build could not write: `/blog/[slug]` has no single
       // URL, so there is no file for `/blog/hello`. Rendering it here is what
@@ -2485,10 +2734,31 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
       // and a crawler does not run JavaScript.
       if (isNavigation && opts.ssr && opts.ssr.available) {
         try {
-          const out = await opts.ssr.renderPage(reqPath);
+          // The FULL url, query included: a loader that reads `?tab=info` and
+          // the client that reads the same must be given the same string, or
+          // the server renders one value and hydration uses another.
+          const out = await opts.ssr.renderPage(rawUrl, {
+            request: requestFor(req, rawUrl, ''),
+          });
+          if (out && out.intent) {
+            // A loader redirected or refused. That is an HTTP answer, not a
+            // page: sending the page instead produced a 200 with a blank body.
+            sendHttpIntent(res, out.intent);
+            return;
+          }
           if (out) {
             const body = opts.injectHtml ? opts.injectHtml(out.document) : out.document;
             res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end(body);
+            return;
+          }
+          // Matched nothing. The project's own `_404` is the right body, and
+          // 404 is the right status — for the HTML the browser hydrates, so
+          // the client sees the same thing the server rendered.
+          const notFound = await opts.ssr.renderNotFound(rawUrl);
+          if (notFound) {
+            const body = opts.injectHtml ? opts.injectHtml(notFound.document) : notFound.document;
+            res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
             res.end(body);
             return;
           }
@@ -2528,8 +2798,9 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
 
       // SPA fallback: react-router, TanStack Router and friends own every path
       // that is not a file, and a reload on /dashboard/settings has to reach
-      // the app rather than a 404 page.
-      if (!isNavigation || !fs.existsSync(indexPath)) {
+      // the app rather than a 404 page. Guarded by `wantsHtml` so an XHR that
+      // happens to have no extension is never handed a page.
+      if (!isNavigation || !wantsHtml || !fs.existsSync(indexPath)) {
         res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end('Not Found');
         return;
@@ -2660,6 +2931,7 @@ export async function runPreview(cwd = process.cwd(), opts = {}) {
     actions: readActionBundle(cwd),
     ssr: renderer.available ? renderer : null,
     api: apiForPreview,
+    bodyLimit: config.server?.bodyLimit,
     version: opts.version,
     sha: opts.sha,
     configPath: path.join(cwd, 'hydraconfig.json'),
@@ -2667,10 +2939,16 @@ export async function runPreview(cwd = process.cwd(), opts = {}) {
 }
 
 export async function runDev(cwd = process.cwd(), opts = {}) {
-  // Libraries branch on this at bundle time — `process.env.NODE_ENV !==
-  // 'production'` is what turns on React's dev warnings and every `act()`
-  // guard — and `hydra dev` is the command that promises them.
+  // Two flags, and they mean different things.
+  //
+  // `NODE_ENV` is what LIBRARIES branch on at bundle time — React turns its dev
+  // warnings and `act()` guards on with it — and `hydra dev` promises those.
+  // `HYDRA_DEV` is what THIS toolchain branches on: it decides whether the
+  // generated API/action bundles are re-required per request. They used to be
+  // one variable's worth of behaviour spread over two places, so production
+  // re-parsed its server bundle on every request (93 req/s instead of 1.258).
   process.env.NODE_ENV = 'development';
+  process.env.HYDRA_DEV = '1';
 
   // Build first then serve with auto rebuild
   await runBuild(cwd, { dev: true });
@@ -2702,6 +2980,7 @@ export async function runDev(cwd = process.cwd(), opts = {}) {
     // for the artifact, not for the loop.
     api: readApiBundle(cwd),
     ssr: renderer.available ? renderer : null,
+    bodyLimit: config.server?.bodyLimit,
     // The dev server injects the HMR client into every HTML response, because
     // the build wrote the file and the page has to reach the browser with it.
     injectHtml: (html) => injectHmrClient(html),
@@ -3185,6 +3464,15 @@ if (!invokedDirectly) {
     console.error('\n' + table.errors_diagnostics.map((d) => `error: ${d}`).join('\n'));
     process.exit(1);
   }
+} else if (cmd === 'serve' || cmd === 'start') {
+  // `serve` is the deployment name; `start` is the one npm scripts reach for.
+  // Both were documented in the README and neither existed in the CLI, which
+  // treated the word as a file to compile and answered
+  // "cannot read serve: No such file or directory".
+  runServe(cwd, runOpts).catch((err) => {
+    console.error(err.message);
+    process.exit(1);
+  });
 } else if (cmd === 'preview') {
   // A preview that cannot bind is a failed preview, exit 1. Staying alive
   // while serving nothing is what turned a busy port into 12,485 restarts

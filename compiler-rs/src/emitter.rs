@@ -203,6 +203,7 @@ pub static PYTHON_BUILTIN_NAMES: &[&str] = &[
     "enumerate",
     "filter",
     "float",
+    "format",
     "int",
     "isinstance",
     "len",
@@ -1284,6 +1285,16 @@ impl Emitter {
                 // `self.x` -> `this.x` (see Kind::Name above) — routed through
                 // the same code path by rewriting the object first.
                 let o = self.js(obj)?;
+                // `type(x).__name__` — the ONE dunder that needs a call rather
+                // than a property read. `type(x)` already emits
+                // `py_type_name(x)`, which returns a STRING, and a string has no
+                // `.name`: leaving this to the generic map below answered
+                // `undefined` for every value. Recognising the shape here is
+                // what makes the emitted pair agree.
+                if name == "__name__" && o.starts_with("py_type_name(") && o.ends_with(')') {
+                    let inner = &o["py_type_name(".len()..o.len() - 1];
+                    return Ok(format!("py_type_name({})", inner));
+                }
                 Ok(format!("{}.{}", o, str_method(name)))
             }
             Kind::OptAttr { obj, name } => {
@@ -1521,11 +1532,27 @@ impl Emitter {
                                 "max" => return Ok(format!("Math.max({})", all.join(", "))),
                                 "min" => return Ok(format!("Math.min({})", all.join(", "))),
                                 "isinstance" => {
+                                    // `int` and `float` are NOT the same question:
+                                    // Python separates them and JS spells both with
+                                    // `Number`, so `isinstance(1.5, int)` used to
+                                    // answer true. The compiler can see the type
+                                    // NAME here, so it picks the helper that knows
+                                    // the difference instead of collapsing them.
+                                    let ty = all[1].trim().to_string();
+                                    match ty.as_str() {
+                                        "int" => {
+                                            self.used_helpers.borrow_mut().insert("isinstance_int".into());
+                                            return Ok(format!("isinstance_int({})", all[0]));
+                                        }
+                                        "float" => {
+                                            self.used_helpers.borrow_mut().insert("isinstance_float".into());
+                                            return Ok(format!("isinstance_float({})", all[0]));
+                                        }
+                                        _ => {}
+                                    }
                                     self.used_helpers.borrow_mut().insert("isinstance".into());
-                                    let ty = &all[1];
                                     let mapped = match ty.as_str() {
                                         "str" => "String",
-                                        "int" | "float" => "Number",
                                         "bool" => "Boolean",
                                         "list" => "Array",
                                         "dict" => "Object",
@@ -1609,14 +1636,46 @@ impl Emitter {
                                     self.used_helpers.borrow_mut().insert("min_of".into());
                                     return Ok(format!("min_of({})", arg));
                                 }
-                                // `type(x)` -> the constructor; `type(x).__name__`
-                                // then resolves through the `__name__` -> `name` map.
-                                "type" => return Ok(format!("({}).constructor", arg)),
+                                // `type(x)` -> `py_typename(x)`.
+                                //
+                                // It used to emit `x.constructor`, so
+                                // `type(x).__name__` (below, via the
+                                // `__name__` -> `name` map) answered the
+                                // JAVASCRIPT class: "Object" for a dict,
+                                // "Array" for a list, "Number" for both int and
+                                // float — and `type(None)` threw, because
+                                // `null.constructor` is a TypeError. A Python
+                                // author branching on a type name got a wrong
+                                // branch and, for None, a crash.
+                                "type" => {
+                                    self.used_helpers.borrow_mut().insert("py_type_name".into());
+                                    return Ok(format!("py_type_name({})", arg));
+                                }
                                 // `len(x, y)` and `str(x, y)` are not Python, but
                                 // `sorted(xs, key=...)` and friends arrive here
                                 // with kwargs and are handled below.
                                 _ => {}
                             }
+                        }
+                        // `format(value, spec)` — Python's builtin. It is a
+                        // BUILTIN, not a string method, and it used to fall
+                        // through every arm and emit `format(...)` verbatim:
+                        // a call to an identifier nothing imported, so the
+                        // build stayed green and the runtime threw
+                        // `ReferenceError: format is not defined` on the first
+                        // request that used it. The two-argument form is the
+                        // only one Python defines.
+                        // Only when `format` is NOT imported: `from "date-fns"
+                        // import format` is that library's pattern formatter, and
+                        // rewriting it to Python's spec grammar broke a real
+                        // example (`yyyy-MM-dd` is not a Python spec).
+                        if id == "format" && args.len() == 2 && !self.imported_names.borrow().contains("format") {
+                            self.used_helpers.borrow_mut().insert("py_format".into());
+                            return Ok(format!(
+                                "py_format({}, {})",
+                                self.js(&args[0])?,
+                                self.js(&args[1])?
+                            ));
                         }
                         // `sum(xs, start)` — Python's two-argument form. The
                         // one-argument form keeps the inline reduce.
@@ -1763,7 +1822,14 @@ impl Emitter {
                                 self.used_helpers.borrow_mut().insert("divmod".into());
                                 return Ok(format!("divmod({})", arg));
                             }
-                            "str" => return Ok(format!("String({})", arg)),
+                            // `str(x)` — Python's spelling. `String(x)` answers `null`, `true`
+                            // and `1` where Python says `None`, `True` and `1.0`,
+                            // and that text lands in a page, a log line or a
+                            // receipt. `py_str` is the Python answer.
+                            "str" => {
+                                self.used_helpers.borrow_mut().insert("py_str".into());
+                                return Ok(format!("py_str({})", arg));
+                            }
                             // `parseInt("12px")` is 12 and Python RAISES. The
                             // runtime constructors do the Python thing; a silent
                             // 12 from "12px" is a corrupt number that travels.
@@ -3826,13 +3892,16 @@ mod tests {
         has_all(
             &out,
             &[
-                "String(x)",
+                // `str(x)` is `py_str(x)`: `String(null)` is "null" where Python
+                // says "None", and `String(true)` is "true" where Python says
+                // "True". The text lands in a page, so the spelling matters.
+                "py_str(x)",
                 "int(x)",
                 "float(x)",
                 "Math.abs(x)",
                 "round_py(x)",
                 "truthy(x)",
-                "import { float, int, round_py, truthy } from 'hydra';",
+                "import { float, int, py_str, round_py, truthy } from 'hydra';",
             ],
         );
     }

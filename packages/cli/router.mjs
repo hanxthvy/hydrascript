@@ -416,7 +416,7 @@ function importerSpecifier(file) {
  * back, and the shell is a file in the project — the browser cannot read it
  * without a request the framework should not make.
  */
-export function routesModuleSource(table, { base = '/', cwd = null } = {}) {
+export function routesModuleSource(table, { base = '/', cwd = null, split = false } = {}) {
   // STATIC imports, not `() => import(...)`.
   //
   // The lazy form is the more obvious choice and it does not work: esbuild sees
@@ -427,7 +427,10 @@ export function routesModuleSource(table, { base = '/', cwd = null } = {}) {
   // synchronous route table needs anyway.
   const files = new Set();
   for (const r of table.routes) {
-    files.add(r.file);
+    // In split mode a PAGE is not imported statically — that is the whole point
+    // — but its layouts, its error boundary and `_404` are, because they wrap
+    // many routes and a shared chunk is cheaper than N copies.
+    if (!split) files.add(r.file);
     for (const f of layoutChainFor(r.dir, table)) files.add(f);
     const e = errorFor(r.dir, table);
     if (e) files.add(e);
@@ -498,9 +501,43 @@ export function routesModuleSource(table, { base = '/', cwd = null } = {}) {
   // and every page threw #31 — after a pre-render that produced perfect HTML.
   lines.push('export const pages = {');
   for (const r of table.routes) {
-    lines.push(`  ${JSON.stringify(r.pattern)}: pick(${ref.get(r.file)}),`);
+    // Split mode: the page MODULE is not imported here at all, so esbuild can
+    // put it in its own chunk. `pick(...)` stays as the shape for the server
+    // bundle, which must render synchronously.
+    lines.push(`  ${JSON.stringify(r.pattern)}: ${split ? 'null' : `pick(${ref.get(r.file)})`},`);
   }
   lines.push('};');
+  lines.push('');
+  if (split) {
+    // One chunk per route. Without this every page in the project was in the
+    // initial bundle — 61 routes, one 166 KB file, zero chunks — so the first
+    // page a visitor opened paid for the whole site. This is the map the client
+    // router resolves lazily, and the reason the static import above is only
+    // emitted for the server build.
+    //
+    // The map goes through a mutable object that the runtime PRIMES before
+    // `hydrateRoot`: `mount()` replaces an entry with the resolved component
+    // once its chunk arrives, and `Router` reads the same slot synchronously on
+    // the first render. Without that handshake the first paint renders the
+    // loading fallback over server HTML that has the real page — React #418,
+    // then #423, then a full re-render.
+    lines.push('export const lazyPages = {');
+    for (const r of table.routes) {
+      lines.push(
+        `  ${JSON.stringify(r.pattern)}: () => import(${JSON.stringify(importerSpecifier(r.file))}),`,
+      );
+    }
+    lines.push('};');
+  } else {
+    lines.push('export const lazyPages = {};');
+  }
+  lines.push('');
+  // The slot `mount()` writes a resolved chunk into, and `Router` reads
+  // synchronously on its first render. A SEPARATE map, not an overwritten
+  // `lazyPages` entry: an importer and a component are both functions, and
+  // telling them apart by shape is the kind of guess that produced a page
+  // rendered with no props. On `globalThis` so a module swap does not lose it.
+  lines.push('export const primedPages = (globalThis.__hydra_primed = globalThis.__hydra_primed || {});');
   lines.push('');
   lines.push('export const pageLayouts = {');
   for (const r of table.routes) {
@@ -522,7 +559,7 @@ export function routesModuleSource(table, { base = '/', cwd = null } = {}) {
   lines.push(`export const hasNotFound = ${rootNotFound ? 'true' : 'false'};`);
   lines.push(`export const base = ${JSON.stringify(base)};`);
   lines.push('');
-  lines.push(`export default { routes, pages, pageLayouts, pageErrors, pageMeta, shellMeta, notFound, hasNotFound, base };`);
+  lines.push(`export default { routes, pages, lazyPages, primedPages, pageLayouts, pageErrors, pageMeta, shellMeta, notFound, hasNotFound, base };`);
   lines.push('');
   return lines.join('\n');
 }
@@ -574,7 +611,7 @@ export function writeRoutesModule(cwd, table, opts = {}) {
  * `resolveDir` is the generated module's own directory, so the relative
  * specifiers inside it resolve exactly as they would on disk.
  */
-export function routesEsbuildPlugin(table, { base = '/', cwd } = {}) {
+export function routesEsbuildPlugin(table, { base = '/', cwd, split = false } = {}) {
   const resolveDir = path.join(cwd || process.cwd(), GENERATED_DIR);
   return {
     name: 'hydra-routes',
@@ -584,7 +621,7 @@ export function routesEsbuildPlugin(table, { base = '/', cwd } = {}) {
         namespace: 'hydra-routes',
       }));
       build.onLoad({ filter: /.*/, namespace: 'hydra-routes' }, () => ({
-        contents: routesModuleSource(table, { base, cwd: cwd || process.cwd() }),
+        contents: routesModuleSource(table, { base, cwd: cwd || process.cwd(), split }),
         loader: 'js',
         resolveDir,
       }));
@@ -796,18 +833,29 @@ function identFor(file) {
   lines.push('  return null;');
   lines.push('}');
   lines.push('');
+  // The loader's event object. ONE argument, and it must carry everything the
+  // documented shape promises: `params`, `url`, `query`, `request`.
+  //
+  // `url` is the full path WITH its query string, because `query` is derived
+  // from it and a loader that reads `?tab=info` must see the same value the
+  // browser does. Passing the bare path here silently emptied `query` on every
+  // server render while the data endpoint answered correctly, so the same URL
+  // produced two different pages depending on how it was reached.
   lines.push('function __event(params, url, request) {');
-  lines.push('  const search = new URLSearchParams(String(url || "").split("?")[1] || "");');
+  lines.push('  const full = String(url || "/");');
+  lines.push('  const qAt = full.indexOf("?")'); 
+  lines.push('  const search = qAt === -1 ? new URLSearchParams("") : new URLSearchParams(full.slice(qAt + 1).split("#")[0]);');
   lines.push('  const query = Object.fromEntries(search);');
   lines.push('  query.get = (k, fallback = null) => (search.has(k) ? search.get(k) : fallback);');
   lines.push('  query.has = (k) => search.has(k);');
   lines.push('  return {');
   lines.push('    params,');
-  lines.push('    url,');
+  lines.push('    url: full,');
+  lines.push('    path: qAt === -1 ? full : full.slice(0, qAt),');
   lines.push('    query,');
   lines.push('    request: request || {');
-  lines.push('      method: "GET", url, headers: {}, body: null,');
-  lines.push('      json: async () => null, text: async () => "",');
+  lines.push('      method: "GET", url: full, headers: {}, body: {},');
+  lines.push('      json: async () => ({}), text: async () => "",');
   lines.push('    },');
   lines.push('  };');
   lines.push('}');
@@ -874,7 +922,7 @@ function identFor(file) {
   lines.push('  const table = __table();');
   lines.push('  // The seed carries the loader result: the page is rendered by `Router`');
   lines.push('  // inside the app and never receives props from here.');
-  lines.push('  __seed_for_ssr({ table, path: pattern, data });');
+  lines.push('  __seed_for_ssr({ table, path: pattern, url, data });');
   lines.push('  // Render the APP, not the page. Rendering the page produced HTML with');
   lines.push('  // none of the chrome, and hydrating the full app over it was React #418');
   lines.push('  // on every pre-rendered route. The app is what the browser mounts.');
@@ -895,6 +943,20 @@ function identFor(file) {
   lines.push('    __clear_ssr_seed();');
   lines.push('    throw err;');
   lines.push('  }');
+  lines.push('}');
+  lines.push('');
+  // The 404 has to be renderable by the SERVER, or a URL that matches nothing
+  // answers with the home page and a 200. `Router()` already renders `_404`
+  // when nothing matches, so seeding the path is enough: the same component
+  // path is taken here that the client takes on the same URL, which is what
+  // makes the HTML and the hydration agree.
+  lines.push('export function renderNotFound(url = "/") {');
+  lines.push('  const App = __appComponent();');
+  lines.push('  if (!App) return null;');
+  lines.push('  const table = __table();');
+  lines.push('  if (!table || !table.hasNotFound) return null;');
+  lines.push('  __seed_for_ssr({ table, path: url, url, data: null });');
+  lines.push('  return createElement(App, { path: url, url });');
   lines.push('}');
   lines.push('');
   lines.push('export const __clear_seed = __clear_ssr_seed;');

@@ -23,6 +23,7 @@ fn usage() -> String {
          \x20 hydra build [options]       build for production\n\
          \x20 hydra routes [--json]      show the file-based route table\n\
          \x20 hydra preview [--port N]     preview production build\n\
+         \x20 hydra serve|start [--port N] serve a built project for deployment\n\
          \x20 hydra run <file.hys> [args] execute script directly in memory\n\
          \x20 hydra repl                  interactive Pythonic REPL\n\
          \x20 hydra watch [dir]           watch & recompile to watch-out/ on change\n\
@@ -79,6 +80,10 @@ fn main() -> ExitCode {
             | "list"
             | "clean"
             | "analyze"
+            // The deployment commands. Matching this list is what stops the
+            // binary from treating `serve` as a source file to compile.
+            | "serve"
+            | "start"
     ) {
         return hydra::cli::run(&args);
     }

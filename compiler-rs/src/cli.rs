@@ -116,6 +116,22 @@ pub fn preview_cmd(args: &[String]) -> ExitCode {
     }
 }
 
+/// `hydra serve` / `hydra start` — serve a built project for a deployment.
+///
+/// The README documented `hydra serve` and the CLI had no such word, so the
+/// binary treated it as a filename and answered
+/// "cannot read serve: No such file or directory". A deployment command that
+/// does not exist is worse than one that is missing from the docs.
+pub fn serve_cmd(args: &[String]) -> ExitCode {
+    let has_help = args.iter().any(|a| a == "--help" || a == "-h");
+    if find_hydraconfig().is_some() || has_help {
+        spawn_runner("serve", args)
+    } else {
+        eprintln!("hydra: serve requires hydraconfig.json");
+        ExitCode::from(1)
+    }
+}
+
 pub fn run(args: &[String]) -> ExitCode {
     match args.first().map(|s| s.as_str()) {
         // `run` goes to the Node runner, not to this binary.
@@ -132,6 +148,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("build") => build_cmd(&args[1..]),
         Some("routes") => routes_cmd(&args[1..]),
         Some("preview") => preview_cmd(&args[1..]),
+        Some("serve") | Some("start") => serve_cmd(&args[1..]),
         Some("watch") => watch(&args[1..]),
         Some("check") => check(&args[1..]),
         Some("types") => types_cmd(&args[1..]),

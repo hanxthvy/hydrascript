@@ -18,6 +18,12 @@ const isMetaCommand =
   cmd === 'dev' ||
   cmd === 'build' ||
   cmd === 'preview' ||
+  // `serve` and `start` are the deployment commands. Without them here the
+  // native CLI treated the word as a source file and answered
+  // "cannot read serve: No such file or directory" — for a command the README
+  // documented.
+  cmd === 'serve' ||
+  cmd === 'start' ||
   cmd === 'routes' ||
   cmd === 'run' ||
   cmd === 'test' ||

@@ -38,10 +38,16 @@ target/
 *.swp
 .vscode-test/
 
-# A project's secrets. `.env.example` is committed (it has no values); `.env`
-# itself holds the ones that must never reach a repository, and `PUBLIC_*` in
-# it is inlined into the client bundle, so it is not a file to share blindly.
+# A project's secrets. `.env.example` is committed (it has no values); every
+# other shape holds values that must never reach a repository.
+#
+# `.env.local` and `.env.production.local` are what people type first — they are
+# the Next/Vite convention — and leaving only `.env` here meant `git add -A`
+# staged a file full of keys. `PUBLIC_*` is inlined into the client bundle, so
+# the whole file is a secret, not just the unprefixed half.
 .env
+.env.*
+!.env.example
 
 # Packed tarballs from `npm pack` / the pack-install check.
 *.tgz

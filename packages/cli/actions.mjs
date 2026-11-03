@@ -217,22 +217,47 @@ export async function bundleActions(
   return outfile;
 }
 
-/** Read the request body as text, bounded so a huge POST cannot exhaust memory. */
+/**
+ * Read the request body as text, bounded so a huge POST cannot exhaust memory.
+ *
+ * A body over the limit is a CLIENT error with an answer: the promise rejects
+ * with `error.status = 413` and the request is left readable enough for the
+ * caller to write that answer. The first version called `req.destroy()` inside
+ * the `data` handler, which killed the socket before `writeHead(413)` could
+ * reach it — the client saw "empty reply from server" and no status at all.
+ * Pausing instead lets the header go out; `Connection: close` then ends the
+ * exchange without reading the rest of a body we have already refused.
+ */
 export function readBody(req, limitBytes = 1024 * 1024) {
   return new Promise((resolve, reject) => {
     let size = 0;
+    let settled = false;
     const chunks = [];
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      // Stop consuming. `destroy()` is the caller's decision, after the reply.
+      req.pause();
+      reject(err);
+    };
     req.on('data', (c) => {
+      if (settled) return;
       size += c.length;
       if (size > limitBytes) {
-        reject(new Error(`body larger than ${limitBytes} bytes`));
-        req.destroy();
+        const err = new Error(`body larger than ${limitBytes} bytes`);
+        err.status = 413;
+        err.limit = limitBytes;
+        fail(err);
         return;
       }
       chunks.push(c);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
+    req.on('end', () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks).toString('utf8'));
+    });
+    req.on('error', fail);
   });
 }
 
@@ -242,16 +267,26 @@ export function readBody(req, limitBytes = 1024 * 1024) {
  * Only what an action can honestly rely on: the method, the URL, the headers and
  * the parsed body. Not a real `Request` — claiming that would mean claiming
  * `fetch` semantics this does not implement.
+ *
+ * An empty body is `{}`, not `null`. A POST with no body is a legal request (a
+ * button that only needs to say "do it"), and the documented idiom
+ * `body.get("text")` / `body["text"]` turning into a 500 on
+ * "Cannot read properties of null" made the framework look broken for a request
+ * it had accepted. A body that is present but unparseable is reported as a
+ * client error (`body_error`), not silently turned into `{}`: those two are
+ * different requests and only one of them is the caller's mistake.
  */
 export function requestFor(req, url, rawBody) {
   const contentType = String(req.headers['content-type'] || '');
-  let body = null;
+  let body = {};
+  let body_error = null;
   if (rawBody) {
     if (contentType.includes('application/json')) {
       try {
         body = JSON.parse(rawBody);
-      } catch {
-        body = null;
+      } catch (e) {
+        body = {};
+        body_error = `invalid JSON body: ${e.message}`;
       }
     } else if (contentType.includes('form')) {
       // Both shapes, on purpose. A form body IS a `URLSearchParams` to the web
@@ -272,6 +307,7 @@ export function requestFor(req, url, rawBody) {
     url,
     headers: req.headers,
     body,
+    body_error,
     async json() {
       return body;
     },
@@ -284,14 +320,24 @@ export function requestFor(req, url, rawBody) {
   };
 }
 
-/** Load the generated action bundle, if it exists. */
+/**
+ * Load the generated action bundle, if it exists.
+ *
+ * The cache entry is dropped ONLY during development. `hydra dev` rewrites the
+ * bundle on every save, so a cache keyed by path would answer with the previous
+ * build's actions for the rest of the session. Production is the opposite case:
+ * the bundle is immutable for the life of the process, and re-requiring it per
+ * request meant re-evaluating every module — which reset module-level state
+ * (connection pools, counters, caches) on every single request and cost real
+ * throughput. `HYDRA_DEV` is set by `runDev` itself, so a stray environment
+ * variable cannot turn the behaviour on by accident.
+ */
 export function loadActions(file) {
   if (!file || !fs.existsSync(file)) return null;
   try {
-    // `require`, and the cache entry is dropped first: during development the
-    // bundle changes between builds, and a cache keyed by path would serve the
-    // previous build's actions for the rest of the session.
-    delete require.cache[require.resolve(file)];
+    if (process.env.HYDRA_DEV === '1') {
+      delete require.cache[require.resolve(file)];
+    }
     return require(file);
   } catch (e) {
     console.error(`[hydra] could not load actions: ${e.message}`);

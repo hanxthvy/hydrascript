@@ -1,7 +1,7 @@
 # [xihanzu-NR]
 # Continuous integration.
 #
-# Why this exists at all: the repository has 348 Rust tests and a four-project
+# Why this exists at all: the repository has 408 Rust tests and a four-project
 # example suite that is the real regression test (it pulls 14 real React
 # packages), and until now all of it ran only when somebody remembered to run
 # it. A green suite that nobody runs is documentation, not a guarantee.

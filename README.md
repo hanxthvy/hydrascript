@@ -18,7 +18,7 @@ esbuild, PostCSS and Tailwind to produce a site.
 
 **Status: 0.11.0, pre-1.0.** The compiler, file-based router, prerendering,
 server rendering, language server and test runner are implemented and covered by
-311 Rust tests and 146 Node tests across 20 suites. The language syntax is frozen
+408 Rust tests (271 unit + 137 integration) and 147 Node tests across 21 suites. The language syntax is frozen
 (see below); what ships between now and 1.0 is tooling, not new constructs.
 
 Known limit, stated rather than implied: Fast Refresh preserves a mounted
@@ -584,7 +584,7 @@ field:
 | `event.params` | dict of URL parameters (`{"slug": "hello"}`) |
 | `event.url` | the path (`/blog`) |
 | `event.query` | a `URLSearchParams`, so `.get("q")` |
-| `event.request` | `method`, `headers`, `body` (an action only) |
+| `event.request` | `method`, `url`, `headers`, `body` — the REAL request headers on a server render, so a cookie or an `authorization` header is readable |
 
 A `.server.hys` with no page beside it is a **build error naming both files**,
 because a loader nobody calls is almost always a typo in the filename.
@@ -688,7 +688,7 @@ Two targets, and the list is closed.
 | target | contains |
 |---|---|
 | `static` (default) | HTML, JS, CSS. `src/api` and middleware are **not** served |
-| `node` | the same client build, plus the API routes, middleware, loaders and actions that `hydra preview` and `hydra serve` answer from |
+| `node` | the same client build, plus the API routes, middleware, loaders and actions that `hydra serve` answers from |
 
 `static` is the default because it is what every release before this one
 produced; switching the default would turn a deployed API into a 404 for anyone
@@ -887,6 +887,7 @@ hydra list                   declared vs installed
 hydra clean [--all]          remove build output
 hydra analyze [dir]          bundle size report
 hydra dev | build | preview  the meta-framework commands
+hydra serve | start          serve a built project (the deployment command)
 ```
 
 `hydra build` takes `--target node|static`; see "`hydra build --target`" above.

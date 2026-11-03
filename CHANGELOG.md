@@ -12,6 +12,128 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## 0.12.0 — 2026-11-03
+
+Everything in this release came from an audit that ran the framework the way a
+user would: build a project, serve it, `curl` every endpoint, read the status
+code. The findings are in `REVIEW-PRODUCTION.md` (gitignored); this file is what
+changed because of them.
+
+The version is a minor bump rather than a patch because four behaviours changed
+in ways a project can notice, and each one is listed as a breaking change below.
+
+## Breaking changes
+
+- **`str(x)` is Python's spelling.** `str(None)` is `None`, `str(True)` is
+  `True`. It used to emit `String(x)`, which answers `null` and `true`. A page
+  that displayed a boolean will display `True` instead of `true`.
+- **`type(x).__name__` returns a Python type name.** `dict`, `list`, `int`,
+  `float`, `bool`, `str`, `NoneType`. It used to return the JavaScript class
+  (`Object`, `Array`, `Number`) and threw on `None`.
+- **`isinstance(x, int)` and `isinstance(x, float)` are different questions.**
+  `True` is an `int`, `1.5` is not, and `1` is not a `float`.
+- **Source maps are off by default.** `"build": { "sourcemap": true }` turns
+  them on. A map carries the application's source in `sourcesContent`, and
+  `dist/` is what gets uploaded.
+- **`dist/` is emptied before a build.** `"build": { "clean": false }` opts out.
+  A route deleted from the source now stops being served.
+
+## Wrong answers, now correct
+
+- **A loader can see the request.** `event.request.headers`, `event.request.url`
+  and `event.url` (query included) reach the loader on a server render. They
+  were an empty stub, so no page could be guarded by a cookie or a token.
+- **The query string reaches the loader.** `?tab=info` used to arrive as nothing
+  while `/__hydra/data` answered correctly: the same URL produced two pages
+  depending on how it was reached.
+- **`redirect()` and `fail()` are HTTP answers in all four paths.** A loader that
+  redirected rendered a 200 with a blank page; `fail(401)` in an API route
+  answered **200** with the refusal in the body. `packages/cli/http.mjs` now owns
+  the reading, so a new consumer cannot invent a fifth interpretation.
+- **`fail(401)` answers 401**, and a redirect answers 303 with `Location`.
+- **A list is a list.** `return [1, 2, 3]` from an API handler answered
+  `{"error":"Invalid status code: 2"}` because any array was read as
+  `(body, status)`. Only a two-element array whose second item is a status code
+  is a tuple now.
+- **`HEAD` works.** It answered 405 on every endpoint, so every monitor and
+  `curl -I` failed against an API that plainly existed.
+- **A body over the limit is a 413.** It used to `req.destroy()` before writing
+  the status, so the client saw "empty reply from server" and no status at all.
+  `server.bodyLimit` is configurable.
+- **A POST with no body is `{}`**, not `null`. `body.get("x")` threw on it.
+- **A URL that matches nothing is a real 404**, with the project's `_404` as the
+  body, and `404.html` is written for static hosts. It used to answer the HOME
+  page with status 200 — which also made React throw #425 and then #423 and
+  re-render the whole tree.
+- **A missing asset is a 404**, not `index.html` with a 200 and a `text/html`
+  content type that the browser refuses to execute as a module.
+- **Dotfiles are not served.** `/.hydra-build.json` (the esbuild metafile: the
+  whole module graph) answered 200.
+
+## Performance
+
+- **`delete require.cache` only happens in development.** In production it
+  re-evaluated every module in the server bundle on every request: module-level
+  state (a connection pool, a counter, a cache) was recreated each time. Measured
+  on a 1.25 MB bundle: **93 req/s before, 1.626 req/s after**.
+- **`import` from `hydra` in a server file no longer pulls React in.** The
+  runtime was split into `runtime/core.ts` (no React) and `runtime/hydra.ts`
+  (re-exports core, adds hooks and the router); the server bundles alias `hydra`
+  to core. An API route using `dict_get` produced a **1.25 MB** bundle; it is now
+  **2.7 KB**.
+- **One chunk per route.** Every page used to be in the initial bundle: 61
+  routes, one 166 KB file, zero chunks. The entry is now the runtime plus React,
+  and each route is fetched on demand. `mount()` primes the active route's chunk
+  before `hydrateRoot`, because hydrating before it arrives is #418 then #423.
+- **The runtime gate checks pages in parallel and says how many it checked.**
+  A 61-route build spent 27 of its 28 seconds in the gate, on 25 pages.
+- **CSS is content-hashed** like the JS, so it can be cached for a year instead
+  of being invalidated on every deploy.
+
+## Added
+
+- **`hydra serve` / `hydra start`.** Documented in the README and absent from the
+  CLI, which treated the word as a source file. It refuses to start when the
+  server half is missing rather than serving empty shells to crawlers, and it
+  handles `SIGTERM`.
+- **`docs/DEPLOYING.md`** and an `examples/blog/Dockerfile`: what the artifact
+  contains, what it needs, and how to run it.
+- **`hydra/core`** as a specifier for a server file that must stay React-free.
+- **`rendering = "ssr"`** is honoured. It was accepted by the scanner and
+  ignored by the build, so a route that asked to be dynamic shipped as static.
+- **`routes`, `ssr`, `server.bodyLimit` and `build.clean`** are in `schema.json`,
+  and three defaults that disagreed with the code are fixed (`ssg` is on, `host`
+  is loopback, `sourcemap` is off). An editor validating a config the docs teach
+  used to flag it as invalid.
+- **`.env.<mode>`, `.env.local` and `.env.<mode>.local`** are read, in
+  precedence order, and all of them are gitignored. `.env.local` was neither
+  ignored nor read: a secret staged by `git add -A` that also did nothing.
+- **`packages/cli/production.test.mjs`** — nine end-to-end tests that drive the
+  real CLI against a real project and read the real HTTP response: headers and
+  query reaching a loader, a 303 from a loader, a 404 that is a 404, a missing
+  asset, a 413 that is answered, HEAD, a list, build cleaning, per-route chunks,
+  and `serve` refusing a static build.
+
+## Fixed
+
+- `format(value, spec)` — Python's builtin — was a `ReferenceError`. The name was
+  imported and resolved to `str.format`, the template expander.
+- `hydra run` failed in any directory without React, for a script that does not
+  use it.
+- `public/index.html` was silently overwritten by the build; it is now reported.
+- `hydra serve`'s absence from `bin/hydra.js`, the Rust CLI and `main.rs`'
+  command list, each of which had to learn the word separately.
+- The three test counts in README, BENCHMARKS and CI disagreed with each other
+  and with the suite; all four now come from the same run (408 Rust, 147 Node).
+
+## Notes
+
+- The Fast Refresh second half (the edited markup swapping into the live tree)
+  is still open, and the README still says so.
+- No RSC, no islands, no streaming: unchanged, and still deliberate.
+
+---
+
 ## 0.9.1 — 2026-11-02
 
 **Python semantics for the operators and builtins whose JS spelling is close

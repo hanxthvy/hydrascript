@@ -201,7 +201,10 @@ fn test_expr_python_builtins() {
         &out,
         &[
             "const a = len_of(xs);",
-            "const b = String(x);",
+            // `py_str` is Python's spelling: `String(null)` is "null" where
+            // Python says "None", and `String(true)` is "true" where Python says
+            // "True". The value ends up in a page, so the spelling is the feature.
+            "const b = py_str(x);",
             // `int`/`float` raise like Python instead of truncating a bad
             // string, `round` rounds a tie to even, and `bool`/`sorted` use
             // Python's truthiness and numeric ordering.

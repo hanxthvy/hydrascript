@@ -273,6 +273,25 @@ class Cdp {
 }
 
 /**
+/**
+ * Did this console error come from the page this build produced?
+ *
+ * The gate serves the build on 127.0.0.1, so a source that starts with that
+ * origin is ours. The MIME errors a browser emits for a module it refused to
+ * execute carry no `url` at all — but they are always about a script this page
+ * asked for, so they are treated as ours too.
+ */
+function isOwnOriginError(entry, pagePath) {
+  const url = String(entry.url || '');
+  // A browser asks for /favicon.ico on its own, and a project that ships no
+  // icon is not a broken build. Everything else from our origin is ours.
+  if (/favicon\.ico$/.test(url) || /favicon\.ico/.test(String(entry.text || ''))) return false;
+  if (url && (/^https?:\/\/127\.0\.0\.1[:/]/.test(url) || url.startsWith('/'))) return true;
+  const text = String(entry.text || '');
+  return /Failed to load module script|Expected a JavaScript|MIME type|Failed to load resource/i.test(text);
+}
+
+/**
  * Every HTML page the build produced, as URL paths, root first.
  *
  * A file-based build emits one page per static route (`dist/about/index.html`),
@@ -281,7 +300,7 @@ class Cdp {
  * project with hundreds of routes cannot turn a build into a browser
  * regression suite; the cap is reported rather than silently applied.
  */
-function builtPages(distDir, cap = 25) {
+function builtPages(distDir, cap = Number(process.env.HYDRA_GATE_PAGES) || 25) {
   const found = [];
   const walk = (dir) => {
     let entries = [];
@@ -436,6 +455,9 @@ export async function runRuntimeGate({ distDir, serve }) {
 
     /** Exceptions seen since the last `Page.navigate`, with the page they came from. */
     let currentPage = '/';
+    /** How many pages the gate actually looked at, and how many exist. */
+    let checked = 0;
+    let builtTotal = 0;
     cdp.on('Runtime.exceptionThrown', (p) => {
       const d = p.exceptionDetails || {};
       const text = d.exception?.description || d.exception?.value || d.text || 'uncaught exception';
@@ -445,11 +467,17 @@ export async function runRuntimeGate({ distDir, serve }) {
     cdp.on('Log.entryAdded', (p) => {
       const e = p.entry || {};
       if (e.level === 'error') {
-        // Console errors are warnings, not failures: React and third-party
-        // libraries log recoverable complaints, and failing on those makes the
-        // gate unusable. Exceptions are the hard signal.
         const t = (e.text || '').trim();
-        if (t) warnings.push(`${currentPage} — ${t.split('\n')[0]}`);
+        if (!t) return;
+        const where = e.url ? ` (${e.url})` : '';
+        const line = `${currentPage} — ${t.split('\n')[0]}${where}`;
+        // An error from OUR OWN origin is a failure. A chunk that fails to load,
+        // a MIME mismatch, a 404 on an asset: these are exactly the failures
+        // that used to print as "gate passed (1 warning)" while the page was
+        // blank. A third-party script's complaint stays a warning, because this
+        // gate does not own that code.
+        if (isOwnOriginError(e, currentPage)) exceptions.push(line);
+        else warnings.push(line);
       }
     });
 
@@ -458,9 +486,14 @@ export async function runRuntimeGate({ distDir, serve }) {
     await cdp.send('Page.enable');
 
     const { pages, total, cap } = builtPages(distDir);
+    // Recorded, not merely warned about: a build that says "gate passed"
+    // without saying how many pages it looked at is the shape of a green lie.
+    checked = pages.length;
+    builtTotal = total;
     if (total > cap) {
       warnings.push(
-        `${total} HTML pages built; the gate checked the first ${cap} (a build is not a test suite)`,
+        `${total} HTML pages built; the gate checked the first ${cap} ` +
+          '(set HYDRA_GATE_PAGES to raise it — a build is not a test suite)',
       );
     }
 
@@ -512,6 +545,9 @@ export async function runRuntimeGate({ distDir, serve }) {
       ok: exceptions.length === 0,
       exceptions,
       warnings,
+      checked,
+      total: builtTotal,
+      cap,
     });
   } catch (e) {
     return await finish({

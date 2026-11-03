@@ -31,6 +31,7 @@ import { pathToFileURL } from 'node:url';
 import { matchRoute } from '../../runtime/router-core.js';
 import { applyMeta } from './meta.mjs';
 import { readBody, requestFor } from './actions.mjs';
+import { httpIntent } from './http.mjs';
 
 /** Where the build leaves the server bundle for the dev/preview/serve commands. */
 export const SERVER_BUNDLE = path.join('.hydra', 'server.cjs');
@@ -242,8 +243,12 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
       return matchRoute(clean, routes());
     },
     /**
-     * Render one URL. `request` is passed through to the loader for an SSR of a
-     * POST-shaped flow; a GET passes null and the loader sees a GET event.
+     * Render one URL. `request` is passed through to the loader so it can see
+     * the headers, the cookies and the body of the request that caused the
+     * render; `url` is the FULL url including the query string, because a
+     * loader that reads `?tab=info` and a client that reads the same must agree
+     * — the first version passed the path only, so the server rendered with
+     * one value and hydration used another.
      */
     async render(url, { request = null } = {}) {
       ensureFresh();
@@ -265,6 +270,16 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
     async renderPage(url, opts = {}) {
       const out = await this.render(url, opts);
       if (!out) return null;
+
+      // A loader that redirects or refuses asked the SERVER for something, and
+      // the answer is an HTTP response — not a page with the refusal as its
+      // props. Rendering it produced a 200 with a blank page, which is the one
+      // failure nobody can debug from a browser.
+      const intent = httpIntent(out.data);
+      if (intent) {
+        return { ...out, intent, document: null };
+      }
+
       let html = injectMarkup(shell, out.html);
       html = injectData(html, dataTag(out.pattern, url, out.data));
       // The same `meta` the pre-render pass applies. `shell` here is the
@@ -272,7 +287,7 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
       // page served for `/blog/hello` would answer with the shell's title while
       // the static build of every OTHER route had the page's.
       html = applyMeta(html, out.meta);
-      return { ...out, document: html };
+      return { ...out, intent: null, document: html };
     },
     /** Run just the loader, for the data endpoint. */
     async load(url, { request = null } = {}) {
@@ -282,6 +297,27 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
       const pattern = hit.route.pattern;
       const data = await mod.loadFor(pattern, hit.params, url, request);
       return { pattern, params: hit.params, data };
+    },
+    /**
+     * Render the project's `_404` for a URL nothing matched.
+     *
+     * A 404 has to be a real 404: a URL that does not exist must answer with
+     * that status, or every bad link is indexed as a page and no monitor ever
+     * sees it. Rendering the app's own `_404` component (rather than a bare
+     * "Not Found" string) keeps the site's chrome, and it means the HTML the
+     * browser hydrates matches what `Router()` renders for the same URL —
+     * which the SPA fallback got wrong: it served the HOME page for `/nope`,
+     * React found different text on the client, and the whole tree was thrown
+     * away and re-rendered (React #425 then #423).
+     */
+    async renderNotFound(url) {
+      ensureFresh();
+      if (typeof mod.renderNotFound !== 'function') return null;
+      const element = mod.renderNotFound(url);
+      if (!element) return null;
+      const rendered = renderToString(element);
+      const html = injectMarkup(shell, rendered);
+      return { pattern: '/__404', params: {}, data: null, html: rendered, document: html };
     },
   };
 }

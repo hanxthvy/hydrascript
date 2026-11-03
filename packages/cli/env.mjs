@@ -87,15 +87,37 @@ const FROM_FILE = new Set();
  * build log), `applied` is the keys actually written, so "my .env change did
  * nothing" has an answer in the terminal.
  */
-export function loadProjectEnv(cwd, target = process.env) {
-  const file = path.join(cwd, '.env');
-  let text = null;
-  try {
-    text = fs.readFileSync(file, 'utf8');
-  } catch {
-    text = null;
+/**
+ * The `.env` files a project may have, LOWEST precedence first.
+ *
+ * `.env` is the base, `.env.<mode>` overrides it, and `.env.local` (then
+ * `.env.<mode>.local`) overrides everything — the order Vite and Next taught
+ * everyone, so a file copied from another project behaves as expected instead
+ * of being silently ignored. Reading only `.env` meant `.env.local` was both
+ * unignored by git AND unused by the build: the worst pair.
+ */
+export function envFileNames(mode = process.env.NODE_ENV || 'production') {
+  return ['.env', `.env.${mode}`, '.env.local', `.env.${mode}.local`];
+}
+
+export function loadProjectEnv(cwd, target = process.env, mode = process.env.NODE_ENV || 'production') {
+  // Merged in precedence order; a later file wins for the same key.
+  const vars = {};
+  let found = 0;
+  for (const name of envFileNames(mode)) {
+    const file = path.join(cwd, name);
+    let text = null;
+    try {
+      text = fs.readFileSync(file, 'utf8');
+    } catch {
+      text = null;
+    }
+    if (text === null) continue;
+    found += 1;
+    Object.assign(vars, parseDotEnv(text));
   }
-  const vars = text === null ? {} : parseDotEnv(text);
+  // Nothing to read (found === 0) is fine: the `FROM_FILE` cleanup below still
+  // runs, so a key this process applied earlier does not outlive its file.
   const applied = [];
   const owned = (k) => FROM_FILE.has(`${cwd}\u0000${k}`);
 
@@ -118,7 +140,14 @@ export function loadProjectEnv(cwd, target = process.env) {
     FROM_FILE.add(`${cwd}\u0000${k}`);
     applied.push(k);
   }
-  return { file: text === null ? null : file, vars, applied };
+  // `file` is kept in the return shape for callers that log it; with several
+  // files the base name is the honest one to name.
+  return {
+    file: found === 0 ? null : path.join(cwd, '.env'),
+    files: envFileNames(mode).filter((n) => fs.existsSync(path.join(cwd, n))),
+    vars,
+    applied,
+  };
 }
 
 /**

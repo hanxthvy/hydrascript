@@ -14,6 +14,11 @@ import React, {
 } from 'react'
 import * as ReactDOM from 'react-dom/client'
 
+// The React-free half. Re-exported below so `from "hydra" import len` is
+// unchanged, and importable on its own as `hydra/core` from a server file that
+// must not pull React into its bundle.
+export * from './core'
+
 import {
   matchRoute as core_match_route,
   parseQuery as core_parse_query,
@@ -29,379 +34,17 @@ import {
 // gate caught it on the very case this is for: a correctly pre-rendered page.
 import * as generated_routes from 'hydra:routes'
 
-/* ------------------------------------------------- f-string number format
- *
- * Python's `format(1.5, ":.0f")` is `2`, and `format(0.5, ":.0f")` is `0`:
- * ties go to the EVEN digit, and the tie is judged against the double's exact
- * binary value, not against its shortest printed form. JavaScript's `toFixed`
- * rounds ties AWAY from zero, which is a different answer for exactly the cases
- * a person notices — money, percentages, anything ending in .5.
- *
- * There is no option to make `toFixed` do it, so it is done here: expand the
- * double to plain decimal, look at the digit after the one being kept, and if it
- * is exactly a tie (5 followed by nothing), pick the even neighbour.
- *
- * `toFixed(100)` is what makes the expansion usable. Its spec picks the n
- * closest to the true value, and a double's exact decimal expansion needs at
- * most ~767 fraction digits, so 100 digits still separates a real tie from a
- * near one. Beyond |x| < 1e-100 the difference is below the precision any
- * f-string spec can express; that bound is stated rather than implied.
- */
-
-/** Decimal digits of `Math.abs(x)`, without exponent notation. */
-function plainDecimal(abs: number, digits: number): string {
-  return abs.toFixed(digits)
-}
-
 /**
- * `py_fixed(x, n)` — Python's `format(x, "<spec>.Nf")`.
+ * Route chunks that have ALREADY been fetched, by pattern.
  *
- * Round-half-to-even on the exact value, negative zero preserved (`-0`), and
- * the non-finite spellings Python uses (`inf`, `-inf`, `nan`).
+ * Split routes resolve asynchronously, and hydration cannot wait inside a
+ * render — the HTML on disk has the page's markup and the client's first paint
+ * must produce the same tree or React throws #418/#423 and re-renders the whole
+ * document. `mount()` fills this BEFORE `hydrateRoot`, so the first render sees
+ * a component rather than a promise.
  */
-export function py_fixed(x: any, n: number): string {
-  const v = Number(x)
-  const digits = Math.max(0, Math.trunc(n))
-  if (Number.isNaN(v)) return 'nan'
-  if (!Number.isFinite(v)) return v > 0 ? 'inf' : '-inf'
-
-  const negative = v < 0 || Object.is(v, -0)
-  const plain = plainDecimal(Math.abs(v), 100)
-  const dot = plain.indexOf('.')
-  const intPart = plain.slice(0, dot)
-  const fracAll = plain.slice(dot + 1)
-
-  const keep = fracAll.slice(0, digits)
-  const rest = fracAll.slice(digits)
-  // A tie is exactly `5` followed by zeros, or nothing at all.
-  const isTie = rest.length > 0 && rest[0] === '5' && /^0*$/.test(rest.slice(1))
-  const roundUpWithoutTie = rest.length > 0 && !isTie && rest[0] >= '5'
-  const lastKept = keep.length > 0 ? Number(keep[keep.length - 1]) : Number(intPart[intPart.length - 1])
-
-  let bumped = keep === '' ? intPart : intPart + keep
-  const shouldCarry = roundUpWithoutTie || (isTie && lastKept % 2 === 1)
-  if (shouldCarry) {
-    // String arithmetic: adding 1 to a 100-digit integer exceeds Number.
-    const asInt = bumped
-    let carry = ''
-    let i = asInt.length - 1
-    let add = 1
-    const chars = asInt.split('')
-    for (; i >= 0 && add === 1; i--) {
-      const d = Number(chars[i]) + 1
-      if (d === 10) {
-        chars[i] = '0'
-      } else {
-        chars[i] = String(d)
-        add = 0
-      }
-    }
-    carry = chars.join('')
-    if (add === 1) carry = '1' + carry
-    bumped = carry
-  }
-
-  const cut = bumped.length - digits
-  let outInt = cut > 0 ? bumped.slice(0, cut) : '0'
-  let outFrac = cut > 0 ? bumped.slice(cut) : bumped.padStart(digits, '0')
-  if (digits === 0) outFrac = ''
-  // A carry can lengthen the integer part; that is the point of doing it by
-  // string and not by arithmetic.
-  outInt = outInt.replace(/^0+(?=\d)/, '') || '0'
-
-  const body = digits > 0 ? `${outInt}.${outFrac}` : outInt
-  if (!negative) return body
-  // Python prints `-0` for a negative zero, so `negative` is NOT reduced to
-  // "less than zero" above.
-  return '-' + body
-}
-
-/**
- * `.pop()` — one name, two meanings, decided by the receiver.
- *
- * On a LIST `xs.pop()` removes and returns the LAST element. On a DICT
- * `d.pop("k")` removes the entry for that key and returns its value, with an
- * optional fallback. The compiler has one spelling for both, so the helper
- * dispatches: the receiver's type is the only thing that says which was meant.
- *
- * Routing the list case to `dict_pop` (the old mapping) read a key of
- * `undefined` and returned the fallback, so `xs.pop()` was `None` while the list
- * silently kept its element.
- */
-export function pop_of(x: any, key: any = -1, fallback: any = null): any {
-  if (Array.isArray(x)) {
-    if (x.length === 0) throw new IndexError('pop from empty list')
-    const at = key === undefined || key === null || key === -1 ? x.length - 1 : Number(key)
-    const i = at < 0 ? x.length + at : at
-    if (i < 0 || i >= x.length) throw new IndexError('pop index out of range')
-    return x.splice(i, 1)[0]
-  }
-  if (Object.prototype.hasOwnProperty.call(x, key)) {
-    const v = x[key]
-    delete x[key]
-    return v
-  }
-  if (fallback !== null) return fallback
-  throw new KeyError(JSON.stringify(key))
-}
-
-/**
- * `xs[-1]` — Python's negative index, which JS reads as a missing property.
- *
- * `xs[-1]` is `undefined` in JS and the LAST element in Python, so a "peek at the
- * most recent item" returned `undefined`, silently, on every list. Only literal
- * negative indexes are rewritten (the compiler can see the sign), so this costs
- * nothing at a call site that was not written that way.
- */
-export const py_at = (xs: any, i: number): any => (i < 0 ? xs[xs.length + i] : xs[i])
-
-/**
- * `a * n` where the LEFT side is a string or a list — Python repeats.
- *
- * JS has no `*` for sequences, so `"ab" * 3` was `NaN` and `[0] * 3` was `0`:
- * a value that looks like arithmetic and is silently nonsense. Numbers keep the
- * numeric meaning, which is what the same operator means in Python.
- */
-export function py_repeat(a: any, n: number): any {
-  if (typeof a === 'number') return a * n
-  if (typeof a === 'string') return a.repeat(Math.max(0, Math.trunc(n)))
-  if (Array.isArray(a)) {
-    const out: any[] = []
-    for (let i = 0; i < Math.max(0, Math.trunc(n)); i++) out.push(...a)
-    return out
-  }
-  return a as any
-}
-
-/**
- * `a == b` — Python's equality, which is STRUCTURAL for sequences.
- *
- * `[1, 2] == [1, 2]` is `false` in JavaScript because two array literals are two
- * objects. That comparison is everywhere in Python code — a guard, a memo check,
- * a state comparison — and it silently took the wrong branch. Numbers, strings,
- * booleans and null keep the `===` answer; arrays and plain objects compare by
- * value, recursively.
- */
-export function py_eq(a: any, b: any): boolean {
-  if (a === b) return true
-  if (a == null || b == null) return false
-  if (typeof a === 'number' && typeof b === 'number') return a === b || (Number.isNaN(a) && Number.isNaN(b))
-  if (Array.isArray(a) && Array.isArray(b)) {
-    if (a.length !== b.length) return false
-    for (let i = 0; i < a.length; i++) if (!py_eq(a[i], b[i])) return false
-    return true
-  }
-  if (typeof a === 'object' && typeof b === 'object') {
-    const ka = Object.keys(a)
-    const kb = Object.keys(b)
-    if (ka.length !== kb.length) return false
-    for (const k of ka) if (!Object.prototype.hasOwnProperty.call(b, k) || !py_eq(a[k], b[k])) return false
-    return true
-  }
-  return false
-}
-
-/** `a != b` — the negation, so the two can never disagree. */
-export const py_ne = (a: any, b: any): boolean => !py_eq(a, b)
-
-/**
- * `a % b` — Python's sign, not JavaScript's.
- *
- * Python's result takes the SIGN OF THE DIVISOR: `-7 % 3` is 2, and JS's is -1.
- * The difference is invisible until it is not — a ring buffer index, a modulo
- * hash, a "which column is this" calculation all go one cell the wrong way for
- * negative input, and nothing throws.
- */
-export function py_mod(a: number, b: number): number {
-  const r = a % b
-  return r !== 0 && (r < 0) !== (b < 0) ? r + b : r
-}
-
-/** Group the integer part in threes, as `,` does in Python's format spec. */
-function groupThousands(intPart: string): string {
-  const neg = intPart.startsWith('-')
-  const digits = neg ? intPart.slice(1) : intPart
-  const grouped = digits.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
-  return neg ? '-' + grouped : grouped
-}
-
-/**
- * `py_group(x, n)` — Python's `format(x, ",.Nf")` / `format(x, ",")`.
- *
- * Grouping is applied to the ALREADY-ROUNDED digits. `toLocaleString` does both
- * at once and rounds half-away, so it was the source of the same
- * disagreement `py_fixed` fixes. `n` of `null` means "no fixed precision",
- * which is Python's bare `,`.
- */
-export function py_group(x: any, n: number | null): string {
-  if (n === null || n === undefined) {
-    const v = Number(x)
-    if (!Number.isFinite(v)) return py_fixed(v, 0)
-    return groupThousands(py_fixed(v, 0).split('.')[0])
-  }
-  const fixed = py_fixed(x, n)
-  const [intPart, frac] = fixed.split('.')
-  const grouped = groupThousands(intPart)
-  return frac === undefined ? grouped : `${grouped}.${frac}`
-}
-
-/* ------------------------------------------------------- python builtins
- *
- * The handful of Python builtins that have no JavaScript equivalent but DO have
- * an exact one. Each of these lives here rather than in emitted inline code for
- * the same reason `len_of` does: the correct behaviour is a decision, and a
- * decision written once can be tested once.
- *
- * `any` and `all` are Python's short-circuiting forms — `xs.some(fn)` is the
- * equivalent for an array of booleans, but `any(xs)` on a boolean array is what
- * a Python developer actually writes, and `Array.prototype.some` with no
- * argument throws.
- */
-
-/**
- * `any(xs)` — True if any element is truthy.
- *
- * Short-circuits like Python. An empty sequence is False, not undefined.
- */
-export function any(xs: any): boolean {
-  if (!xs) return false
-  if (Array.isArray(xs)) return xs.some((x) => Boolean(x))
-  if (typeof xs[Symbol.iterator] === 'function') {
-    for (const x of xs) if (x) return true
-    return false
-  }
-  return Boolean(xs)
-}
-
-/** `all(xs)` — True if every element is truthy. Empty is True, as in Python. */
-export function all(xs: any): boolean {
-  if (xs === null || xs === undefined) return false
-  if (Array.isArray(xs)) return xs.every((x) => Boolean(x))
-  if (typeof xs[Symbol.iterator] === 'function') {
-    for (const x of xs) if (!x) return false
-    return true
-  }
-  return Boolean(xs)
-}
-
-/**
- * `getattr(obj, name, default)` — Python's attribute read with a fallback.
- *
- * The two-argument form raises when the name is absent; the three-argument form
- * returns the default. Distinguishing "absent" from "present but undefined" is
- * the whole point, so `in` is used rather than a truthiness check.
- */
-export function getattr(obj: any, name: string, ...rest: any[]): any {
-  if (obj === null || obj === undefined) {
-    if (rest.length >= 1) return rest[0]
-    throw new TypeError(`getattr(): attribute '${name}' on ${obj}`)
-  }
-  if (name in Object(obj)) return obj[name]
-  if (rest.length >= 1) return rest[0]
-  throw new AttributeError(`'${name}'`)
-}
-
-/** `hasattr(obj, name)` — never raises, unlike a bare attribute read. */
-export function hasattr(obj: any, name: string): boolean {
-  return obj !== null && obj !== undefined && name in Object(obj)
-}
-
-/** `setattr(obj, name, value)` — returns the value, so it can be used inline. */
-export function setattr(obj: any, name: string, value: any): any {
-  if (obj === null || obj === undefined) {
-    throw new TypeError(`setattr(): cannot set '${name}' on ${obj}`)
-  }
-  obj[name] = value
-  return value
-}
-
-/**
- * `repr(x)` — the debugging form.
- *
- * Not identical to Python's: a JS object has no `__repr__`, so the closest
- * faithful thing is JSON for plain data and `String(x)` for everything else.
- * Claiming more than that would be a lie the first time it was used on a class.
- */
-export function repr(x: any): string {
-  if (typeof x === 'string') return JSON.stringify(x)
-  if (x === null) return 'None'
-  if (x === undefined) return 'None'
-  if (typeof x === 'object') {
-    try {
-      return JSON.stringify(x)
-    } catch {
-      return String(x)
-    }
-  }
-  return String(x)
-}
-
-/** An `AttributeError` for `getattr`/`setattr`: a real class, so `except` works. */
-export class AttributeError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'AttributeError'
-  }
-}
-
-/* --------------------------------------------------------- exception classes
- *
- * Python's exception hierarchy, as real JS classes.
- *
- * `raise ValueError("bad")` and `except ValueError:` are documented in the
- * README, and both need a NAME to exist: the raise becomes
- * `new ValueError(...)`, the handler becomes `x instanceof ValueError`. They
- * were emitted as bare identifiers, so a module that used either threw
- * `ReferenceError: ValueError is not defined` the moment it loaded.
- *
- * They cannot all be `Error` aliases: every handler would then match every
- * error, which is worse than not compiling. The hierarchy here is Python's —
- * `ValueError` is a `LookupError`? no: Python's tree is
- *
- *     BaseException
- *       Exception
- *         ArithmeticError -> ZeroDivisionError, OverflowError
- *         LookupError -> KeyError, IndexError
- *         AssertionError, AttributeError, EOFError, RuntimeError,
- *         NotImplementedError, StopIteration, OSError -> FileNotFoundError,
- *         PermissionError, TypeError, ValueError
- *
- * and `except LookupError:` catching a `KeyError` is the reason to keep it.
- * The shape is asserted by a test, not just written here.
- */
-export class BaseException extends Error {
-  constructor(message = '') {
-    super(message)
-    this.name = new.target.name || 'BaseException'
-  }
-}
-export class Exception extends BaseException {}
-export class ArithmeticError extends Exception {}
-export class ZeroDivisionError extends ArithmeticError {}
-export class OverflowError extends ArithmeticError {}
-export class LookupError extends Exception {}
-export class KeyError extends LookupError {}
-export class IndexError extends LookupError {}
-export class AssertionError extends Exception {}
-export class RuntimeError extends Exception {}
-export class NotImplementedError extends RuntimeError {}
-export class StopIteration extends Exception {}
-/**
- * `TypeError` IS the JS built-in, not a subclass of ours.
- *
- * `except TypeError:` has to catch the ``x is not a function`` the ENGINE
- * throws, and a class of our own would never be in that error's prototype
- * chain. Exporting the native one makes the handler work in both directions
- * (a `raise TypeError(...)` and an engine TypeError), which is what a reader
- * expects from the name. `RangeError` is the same argument.
- */
-export const TypeError = globalThis.TypeError
-export const RangeError = globalThis.RangeError
-export class ValueError extends Exception {}
-export class OSError extends Exception {}
-export class FileNotFoundError extends OSError {}
-export class PermissionError extends OSError {}
-export class UnicodeError extends ValueError {}
+const primed_pages: Record<string, any> =
+  (globalThis as any).__hydra_primed || ((globalThis as any).__hydra_primed = {})
 
 
 /* ------------------------------------------------------------------ state */
@@ -564,58 +207,6 @@ export function fetch_json<T = any>(url: string, deps: DependencyList = []): Asy
   return s
 }
 
-/* ------------------------------------------------------------- collections
- *
- * Python devs reach for len/sorted/sum constantly. The compiler rewrites the
- * common ones to plain JS, but these are the runtime fallbacks for the cases
- * the compiler cannot see (a variable holding a builtin, dynamic dispatch).
- */
-
-export const len = <T,>(x: { length: number } | T[]): number => x.length
-
-/**
- * `sorted(xs)` — Python's ordering, not JavaScript's.
- *
- * `Array.prototype.sort()` with no comparator compares the STRING forms, so
- * `sorted([10, 9, 100])` came out `[10, 100, 9]`: a build that succeeds and a
- * list in the wrong order, which is the worst kind of wrong. Numbers compare
- * numerically, everything else as text — Python compares homogeneous sequences
- * exactly this way, and a mixed sequence is a type error there rather than a
- * meaningful order.
- */
-export const sorted = <T,>(xs: T[]): T[] =>
-  xs
-    .slice()
-    .sort((a: any, b: any) =>
-      typeof a === 'number' && typeof b === 'number'
-        ? a - b
-        : String(a) < String(b)
-          ? -1
-          : String(a) > String(b)
-            ? 1
-            : 0,
-    )
-
-export const reversed = <T,>(xs: T[]): T[] => xs.slice().reverse()
-export const sum = (xs: number[]): number => xs.reduce((a, b) => a + b, 0)
-
-/** `enumerate(xs)` -> [[0, x0], [1, x1], ...] */
-export const enumerate = <T,>(xs: T[]): [number, T][] => xs.map((x, i) => [i, x])
-
-/** `zip(a, b)` -> [[a0, b0], ...] truncated to the shorter input, like Python. */
-export const zip = <A, B>(a: A[], b: B[]): [A, B][] =>
-  Array.from({ length: Math.min(a.length, b.length) }, (_, i) => [a[i], b[i]] as [A, B])
-
-/** `range(5)` / `range(2, 8)` / `range(0, 10, 2)` — same semantics as Python. */
-export function range(...args: number[]): number[] {
-  const [start, stop, step = 1] =
-    args.length === 1 ? [0, args[0]] : args.length === 2 ? [args[0], args[1]] : args
-  const out: number[] = []
-  if (step > 0) for (let i = start; i < stop; i += step) out.push(i)
-  else for (let i = start; i > stop; i += step) out.push(i)
-  return out
-}
-
 /** Python-style truthiness: empty list/dict/string and 0 are falsy. */
 /* ------------------------------------------------------------ fast refresh
  *
@@ -699,57 +290,6 @@ export function __refresh(name: string, impl: (props: any) => any): (props: any)
  */
 export const __refresh_count = (): number => refreshRegistry().size
 
-/**
- * `truthy(x)` — Python truthiness, for a CONDITION.
- *
- * The empty-container rule is the whole reason this exists: `[]` and `{}` are
- * true in JS and False in Python. But it applies to PLAIN containers only. A
- * single object literal is Python's only way to spell a record, and a DOM
- * element, a Map, a Set and a React ref are all `typeof 'object'` too; keying off
- * `Object.keys().length` made `if el:` false for every HTML element the app ever
- * looked up (an element has no OWN enumerable keys), and `if ref.current:` false
- * for a ref holding one. That is a branch silently never taken.
- *
- * So: arrays by length, plain objects by key count, everything else by JS
- * truthiness — which already agrees with Python for `null`/`0`/`''`/`NaN`.
- */
-export const truthy = (x: unknown): boolean => {
-  if (x == null) return false
-  if (Array.isArray(x)) return x.length > 0
-  if (x instanceof Map || x instanceof Set) return x.size > 0
-  if (typeof x === 'object') {
-    const proto = Object.getPrototypeOf(x)
-    // `Object.create(null)` and `{}` are plain; classes, elements, refs are not.
-    if (proto === Object.prototype || proto === null) return Object.keys(x as object).length > 0
-    return true
-  }
-  return Boolean(x)
-}
-
-/* ------------------------------------------------------------------- dict */
-
-/** `d = dict_get(obj, "key", default)` — attribute access that will not throw. */
-/**
- * `d.get(k)` / `d.get(k, default)`.
- *
- * Python's fallback for a MISSING key is `None`, and the compiler emitted
- * `undefined` for the one-argument form because `fallback` defaulted to nothing.
- * `None` is the value Python code tests with `is None`, so the difference is the
- * whole idiom. `!!in` rather than a truthiness check on the value: a key holding
- * `0` or `""` is present, and treating it as missing is a different bug.
- */
-export const dict_get = <T,>(o: any, key: string, fallback: T | null = null): T | null =>
-  o != null && key in o ? o[key] : fallback
-
-/** `safe(fn)` — wrap a handler so a throw does not take down the tree. */
-export function safe<A extends any[]>(fn: (...a: A) => void): (...a: A) => void {
-  return (...a: A) => {
-    try { fn(...a) } catch (e) {
-      console.error('[hydra] handler threw:', e)
-      throw e  // rethrow: an error boundary should still see it
-    }
-  }
-}
 
 /* ---------------------------------------------------------------- re-exports */
 
@@ -758,445 +298,93 @@ export {
   Fragment, useId, useTransition, useDeferredValue, useLayoutEffect, Suspense, forwardRef,
 }
 
-/* --------------------------------------------------- python semantics core
- *
- * The compiler rewrites Python idioms that JavaScript either lacks or spells
- * with a different meaning. Each one lives here rather than being inlined so
- * the compiled output stays small and the behaviour stays in one place.
- */
+// The core half is re-exported with `export *` above, which does not bring the
+// names into this module's own scope: a function here that calls `format()` or
+// `pow()` needs an explicit import, and TypeScript/ESM would leave it unbound
+// (a ReferenceError in a shipped bundle) without this line.
+import { all, any, contains, format, join, last, pow, title } from './core'
 
-/**
- * `"a" in xs` / `x in d` / `key in obj`
- *
- * JS `in` answers a different question (does the object have this KEY) and
- * throws a TypeError on a primitive. Python's `in` asks "is this value in
- * here", which needs a different implementation per container type.
- */
-export function contains(container: any, item: any): boolean {
-  if (container == null) return false
-  if (typeof container === 'string') return container.includes(String(item))
-  if (Array.isArray(container)) return container.includes(item)
-  if (container instanceof Set) return container.has(item)
-  if (container instanceof Map) return container.has(item)
-  if (typeof container === 'object') {
-    // A plain object is used as a dict: membership tests the keys.
-    return Object.prototype.hasOwnProperty.call(container, item)
-  }
-  return false
-}
-
-/**
- * `len(xs)` — works for arrays, strings, Maps and plain objects (dicts).
- * A plain object has no `.length`, which is how `len(d)` used to evaluate to
- * `undefined` and silently poison every expression that touched it.
- */
-export function len_of(x: any): number {
-  if (x == null) return 0
-  if (typeof x === 'string' || Array.isArray(x)) return x.length
-  if (x instanceof Map || x instanceof Set) return x.size
-  if (typeof x === 'object') return Object.keys(x).length
-  return 0
-}
-
-/** `pow(a, b)` — Python's builtin; JS has Math.pow. */
-export const pow = (a: number, b: number): number => Math.pow(a, b)
-
-/** `divmod(a, b)` -> `[a // b, a % b]` */
-export const divmod = (a: number, b: number): [number, number] => [
-  Math.floor(a / b),
-  a % b,
-]
-
-/** `xs[::-1]` — Python's slice with a step. `slice()` cannot express it. */
-export function slice_step(
-  obj: any,
-  start: number | null,
-  stop: number | null,
-  step: number,
-): any {
-  if (obj == null) return obj
-  const is_str = typeof obj === 'string'
-  const src: any[] = is_str ? obj.split('') : Array.from(obj)
-  const n = src.length
-  if (step === 0) throw new Error('slice step cannot be zero')
-  const out: any[] = []
-  if (step > 0) {
-    let i = start == null ? 0 : start < 0 ? Math.max(0, n + start) : start
-    const end = stop == null ? n : stop < 0 ? Math.max(0, n + stop) : Math.min(stop, n)
-    for (; i < end; i += step) out.push(src[i])
-  } else {
-    let i = start == null ? n - 1 : start < 0 ? n + start : Math.min(start, n - 1)
-    const end = stop == null ? -1 : stop < 0 ? n + stop : stop
-    for (; i > end; i += step) {
-      const item = src[i]
-      if (item !== undefined) out.push(item)
-    }
-  }
-  return is_str ? out.join('') : out
-}
-
-/**
- * `assert cond, "message"` — throws on failure.
- * Emitting this as an expression made the check silently disappear, which is
- * worse than not writing it: the code looks guarded and is not.
- */
-export function assert_(cond: unknown, message: string): void {
-  if (!cond) throw new Error(String(message))
-}
-
-/** `raise ValueError("bad")` -> `throw`. */
-export function raise_(err: unknown): never {
-  throw err
-}
-
-/* ------------------------------------------------- dict / list / string ops
- *
- * Python methods that have no JS equivalent at all (not even a renamed one).
- */
-
-/** `d.setdefault("k", [])` — insert if absent, then return the value. */
-export const dict_setdefault = (o: any, key: string, fallback: any = null): any => {
-  if (!Object.prototype.hasOwnProperty.call(o, key)) o[key] = fallback
-  return o[key]
-}
-
-/** `d.update(other)` — in place, like Python. */
-export const dict_update = (o: any, other: any): any => Object.assign(o, other)
-
-/** `d.pop("k", fallback)` */
-export const dict_pop = (o: any, key: string, fallback: any = null): any => {
-  if (Object.prototype.hasOwnProperty.call(o, key)) {
-    const v = o[key]
-    delete o[key]
-    return v
-  }
-  return fallback
-}
-
-/** `d.popitem()` — removes and returns the last key/value pair. */
-export const dict_popitem = (o: any): [string, any] => {
-  const keys = Object.keys(o)
-  if (keys.length === 0) throw new Error('popitem(): dictionary is empty')
-  const key = keys[keys.length - 1]
-  const value = o[key]
-  delete o[key]
-  return [key, value]
-}
-
-/** `dict.fromkeys(xs, value)` */
-export const dict_fromkeys = (keys: any[], value: any = null): Record<string, any> => {
-  const out: Record<string, any> = {}
-  for (const k of keys) out[k] = value
-  return out
-}
-
-/**
- * `d.keys()`, `d.values()`, `d.items()`.
- *
- * These were emitted as `d.keys()` — a JavaScript METHOD CALL. For a plain
- * object literal (what `{"a": 1}` compiles to) that is `d.keys is not a
- * function` at runtime, while `hydra check` said nothing and the runtime gate
- * only noticed when the line happened to run. A real `Map` genuinely has these
- * methods, so both shapes are handled rather than breaking Map users to fix
- * object users.
- *
- * `dict_items` returns `[key, value]` PAIRS, which is what Python's `.items()`
- * gives and what `for k, v in d.items():` destructures.
- */
-export const dict_keys = (d: any): any[] =>
-  d instanceof Map ? Array.from(d.keys()) : Object.keys(d ?? {})
-
-export const dict_values = (d: any): any[] =>
-  d instanceof Map ? Array.from(d.values()) : Object.values(d ?? {})
-
-export const dict_items = (d: any): any[] =>
-  d instanceof Map ? Array.from(d.entries()) : Object.entries(d ?? {})
-
-/** `xs.extend(ys)` — in place, like Python's list.extend. */
-export const list_extend = <T,>(xs: T[], ys: Iterable<T>): T[] => {
-  xs.push(...ys)
-  return xs
-}
-
-/** `xs.insert(i, v)` — truthy return so it can be chained. */
-export const list_insert = <T,>(xs: any, i: number, v: T): boolean => {
-  // Non-array receivers with their own `insert` are left to themselves.
-  if (!Array.isArray(xs)) {
-    if (xs && typeof xs.insert === 'function') {
-      xs.insert(i, v)
-      return true
-    }
-    throw new Error('list.insert(i, x): x is not a list')
-  }
-  xs.splice(i, 0, v)
-  return true
-}
-
-/**
- * Python's `list.remove(v)` removes by VALUE and raises when absent.
- *
- * Anything that is not an Array but does have its own `remove` — a
- * `DOMTokenList` from `classList`, a `Set`, another host object — keeps its own
- * semantics instead. Rewriting `element.classList.remove("dark")` into this
- * helper with no guard made it call `.indexOf` on a DOMTokenList, which threw
- * "n.indexOf is not a function" during a hydration effect and blanked the page.
- */
-export const list_remove = <T,>(xs: any, v: T): boolean => {
-  if (!Array.isArray(xs)) {
-    if (xs && typeof xs.remove === 'function') {
-      xs.remove(v)
-      return true
-    }
-    throw new Error('list.remove(x): x is not a list')
-  }
-  const i = xs.indexOf(v)
-  if (i < 0) throw new Error('list.remove(x): x not in list')
-  xs.splice(i, 1)
-  return true
-}
-
-/** `xs.index(v)` — throws when absent, like Python. */
-export const list_index = <T,>(xs: any, v: T): number => {
-  if (!Array.isArray(xs) && typeof xs?.indexOf !== 'function') {
-    throw new Error('list.index(x): x is not a list')
-  }
-  const i = xs.indexOf(v)
-  if (i < 0) throw new Error('list.index(x): x not in list')
-  return i
-}
-
-/** `", ".join(xs)` -> `join(", ", xs)`: Python puts the separator on the string. */
-export const join = (sep: string, xs: Iterable<any>): string => Array.from(xs).join(sep)
-
-/**
- * Set helpers, named so `.add()` on an array cannot silently do nothing.
- *
- * A non-Set receiver that owns an `add`/`remove` — a `DOMTokenList` from
- * `classList`, a library's collection type — is delegated to instead of being
- * coerced. `classList.add(...)` reaching this helper used to work by luck;
- * `classList.remove(...)` did not, and took the whole page down with it.
- */
-export const set_add = (s: any, v: any): any => {
-  if (s instanceof Set || s instanceof WeakSet) {
-    s.add(v)
-    return s
-  }
-  if (s && typeof s.add === 'function') {
-    s.add(v)
-    return s
-  }
-  if (Array.isArray(s)) {
-    if (!s.includes(v)) s.push(v)
-    return s
-  }
-  throw new Error('set.add(x): x is not a set or list')
-}
-
-export const set_discard = (s: any, v: any): any => {
-  if (s instanceof Set || s instanceof WeakSet) {
-    s.delete(v)
-    return s
-  }
-  if (s && typeof s.remove === 'function') {
-    s.remove(v)
-    return s
-  }
-  if (s && typeof s.delete === 'function') {
-    s.delete(v)
-    return s
-  }
-  if (Array.isArray(s)) {
-    const i = s.indexOf(v)
-    if (i >= 0) s.splice(i, 1)
-    return s
-  }
-  throw new Error('set.discard(x): x is not a set or list')
-}
-
-/** `max(xs, key=f)` / `min(xs, key=f)` */
-export function max_by<T,>(xs: T[], key: (x: T) => number): T | null {
-  if (xs.length === 0) return null
-  let best = xs[0]
-  let bestKey = key(best)
-  for (const x of xs) {
-    const k = key(x)
-    if (k > bestKey) {
-      best = x
-      bestKey = k
-    }
-  }
-  return best
-}
-
-export function min_by<T,>(xs: T[], key: (x: T) => number): T | null {
-  if (xs.length === 0) return null
-  let best = xs[0]
-  let bestKey = key(best)
-  for (const x of xs) {
-    const k = key(x)
-    if (k < bestKey) {
-      best = x
-      bestKey = k
-    }
-  }
-  return best
-}
-
-/**
- * `max(xs)` / `min(xs)` — ONE sequence.
- *
- * The compiler used to spread the argument into `Math.max(...xs)`. For a plain
- * array that answers correctly; for a Set, a string, a generator or the result of
- * `range(n)` it spreads nothing useful and returns NaN silently. Taking the
- * sequence and iterating is the same answer for the array case and a real answer
- * for the rest.
- *
- * An empty sequence is a ValueError, exactly as in Python — returning `-Infinity`
- * would let the NaN-shaped bug back in through a different door.
- */
-export function max_of(xs: any): any {
-  const arr = Array.isArray(xs) ? xs : [...(xs as Iterable<any>)]
-  if (arr.length === 0) throw new ValueError('max() arg is an empty sequence')
-  return arr.reduce((a, b) => (b > a ? b : a))
-}
-
-export function min_of(xs: any): any {
-  const arr = Array.isArray(xs) ? xs : [...(xs as Iterable<any>)]
-  if (arr.length === 0) throw new ValueError('min() arg is an empty sequence')
-  return arr.reduce((a, b) => (b < a ? b : a))
-}
-
-/** `first(xs, fallback)` */
-export const first_or = <T,>(xs: T[], fallback: T): T =>
-  xs.length > 0 ? xs[0] : fallback
-
-/** Extra string predicates Python has and JS does not. */
-export const isAlnum = (s: string): boolean => /^[a-zA-Z0-9]+$/.test(s)
-export const isSpace = (s: string): boolean => /^\s+$/.test(s)
-export const isUpper = (s: string): boolean => s === s.toUpperCase() && /[A-Z]/.test(s)
-export const isLower = (s: string): boolean => s === s.toLowerCase() && /[a-z]/.test(s)
-export const center = (s: string, width: number, fill: string = ' '): string => {
-  const pad = Math.max(0, width - s.length)
-  const left = Math.floor(pad / 2)
-  return fill.repeat(left) + s + fill.repeat(pad - left)
-}
-export const ljust = (s: string, width: number, fill: string = ' '): string =>
-  s + fill.repeat(Math.max(0, width - s.length))
-export const rjust = (s: string, width: number, fill: string = ' '): string =>
-  fill.repeat(Math.max(0, width - s.length)) + s
-export const swapcase = (s: string): string =>
-  s.replace(/[a-zA-Z]/g, (c) => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()))
-export const str_partition = (s: string, sep: string): [string, string, string] => {
-  const i = s.indexOf(sep)
-  return i < 0 ? [s, '', ''] : [s.slice(0, i), sep, s.slice(i + sep.length)]
-}
-export const str_rpartition = (s: string, sep: string): [string, string, string] => {
-  const i = s.lastIndexOf(sep)
-  return i < 0 ? ['', '', s] : [s.slice(0, i), sep, s.slice(i + sep.length)]
-}
-
-/* ------------------------------------------------------------- string helpers
- *
- * Python string methods with no exact JS equivalent. The compiler rewrites
- * `s.capitalize()` to `capitalize(s)`, so these are free functions rather than
- * prototype patches — never mutate a built-in.
- */
-
-/**
- * `isinstance(x, int)` -> `isinstance(x, Number)`
- *
- * The compiler maps Python type names to their JS constructors and routes them
- * here, rather than inlining `typeof` checks: `typeof null === 'object'` and
- * `typeof [] === 'object'` are exactly the surprises this is meant to avoid,
- * and a Python developer writing `isinstance` expects Python's answer.
- */
-export function isinstance(x: unknown, type: unknown): boolean {
-  if (type === Number) return typeof x === 'number' && Number.isFinite(x)
-  if (type === String) return typeof x === 'string'
-  if (type === Boolean) return typeof x === 'boolean'
-  if (type === Array) return Array.isArray(x)
-  if (type === Object) return typeof x === 'object' && x !== null && !Array.isArray(x)
-  if (type === null || type === undefined) return x === null || x === undefined
-  if (typeof type === 'function') {
-    try {
-      return x instanceof (type as new (...a: unknown[]) => unknown)
-    } catch {
-      return false
-    }
-  }
-  return false
-}
-
-/** `"hello world".capitalize()` -> `"Hello world"` */
-export const capitalize = (s: string): string =>
-  s.length === 0 ? s : s[0].toUpperCase() + s.slice(1).toLowerCase()
-
-/** `"hello world".title()` -> `"Hello World"` */
-export const title = (s: string): string =>
-  s.replace(/\w\S*/g, (w) => w[0].toUpperCase() + w.slice(1).toLowerCase())
-
-/** `xs.count(x)` — Python counts occurrences, JS has no equivalent. */
-export const count = <T,>(xs: T[], value: T): number =>
-  xs.reduce((n, x) => (x === value ? n + 1 : n), 0)
-
-/** `"{} and {}".format(a, b)` -> `format("{} and {}", a, b)` */
-export const format = (template: string, ...args: unknown[]): string => {
-  let i = 0
-  return template.replace(/\{\}/g, () => String(args[i++] ?? ''))
-}
-
-/** `s.zfill(5)` -> `zfill(s, 5)` */
-export const zfill = (s: string, width: number): string => s.padStart(width, '0')
-
-/** `s.isdigit()` */
-export const isDigit = (s: string): boolean => /^\d+$/.test(s)
-
-/** `s.isalpha()` */
-export const isAlpha = (s: string): boolean => /^[a-zA-Z]+$/.test(s)
-
-/* ------------------------------------------------------------- styling helpers */
-
-/**
- * `cx(...args)` — lightweight class combining for `.hsx`.
- * Handles strings, arrays, and boolean object dictionaries (`{"btn": true, "active": false}`).
- */
-export function cx(...args: unknown[]): string {
-  const classes: string[] = []
-  for (const arg of args) {
-    if (!arg) continue
-    if (typeof arg === 'string') {
-      classes.push(arg)
-    } else if (Array.isArray(arg)) {
-      const inner = cx(...arg)
-      if (inner) classes.push(inner)
-    } else if (typeof arg === 'object') {
-      for (const [k, v] of Object.entries(arg as Record<string, unknown>)) {
-        if (v) classes.push(k)
-      }
-    }
-  }
-  return classes.join(' ')
-}
-
-// [xihanzu-NR]
 /* --------------------------------------------------- SaaS routing & hydration */
 
 /**
- * `mount(component, element)`
- * Hydrates if server-rendered child elements exist, otherwise creates a fresh root and renders.
+ * Hydrate (or create) the root, after making sure the matched route's chunk is
+ * in hand.
+ *
+ * Code splitting made this necessary: a route's component now arrives as a
+ * dynamic import, and `hydrateRoot` runs SYNCHRONOUSLY. Hydrating before the
+ * chunk resolves renders the loading fallback over server HTML that contains
+ * the real page, which React reports as #418 (server/client mismatch) and then
+ * #423 (it gave up and re-rendered the tree). Both were observed on a
+ * scaffolded app the first time splitting was turned on — the page LOOKED
+ * right after a moment, which is exactly the kind of "works" that hides a
+ * broken first paint.
+ *
+ * So the chunk is fetched first and the result is put where `Router` looks
+ * synchronously. If the project has no split chunks (the server bundle, a
+ * bundled-without-splitting build), none of this runs.
  */
 export function mount(component: any, element: HTMLElement | null) {
   if (!element) return null
-  const node = typeof component === 'function' && !React.isValidElement(component)
-    ? React.createElement(component)
-    : component
-  if (element.hasChildNodes() && element.children.length > 0) {
-    return ReactDOM.hydrateRoot(element, node)
-  } else {
+  const table = (() => {
+    try {
+      return get_route_table_sync()
+    } catch {
+      return null
+    }
+  })()
+  // `Object.keys(...).length` rather than a truthiness test: an EMPTY
+  // `lazyPages` object is falsy only by luck, and it is emitted for every
+  // project (empty when the build does not split). A project without splitting
+  // has static components in `pages`, so it must take the plain path.
+  const split = Boolean(table && table.lazyPages && Object.keys(table.lazyPages).length > 0)
+  const route = split && table ? core_match_route(location_path(), table.routes) : null
+  const pattern = route ? route.route.pattern : null
+  const chunk = pattern && table && table.lazyPages ? table.lazyPages[pattern] : null
+
+  const hydrate = () => {
+    const node = typeof component === 'function' && !React.isValidElement(component)
+      ? React.createElement(component)
+      : component
+    if (element.hasChildNodes() && element.children.length > 0) {
+      return ReactDOM.hydrateRoot(element, node)
+    }
     const root = ReactDOM.createRoot(element)
     root.render(node)
     return root
   }
+
+  if (typeof chunk !== 'function') return hydrate()
+
+  // The chunk arrives, then the tree hydrates against the HTML that was
+  // rendered from the same component. No fallback paint in between.
+  chunk()
+    .then((mod: any) => {
+      const picked = core_pick_page(mod)
+      if (picked && pattern) {
+        primed_pages[pattern] = picked
+        // The same object the generated table holds, so `Router` reads it on
+        // the first render. Two maps would be two chances to disagree, and the
+        // first paint is where that disagreement is fatal.
+        if (table && table.primedPages) table.primedPages[pattern] = picked
+      }
+    })
+    .catch((err: any) => {
+      // A chunk that will not load is a blank page with no explanation
+      // anywhere; say which route, then hydrate anyway so the app's own error
+      // boundary gets a chance to show something.
+      console.error(`[hydra] could not load the chunk for ${pattern}:`, err)
+    })
+    .finally(hydrate)
+
+  // A root handle is returned synchronously for callers that keep one. Rendering
+  // starts after the chunk; the object is the live root either way.
+  return null
+}
+
+/** The current path, without a query string or hash. */
+function location_path(): string {
+  if (typeof window === 'undefined') return '/'
+  return window.location.pathname || '/'
 }
 
 /**
@@ -1208,6 +396,12 @@ export function use_path(): string {
     // The pre-render pass walks several URLs with one module instance, so the
     // path it is currently rendering wins over `window.location` — which in SSG
     // is a stub that never changes.
+    //
+    // PATH only, never the query string: `use_path()` is the value callers
+    // compare against `"/about"`, and the query is `use_query_string()`'s job.
+    // The seed's `path` is the route PATTERN, so `url` is split here to keep a
+    // render on `/blog?page=2` from looking like a different route.
+    if (ssr_seed && ssr_seed.url) return ssr_seed.url.split('#')[0].split('?')[0]
     if (ssr_seed && ssr_seed.path) return ssr_seed.path
     if (typeof window === 'undefined') return '/'
     return (window.location.pathname !== '/' ? window.location.pathname : window.location.hash) || '/'
@@ -1342,6 +536,22 @@ export interface RouteTable {
   pageLayouts: Record<string, any[]>
   /** pattern -> the nearest `_error` component, or null. */
   pageErrors: Record<string, any>
+  /**
+   * pattern -> `() => import('./Page.hyx')`, for the client bundle.
+   *
+   * With code splitting, `pages` is empty in the browser and each route's chunk
+   * is fetched on demand. The server bundle keeps `pages` filled, because it
+   * renders synchronously and cannot await a chunk mid-render.
+   */
+  lazyPages?: Record<string, () => Promise<any>>
+  /**
+   * pattern -> the component a chunk resolved to, written by `mount()` BEFORE
+   * `hydrateRoot` and read by `Router` on its first render.
+   *
+   * Separate from `lazyPages` on purpose: an importer and a component are both
+   * functions, so one map cannot answer "is this fetched yet" without guessing.
+   */
+  primedPages?: Record<string, any>
   /** The `_404` component, or null. */
   notFound: any
   hasNotFound: boolean
@@ -1369,6 +579,8 @@ export interface RouteTable {
 export interface SsrSeed {
   table: RouteTable
   path?: string
+  /** The full URL being rendered, query included. `path` is the pattern. */
+  url?: string
   /** What the route's loader returned, for the page it renders. */
   data?: Record<string, any> | null
 }
@@ -1395,6 +607,8 @@ function readGeneratedTable(): RouteTable {
   return {
     routes: m.routes || [],
     pages: m.pages || {},
+    lazyPages: m.lazyPages || {},
+    primedPages: m.primedPages || {},
     pageLayouts: m.pageLayouts || {},
     pageErrors: m.pageErrors || {},
     notFound: m.notFound || null,
@@ -1818,8 +1032,40 @@ export function Router(props: RouterProps) {
     // exports when it builds the map. Calling `pick` again here asked a
     // COMPONENT for a default export and got null, so every pre-rendered page
     // rendered an empty `<main>` while its data sat correctly beside it.
-    return (table && table.pages[pattern]) || null
+    // A resolved chunk replaces its importer in `lazyPages` (see `mount`), so
+    // this slot answers for both: a static component, or one already fetched.
+    // The first paint MUST see the component: server HTML contains the page, and
+    // rendering a fallback in its place is React #418 and then #423.
+    const primed = table && table.primedPages ? table.primedPages[pattern] : null
+    return (table && table.pages[pattern]) || primed || null
   }, [pattern, components, table])
+
+  // Code splitting: `pages` is empty in the browser and the route's module is a
+  // chunk that has not been fetched yet. This resolves it once and caches the
+  // component, so a second visit to the same route does not re-import.
+  const [lazy, setLazy] = useState<{ pattern: string; component: any } | null>(null)
+  useEffect(() => {
+    if (!pattern || page || !table || !table.lazyPages) return
+    const load = table.lazyPages[pattern]
+    if (typeof load !== 'function') return
+    let cancelled = false
+    load()
+      .then((mod: any) => {
+        if (cancelled) return
+        const picked = core_pick_page(mod)
+        if (picked) setLazy({ pattern, component: picked })
+      })
+      .catch((err: any) => {
+        // A chunk that fails to load is a blank page with no explanation; say
+        // which route and which error rather than leaving an empty tree.
+        console.error(`[hydra] could not load the chunk for ${pattern}:`, err)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [pattern, page, table])
+
+  const effectivePage = page || (lazy && lazy.pattern === pattern ? lazy.component : null)
 
   // Where the page's props come from. Three cases, and the order matters:
   //
@@ -1889,8 +1135,8 @@ export function Router(props: RouterProps) {
     pageProps.error = live.error
   }
 
-  const body = page
-    ? wrapInLayouts(React.createElement(page, pageProps), layoutChain)
+  const body = effectivePage
+    ? wrapInLayouts(React.createElement(effectivePage, pageProps), layoutChain)
     : ((loading as any) ?? null)
 
   return React.createElement(
@@ -2302,12 +1548,7 @@ export const validators = {
   },
 }
 
-// [xihanzu-NR]
 /* ----------------------------------------------------------- async & timing */
-
-/** `await sleep(300)` — pause, without setTimeout's callback shape. */
-export const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms))
 
 /**
  * `use_interval(lambda: tick(), 1000)`
@@ -2732,377 +1973,12 @@ export function scroll_to(
 }
 
 // [xihanzu-NR]
-/* ----------------------------------------------------------------- numbers
- *
- * Python hands you round(), min/max clamping, and f-string formatting. JS
- * hands you `Math.round(3.5) === 4` but `(-3.5).toFixed(0) === "-4"`, and no
- * currency formatting at all. These are the missing verbs.
- */
-
-/** `clamp(x, 0, 100)` — constrain to a range. Handles min > max gracefully. */
-export const clamp = (x: number, lo: number, hi: number): number =>
-  Math.min(Math.max(x, Math.min(lo, hi)), Math.max(lo, hi))
-
-/** `lerp(0, 100, 0.25)` -> 25 — linear interpolation, `t` not clamped. */
-export const lerp = (a: number, b: number, t: number): number => a + (b - a) * t
-
-/**
- * `round(x)` / `round(x, n)` — Python's rounding, which is NOT `Math.round`.
- *
- * Python rounds a tie to the EVEN digit (`round(2.5)` is 2, `round(3.5)` is 4)
- * and judges that tie against the double's exact value; `Math.round` rounds
- * halfway cases up, so `round(2.5)` came out 3. Same disagreement `py_fixed`
- * settles for formatting, and the same reason: it shows up on money.
- *
- * `toFixed` is what makes the expansion usable — a double's exact decimal needs
- * at most ~767 fraction digits, so 100 separates a real tie from a near one.
- */
-export const round_to = (x: number, digits: number = 0): number => {
-  const v = Number(x)
-  if (!Number.isFinite(v)) return v
-  const n = Math.max(0, Math.trunc(digits))
-  // `toFixed` is authoritative here only as a decimal expansion; the tie
-  // decision below is made from the digits, not from its rounding.
-  // `toFixed` caps at 100 digits TOTAL, so the expansion budget shrinks as the
-  // requested precision grows. 100 is still far past any real tie.
-  const plain = Math.abs(v).toFixed(Math.min(100, n + 100))
-  const dot = plain.indexOf('.')
-  const keep = plain.slice(0, dot) + plain.slice(dot + 1, dot + 1 + n)
-  const rest = plain.slice(dot + 1 + n)
-  const isTie = rest[0] === '5' && /^0*$/.test(rest.slice(1))
-  const up = rest[0] > '5' || (isTie && Number(keep[keep.length - 1]) % 2 === 1)
-  const bumped = (BigInt(keep) + (up ? 1n : 0n)).toString()
-  const cut = bumped.length - n
-  const out = Number(cut > 0 ? bumped.slice(0, cut) + '.' + bumped.slice(cut) : '0.' + bumped.padStart(n, '0'))
-  return v < 0 || Object.is(v, -0) ? -out : out
-}
-
-/** `round(x)` — Python's one-argument form. */
-export const round_py = (x: number): number => round_to(x, 0)
-
-/**
- * `int(x)` — Python's constructor, which RAISES on a string it cannot parse.
- *
- * `parseInt` was what the compiler emitted before, and the two disagree on the
- * cases that matter: `parseInt("3.9")` is 3 (Python raises), `parseInt("12px")`
- * is 12 (Python raises), and `parseInt(3.9)` on a float is fine in both. The
- * difference is not cosmetic — a silent 12 from "12px" is a corrupt number that
- * travels.
- */
-export function int(x: any, base: number = 10): number {
-  if (typeof x === 'number') {
-    if (!Number.isFinite(x)) throw new ValueError(`cannot convert ${x} to int`)
-    return Math.trunc(x)
-  }
-  if (typeof x === 'boolean') return x ? 1 : 0
-  if (x === null || x === undefined) throw new TypeError(`int() argument must be a string or a number, not ${x}`)
-  const s = String(x).trim()
-  const re = base === 16 ? /^[+-]?[0-9a-fA-F]+$/ : base === 8 ? /^[+-]?[0-7]+$/ : base === 2 ? /^[+-]?[01]+$/ : /^[+-]?\d+$/
-  if (!re.test(s)) throw new ValueError(`invalid literal for int() with base ${base}: ${JSON.stringify(String(x))}`)
-  return parseInt(s, base)
-}
-
-/**
- * `float(x)` — Python's constructor. `parseFloat("1.5abc")` is 1.5; Python
- * raises. Also accepts `inf`/`nan`, which `parseFloat` spells differently.
- */
-export function float(x: any): number {
-  if (typeof x === 'number') return x
-  if (typeof x === 'boolean') return x ? 1 : 0
-  if (x === null || x === undefined) throw new TypeError(`float() argument must be a string or a number, not ${x}`)
-  const s = String(x).trim()
-  const low = s.toLowerCase()
-  if (low === 'inf' || low === '+inf' || low === 'infinity') return Infinity
-  if (low === '-inf' || low === '-infinity') return -Infinity
-  if (low === 'nan') return NaN
-  if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s)) {
-    throw new ValueError(`could not convert string to float: ${JSON.stringify(String(x))}`)
-  }
-  return Number(s)
-}
-
-/** `format_number(1234567.891, "en-US")` -> "1,234,567.891" */
-export const format_number = (n: number, locale: string = 'en-US', options?: Intl.NumberFormatOptions): string =>
-  new Intl.NumberFormat(locale, options).format(n)
-
-/** `format_currency(1234.5)` -> "$1,234.50" (USD unless told otherwise). */
-export const format_currency = (n: number, currency: string = 'USD', locale: string = 'en-US'): string =>
-  new Intl.NumberFormat(locale, { style: 'currency', currency }).format(n)
-
-/** `format_percent(0.1234, 1)` -> "12.3%" — input is a fraction, like Python's `{:.1%}`. */
-export const format_percent = (x: number, digits: number = 0, locale: string = 'en-US'): string =>
-  new Intl.NumberFormat(locale, { style: 'percent', minimumFractionDigits: digits, maximumFractionDigits: digits }).format(x)
-
-/** `random_int(1, 6)` — inclusive on BOTH ends, like `random.randint`. */
-export const random_int = (min: number, max: number): number =>
-  Math.floor(Math.random() * (max - min + 1)) + min
-
-/**
- * `parse_number("1,234.5")` -> 1234.5
- * Strips currency symbols, thousands separators, and a trailing %, which is
- * what an <input type="text"> actually contains. Returns `fallback` on
- * anything unparseable rather than NaN.
- */
-export function parse_number(s: string | number | null | undefined, fallback: number | null = null): number | null {
-  if (typeof s === 'number') return Number.isFinite(s) ? s : fallback
-  if (s == null) return fallback
-  const cleaned = String(s).replace(/[^0-9.eE+-]/g, '')
-  const n = parseFloat(cleaned)
-  return Number.isFinite(n) ? n : fallback
-}
-
-// [xihanzu-NR]
-/* ----------------------------------------------------------------- strings */
-
-/**
- * Split into words at case boundaries AND separators, preserving case.
- *
- * This is the one place the four case functions get their input, which is what
- * makes them agree: "hello world", "helloWorld", "hello_world" and
- * "hello-world" all produce the same four words, so all four styles round-trip.
- */
-const split_words_raw = (s: string): string[] =>
-  String(s ?? '')
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')  // HTTPServer -> HTTP Server
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')     // helloWorld  -> hello World
-    .split(/[^a-zA-Z0-9]+/)
-    .filter(Boolean)
-
-/** `[w.lower() for w in ...]` — the words of a name, lowercased. */
-const split_words = (s: string): string[] => split_words_raw(s).map((w) => w.toLowerCase())
-
-/** `words("helloWorld")` -> ["hello", "World"] — case preserved. */
-export const words = (s: string): string[] => split_words_raw(s)
-
-/** `slugify("Hello World!")` -> "hello-world" — URL-safe, ASCII. */
-export const slugify = (s: string): string => split_words(s).join('-')
-
-/**
- * `truncate("a long title", 10)` -> "a long ti…"
- * `n` is the TOTAL length including the ellipsis, so the result never
- * overflows a container sized for `n` characters.
- */
-export const truncate = (s: string, n: number, end: string = '…'): string => {
-  const str = String(s ?? '')
-  if (str.length <= n) return str
-  if (n <= end.length) return end.slice(0, Math.max(0, n))
-  return str.slice(0, n - end.length) + end
-}
-
-/** `camel_case("hello world")` -> "helloWorld" */
-export const camel_case = (s: string): string =>
-  split_words(s).reduce((out, w, i) => out + (i === 0 ? w : w[0].toUpperCase() + w.slice(1)), '')
-
-/** `snake_case("helloWorld")` -> "hello_world" */
-export const snake_case = (s: string): string => split_words(s).join('_')
-
-/** `kebab_case("helloWorld")` -> "hello-world" */
-export const kebab_case = (s: string): string => split_words(s).join('-')
-
-/** `pascal_case("hello_world")` -> "HelloWorld" */
-export const pascal_case = (s: string): string =>
-  split_words(s).map((w) => w[0].toUpperCase() + w.slice(1)).join('')
-
-/** `pluralize(1, "item")` -> "1 item"; `pluralize(3, "item")` -> "3 items". */
-export const pluralize = (n: number, one: string, many?: string): string =>
-  `${n} ${n === 1 ? one : many ?? one + 's'}`
-
-/** `possessive("Hanz")` -> "Hanz's"; `possessive("Chris")` -> "Chris'". */
-export const possessive = (s: string): string =>
-  /s$/i.test(String(s ?? '')) ? `${s}'` : `${s}'s`
-
-/** `mask("4111111111111234", 4)` -> "************1234" — keeps the last `keep`. */
-export const mask = (s: string, keep: number = 4): string => {
-  const str = String(s ?? '')
-  if (str.length <= keep) return str
-  return '*'.repeat(str.length - keep) + str.slice(str.length - keep)
-}
-
-/** `strip_html("<b>hi</b>")` -> "hi" — for rendering user HTML as text. */
-export const strip_html = (s: string): string =>
-  String(s ?? '')
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<[^>]*>/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-
-/** `escape_html("<b>")` -> "&lt;b&gt;" — the safe way to show markup as text. */
-export const escape_html = (s: string): string =>
-  String(s ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-
-/** `format_bytes(1536)` -> "1.5 KiB" — binary units, one decimal. */
-export function format_bytes(n: number, digits: number = 1): string {
-  if (!Number.isFinite(n)) return '0 B'
-  const neg = n < 0
-  let v = Math.abs(n)
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB']
-  let i = 0
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024
-    i++
-  }
-  const out = i === 0 ? `${Math.round(v)} B` : `${round_to(v, digits)} ${units[i]}`
-  return neg ? `-${out}` : out
-}
-
-/** `format_duration(3661)` -> "1h 1m 1s" — compact, drops leading zero units. */
-export function format_duration(seconds: number): string {
-  if (!Number.isFinite(seconds)) return '0s'
-  const neg = seconds < 0
-  let s = Math.floor(Math.abs(seconds))
-  const d = Math.floor(s / 86400); s -= d * 86400
-  const h = Math.floor(s / 3600); s -= h * 3600
-  const m = Math.floor(s / 60); s -= m * 60
-  const parts: string[] = []
-  if (d) parts.push(`${d}d`)
-  if (h) parts.push(`${h}h`)
-  if (m) parts.push(`${m}m`)
-  // Always show seconds unless a larger unit is present and seconds are zero —
-  // "1h 0m" reads worse than "1h".
-  if (s || parts.length === 0) parts.push(`${s}s`)
-  return (neg ? '-' : '') + parts.join(' ')
-}
-
-// [xihanzu-NR]
-/* ------------------------------------------------------------------ arrays
- *
- * All of these are non-mutating, matching Python's list comprehensions rather
- * than JS's `sort`/`splice` in-place surprises.
- */
-
-/** `unique([1, 1, 2])` -> [1, 2] — first occurrence wins, order preserved. */
-export const unique = <T,>(xs: T[]): T[] => Array.from(new Set(xs))
-
-/** `unique_by(users, lambda u: u.id)` — dedupe by a derived key. */
-export function unique_by<T, K>(xs: T[], fn: (x: T) => K): T[] {
-  const seen = new Set<K>()
-  const out: T[] = []
-  for (const x of xs) {
-    const k = fn(x)
-    if (!seen.has(k)) {
-      seen.add(k)
-      out.push(x)
-    }
-  }
-  return out
-}
-
-/** `chunk([1,2,3,4,5], 2)` -> [[1,2],[3,4],[5]] — last chunk may be short. */
-export function chunk<T>(xs: T[], n: number): T[][] {
-  if (n <= 0) return []
-  const out: T[][] = []
-  for (let i = 0; i < xs.length; i += n) out.push(xs.slice(i, i + n))
-  return out
-}
-
-/** `flatten([1, [2, [3]]])` -> [1, 2, 3] — fully recursive, unlike `Array.flat()`. */
-export function flatten<T>(xs: any[]): T[] {
-  const out: T[] = []
-  for (const x of xs) {
-    if (Array.isArray(x)) out.push(...flatten<T>(x))
-    else out.push(x as T)
-  }
-  return out
-}
-
-/** `group_by(people, lambda p: p.city)` -> {London: [...], Paris: [...]} */
-export function group_by<T, K extends string | number>(
-  xs: T[],
-  fn: (x: T) => K
-): Record<K, T[]> {
-  const out = {} as Record<K, T[]>
-  for (const x of xs) {
-    const k = fn(x)
-    if (!out[k]) out[k] = []
-    out[k].push(x)
-  }
-  return out
-}
-
-/** `partition(nums, lambda n: n > 0)` -> [[positives], [rest]] — like Python's. */
-export function partition<T>(xs: T[], fn: (x: T) => boolean): [T[], T[]] {
-  const yes: T[] = []
-  const no: T[] = []
-  for (const x of xs) (fn(x) ? yes : no).push(x)
-  return [yes, no]
-}
-
-/** `first(xs)` -> xs[0] or None — no `undefined` leaking into the render. */
-export const first = <T,>(xs: T[], fallback: T | null = null): T | null =>
-  xs && xs.length > 0 ? xs[0] : fallback
-
-/** `last(xs)` -> xs[-1] or None. */
-export const last = <T,>(xs: T[], fallback: T | null = null): T | null =>
-  xs && xs.length > 0 ? xs[xs.length - 1] : fallback
-
-/** `compact([0, 1, None, "", 2])` -> [1, 2] — drops Python-falsy values. */
-export const compact = <T,>(xs: T[]): T[] => xs.filter((x) => truthy(x))
-
-/** `sort_by(users, lambda u: u.age)`; add `desc=True` for descending. */
-export function sort_by<T>(xs: T[], fn: (x: T) => any, desc: boolean = false): T[] {
-  return xs.slice().sort((a, b) => {
-    const ka = fn(a)
-    const kb = fn(b)
-    // null/undefined sort last in ascending order rather than throwing.
-    if (ka == null && kb == null) return 0
-    if (ka == null) return 1
-    if (kb == null) return -1
-    const cmp = ka < kb ? -1 : ka > kb ? 1 : 0
-    return desc ? -cmp : cmp
-  })
-}
-
-/** `shuffle(xs)` — Fisher-Yates on a copy; the input is untouched. */
-export function shuffle<T>(xs: T[]): T[] {
-  const out = xs.slice()
-  for (let i = out.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    ;[out[i], out[j]] = [out[j], out[i]]
-  }
-  return out
-}
-
-/** `sample(xs)` — one random element, or None when the list is empty. */
-export const sample = <T,>(xs: T[]): T | null =>
-  xs && xs.length > 0 ? xs[Math.floor(Math.random() * xs.length)] : null
-
-/** `zip_dict(["a", "b"], [1, 2])` -> {a: 1, b: 2} — truncated to the shorter. */
-export function zip_dict<K extends string | number, V>(keys: K[], values: V[]): Record<K, V> {
-  const out = {} as Record<K, V>
-  const n = Math.min(keys.length, values.length)
-  for (let i = 0; i < n; i++) out[keys[i]] = values[i]
-  return out
-}
-
-// [xihanzu-NR]
 /* ----------------------------------------------------------------- objects
  *
  * Dict verbs Python has and JS expresses with twelve characters of spread
  * syntax. Everything here is non-mutating: `set_path` returns a NEW object,
  * because mutation is the thing React cannot see.
  */
-
-/** `pick(user, ["id", "name"])` — a new object with only those keys. */
-export function pick<T extends object, K extends keyof T>(obj: T, keys: K[]): Pick<T, K> {
-  const out = {} as Pick<T, K>
-  if (obj == null) return out
-  for (const k of keys) if (k in obj) out[k] = obj[k]
-  return out
-}
-
-/** `omit(user, ["password"])` — a new object without those keys. */
-export function omit<T extends object, K extends keyof T>(obj: T, keys: K[]): Omit<T, K> {
-  const out = { ...(obj as any) }
-  if (out == null) return out as Omit<T, K>
-  for (const k of keys) delete out[k as any]
-  return out as Omit<T, K>
-}
 
 /** `merge({a: 1}, {b: 2})` -> {a: 1, b: 2} — SHALLOW: `b` wins per top-level key. */
 export function merge<A extends object, B extends object>(a: A, b: B): A & B {
@@ -3112,51 +1988,6 @@ export function merge<A extends object, B extends object>(a: A, b: B): A & B {
 const is_plain_object = (x: unknown): x is Record<string, any> =>
   typeof x === 'object' && x !== null && !Array.isArray(x) &&
   (Object.getPrototypeOf(x) === Object.prototype || Object.getPrototypeOf(x) === null)
-
-/**
- * `deep_merge(defaults, overrides)` — recursive; nested objects merge rather
- * than replace, arrays and scalars replace. Returns a new object, cloning the
- * branches it descends into so neither input is mutated.
- */
-export function deep_merge<A extends object, B extends object>(a: A, b: B): A & B {
-  const out: Record<string, any> = { ...(a as any) }
-  for (const [k, v] of Object.entries(b as any)) {
-    const prev = out[k]
-    out[k] = is_plain_object(prev) && is_plain_object(v) ? deep_merge(prev, v) : v
-  }
-  return out as A & B
-}
-
-/** `deep_clone(x)` — structuredClone when the platform has it (no function/Date loss). */
-export function deep_clone<T>(x: T): T {
-  if (typeof structuredClone === 'function') {
-    try {
-      return structuredClone(x)
-    } catch {
-      // Functions, DOM nodes and class instances are not cloneable — fall through.
-    }
-  }
-  if (x === null || typeof x !== 'object') return x
-  if (Array.isArray(x)) return x.map((v) => deep_clone(v)) as unknown as T
-  if (x instanceof Date) return new Date(x.getTime()) as unknown as T
-  if (x instanceof Map) return new Map(Array.from(x, ([k, v]) => [k, deep_clone(v)])) as unknown as T
-  if (x instanceof Set) return new Set(Array.from(x, (v) => deep_clone(v))) as unknown as T
-  const out: Record<string, any> = {}
-  for (const k of Object.keys(x as any)) out[k] = deep_clone((x as any)[k])
-  return out as T
-}
-
-/**
- * `is_empty(x)` — true for None, "", [], {} and empty Map/Set; FALSE for 0 and
- * False. Numbers and booleans always have a value, so "empty" cannot apply.
- */
-export function is_empty(x: unknown): boolean {
-  if (x == null) return true
-  if (typeof x === 'string' || Array.isArray(x)) return x.length === 0
-  if (x instanceof Map || x instanceof Set) return x.size === 0
-  if (typeof x === 'object') return Object.keys(x as object).length === 0
-  return false
-}
 
 /** `get_path(data, "user.address.city", "unknown")` — no throw on a missing branch. */
 export function get_path<T = any>(obj: any, path: string, fallback: T | null = null): T | null {
@@ -3191,31 +2022,6 @@ export function set_path<T>(obj: T, path: string, value: any): T {
   }
   cur[parts[parts.length - 1]] = value
   return root as T
-}
-
-/**
- * `equals(a, b)` — structural comparison, so `{a: 1}` equals `{a: 1}`.
- * Compares Dates by time and treats NaN as equal to NaN, both of which `===`
- * gets wrong and both of which show up the moment you compare fetched data.
- */
-export function equals(a: any, b: any): boolean {
-  if (a === b) return true
-  if (typeof a === 'number' && typeof b === 'number') return Number.isNaN(a) && Number.isNaN(b)
-  if (a == null || b == null) return a === b
-  if (a instanceof Date || b instanceof Date) {
-    return a instanceof Date && b instanceof Date && a.getTime() === b.getTime()
-  }
-  if (Array.isArray(a) || Array.isArray(b)) {
-    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
-    return a.every((v, i) => equals(v, b[i]))
-  }
-  if (typeof a === 'object' && typeof b === 'object') {
-    const ka = Object.keys(a)
-    const kb = Object.keys(b)
-    if (ka.length !== kb.length) return false
-    return ka.every((k) => Object.prototype.hasOwnProperty.call(b, k) && equals(a[k], b[k]))
-  }
-  return false
 }
 
 // [xihanzu-NR]
@@ -3358,123 +2164,7 @@ export function use_visibility(): boolean {
   return visible
 }
 
-/** `uuid()` — a v4 UUID via the platform RNG, with a fallback for old browsers. */
-export function uuid(): string {
-  const c = typeof crypto !== 'undefined' ? (crypto as Crypto) : undefined
-  if (c && typeof c.randomUUID === 'function') return c.randomUUID()
-  if (c && typeof c.getRandomValues === 'function') {
-    const b = c.getRandomValues(new Uint8Array(16))
-    b[6] = (b[6] & 0x0f) | 0x40
-    b[8] = (b[8] & 0x3f) | 0x80
-    const hex = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
-    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
-  }
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (ch) => {
-    const r = (Math.random() * 16) | 0
-    return (ch === 'x' ? r : (r & 0x3) | 0x8).toString(16)
-  })
-}
-
-/** `random_id("item")` -> "item-k3f9a2x1" — for DOM ids and list keys. */
-export const random_id = (prefix: string = 'id'): string =>
-  `${prefix}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
-
 type AnyFn = (...a: any[]) => any
-
-/**
- * `save = debounced_fn(lambda v: api.save(v), 500)` — trailing-edge debounce for
- * event handlers (as opposed to `use_debounced`, which debounces a value).
- * `.cancel()` and `.flush()` are attached for the cases that need them.
- */
-export function debounced_fn<F extends AnyFn>(
-  fn: F,
-  ms: number = 300
-): F & { cancel: () => void; flush: () => void } {
-  let timer: ReturnType<typeof setTimeout> | null = null
-  let pending: any[] | null = null
-  const wrapped = ((...args: any[]) => {
-    pending = args
-    if (timer) clearTimeout(timer)
-    timer = setTimeout(() => {
-      timer = null
-      const a = pending
-      pending = null
-      if (a) fn(...a)
-    }, ms)
-  }) as F & { cancel: () => void; flush: () => void }
-  wrapped.cancel = () => {
-    if (timer) clearTimeout(timer)
-    timer = null
-    pending = null
-  }
-  wrapped.flush = () => {
-    if (timer) clearTimeout(timer)
-    timer = null
-    const a = pending
-    pending = null
-    if (a) fn(...a)
-  }
-  return wrapped
-}
-
-/**
- * `on_scroll = throttled_fn(handler, 100)` — leading + trailing throttle.
- * The first call runs immediately; calls during the window collapse into one.
- */
-export function throttled_fn<F extends AnyFn>(fn: F, ms: number = 100): F {
-  let last = 0
-  let timer: ReturnType<typeof setTimeout> | null = null
-  let pending: any[] | null = null
-  return ((...args: any[]) => {
-    const now = Date.now()
-    const elapsed = now - last
-    if (elapsed >= ms) {
-      last = now
-      fn(...args)
-      return
-    }
-    pending = args
-    if (timer) return
-    timer = setTimeout(() => {
-      timer = null
-      last = Date.now()
-      const a = pending
-      pending = null
-      if (a) fn(...a)
-    }, ms - elapsed)
-  }) as F
-}
-
-/** `init = once(lambda: do_setup())` — the body runs on the first call only. */
-export function once<F extends AnyFn>(fn: F): F {
-  let called = false
-  let result: any
-  return ((...args: any[]) => {
-    if (!called) {
-      called = true
-      result = fn(...args)
-    }
-    return result
-  }) as F
-}
-
-/**
- * `data = await retry(lambda: fetch(url).then(r => r.json()), 3, 300)`
- * Retries on rejection with exponential backoff (300ms, 600ms, 1200ms…) and
- * rethrows the FINAL error, so the caller still sees a real failure.
- */
-export async function retry<T>(fn: () => Promise<T> | T, attempts: number = 3, delay: number = 300): Promise<T> {
-  let last_err: unknown
-  for (let i = 0; i < Math.max(1, attempts); i++) {
-    try {
-      return await fn()
-    } catch (e) {
-      last_err = e
-      if (i < attempts - 1 && delay > 0) await sleep(delay * Math.pow(2, i))
-    }
-  }
-  throw last_err
-}
 
 /**
  * `storage.set("token", value)` — JSON-aware localStorage that no-ops (rather

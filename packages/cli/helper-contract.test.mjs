@@ -17,19 +17,26 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const RUNTIME = path.join(ROOT, 'runtime', 'hydra.ts');
+// BOTH halves: `hydra.ts` re-exports `core.ts` with `export *`, and an
+// `export *` carries no names, so scanning only hydra.ts reported every helper
+// that moved to core as missing (35 of them) while the build was green.
+const RUNTIME = [path.join(ROOT, 'runtime', 'hydra.ts'), path.join(ROOT, 'runtime', 'core.ts')];
 const RUST = ['emitter.rs', 'hx_target.rs', 'fstr.rs'].map((f) =>
   path.join(ROOT, 'compiler-rs', 'src', f),
 );
 
 /** Every name the runtime exports. */
 function runtimeExports() {
-  const src = fs.readFileSync(RUNTIME, 'utf8');
-  return new Set(
-    [...src.matchAll(/export\s+(?:async\s+)?(?:function|const|class|let)\s+([A-Za-z_][A-Za-z0-9_]*)/g)].map(
-      (m) => m[1],
-    ),
-  );
+  const out = new Set();
+  for (const file of RUNTIME) {
+    const src = fs.readFileSync(file, 'utf8');
+    for (const m of src.matchAll(
+      /export\s+(?:async\s+)?(?:function|const|class|let)\s+([A-Za-z_][A-Za-z0-9_]*)/g,
+    )) {
+      out.add(m[1]);
+    }
+  }
+  return out;
 }
 
 /**

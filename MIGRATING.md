@@ -20,6 +20,91 @@ written to avoid.
 
 ---
 
+## 0.11.x -> 0.12.0
+
+Five behaviours changed, and each has a line you can edit. Nothing here needs a
+codemod: four of the five are one word in one place, and the fifth is a config
+key.
+
+### 1. `str(x)` prints Python's spelling
+
+```python
+label = str(flag)    # "true" before, "True" now
+name = str(none_value)  # "null" before, "None" now
+```
+
+If a page shows a boolean or a nullable value and you want the old text, format
+it explicitly rather than relying on `str`:
+
+```python
+label = "true" if flag else "false"
+```
+
+Nothing else changed about `str`: numbers print the same digits.
+
+### 2. `type(x).__name__` returns a Python name
+
+| value | before | now |
+|---|---|---|
+| `{}` | `Object` | `dict` |
+| `[]` | `Array` | `list` |
+| `1` | `Number` | `int` |
+| `1.5` | `Number` | `float` |
+| `True` | `Boolean` | `bool` |
+| `None` | **threw** | `NoneType` |
+
+Anything comparing against the JavaScript names has to change; before this
+release, `type(None).__name__` did not run at all.
+
+### 3. `isinstance` separates `int` from `float`
+
+```python
+isinstance(True, int)    # was false, now true   (Python: True is an int)
+isinstance(1.5,  int)    # was true,  now false
+isinstance(1,    float)  # was true,  now false
+```
+
+### 4. Source maps are off by default
+
+```json
+{ "build": { "sourcemap": true } }
+```
+
+A production build used to ship `dist/assets/index-*.js.map` containing every
+line of your source in `sourcesContent`, and the built-in server served it. Turn
+it back on if you upload maps to an error tracker; `"hidden"` is not a separate
+mode, so a map you ship is a map a visitor can fetch.
+
+### 5. `dist/` is emptied before a build
+
+```json
+{ "build": { "clean": false } }
+```
+
+Useful only when `dist/` holds files this build does not own — a hand-placed
+asset, say. The default is on because the alternative is that a page you deleted
+from `src/pages` keeps answering at its old URL, with whatever data was baked
+into it.
+
+## Behaviour that changed without needing an edit
+
+- `redirect()` and `fail()` from a loader now answer with a real HTTP status. A
+  project that worked around the old behaviour by rendering its own redirect
+  page can delete that page.
+- `return [1, 2, 3]` from an API handler is now a list. A handler that meant
+  `(body, status)` and returned a two-element array still works; one that
+  returned a longer array never worked and now returns the array.
+- `HEAD` is answered wherever `GET` is.
+- A request body over 1 MiB is a 413. `server.bodyLimit` raises it.
+- A loader sees real headers and the query string. A loader that used to receive
+  `undefined` for both will now receive values — check any conditional that
+  relied on the empty case.
+- `.env.local` is read (and gitignored). A key that was set there and silently
+  ignored now takes effect; that is the intended direction, but it is a change
+  in what the build sees.
+
+---
+
 ## 0.9.x -> 0.10.0
 
 **Nothing here requires editing a file, unless you already have a `.env`.**

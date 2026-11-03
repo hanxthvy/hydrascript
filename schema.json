@@ -10,8 +10,14 @@
       "type": "string",
       "description": "Points at this file. Editors use it for completion and validation."
     },
-    "name": { "type": "string", "description": "Project name, used in scaffolding output." },
-    "version": { "type": "string", "description": "Project version string." },
+    "name": {
+      "type": "string",
+      "description": "Project name, used in scaffolding output."
+    },
+    "version": {
+      "type": "string",
+      "description": "Project version string."
+    },
     "base": {
       "type": "string",
       "description": "Asset URL prefix. \"sub\", \"/sub\" and \"/sub/\" are equivalent. An absolute URL (a CDN) is kept verbatim."
@@ -21,8 +27,32 @@
       "default": "./dist",
       "description": "Directory the build writes to, relative to the project root."
     },
+    "routes": {
+      "description": "Where the file-based router looks for pages. A string is the directory; `false` turns the router off; an object may carry `dir`. Default `./src/pages`.",
+      "oneOf": [
+        {
+          "type": "boolean",
+          "const": false
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "dir": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
     "mode": {
-      "enum": ["development", "production"],
+      "enum": [
+        "development",
+        "production"
+      ],
       "description": "Overrides the build mode. Usually left to hydra dev / hydra build."
     },
     "tailwind": {
@@ -43,8 +73,8 @@
         },
         "host": {
           "type": "string",
-          "default": "0.0.0.0",
-          "description": "Bind address."
+          "default": "127.0.0.1",
+          "description": "Bind address. Defaults to loopback; `--host 0.0.0.0` or this key makes the server reachable from the network."
         },
         "proxy": {
           "type": "object",
@@ -52,6 +82,11 @@
           "additionalProperties": {
             "type": "string"
           }
+        },
+        "bodyLimit": {
+          "type": "integer",
+          "minimum": 1024,
+          "description": "Largest request body an API route or action will read, in bytes. Default 1048576 (1 MiB). A bigger body is answered with 413 and `Connection: close`, never a dropped socket."
         }
       }
     },
@@ -82,8 +117,8 @@
       "properties": {
         "ssg": {
           "type": "boolean",
-          "default": false,
-          "description": "Pre-render the HTML at build time by running the app server-side and injecting the result into dist/index.html. Never runs during hydra dev. Set HYDRA_NO_SSG=1 to skip it for one build."
+          "default": true,
+          "description": "Pre-render every static route to its own HTML file. ON by default (the code treats anything but an explicit false as on); `HYDRA_NO_SSG=1` skips it for one build."
         }
       }
     },
@@ -93,14 +128,22 @@
       "properties": {
         "sourcemap": {
           "type": "boolean",
-          "default": true,
-          "description": "Emit source maps for the client bundle."
+          "default": false,
+          "description": "Emit source maps for the client bundle. OFF by default: a map carries the application's source in `sourcesContent`, and `dist/` is what gets uploaded."
         },
         "target": {
           "type": "string",
-          "enum": ["node", "static"],
+          "enum": [
+            "node",
+            "static"
+          ],
           "default": "static",
           "description": "What the artifact is for. `static` writes HTML/JS/CSS only and does NOT serve src/api or src/middleware.hys (it lists every dropped route at build time). `node` also includes the API routes, middleware, loaders and actions. `hydra build --target` overrides this for one build. There are deliberately only two targets."
+        },
+        "clean": {
+          "type": "boolean",
+          "default": true,
+          "description": "Empty the output directory before writing. ON by default, so a route deleted from the source stops being served; set false only when the directory holds files this build does not own."
         }
       }
     },
@@ -111,12 +154,18 @@
     "entries": {
       "type": "object",
       "description": "NOT USED YET. Accepted and validated, but the entrypoint is always the first of src/main.hyx, src/main.hsx, src/index.hyx, src/index.hsx that exists.",
-      "additionalProperties": { "type": "string" }
+      "additionalProperties": {
+        "type": "string"
+      }
     },
     "styling": {
       "type": "object",
       "description": "NOT USED YET. Accepted and validated, but this key is never read; Tailwind is configured through the top-level `tailwind` key.",
       "additionalProperties": true
+    },
+    "ssr": {
+      "type": "boolean",
+      "description": "Set false to disable server rendering of dynamic routes in dev/preview/serve. A dynamic route then answers with the client shell, and `hydra serve` reports why."
     }
   }
 }
