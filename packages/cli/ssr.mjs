@@ -31,7 +31,7 @@ import { pathToFileURL } from 'node:url';
 import { matchRoute } from '../../runtime/router-core.js';
 import { applyMeta } from './meta.mjs';
 import { readBody, requestFor } from './actions.mjs';
-import { httpIntent } from './http.mjs';
+import { httpIntent, errorBody } from './http.mjs';
 
 /** Where the build leaves the server bundle for the dev/preview/serve commands. */
 export const SERVER_BUNDLE = path.join('.hydra', 'server.cjs');
@@ -337,9 +337,9 @@ export async function handleDataRequest(req, res, renderer, url) {
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify(body));
   };
-  if (!target) return json(400, { error: 'missing ?url=' });
+  if (!target) return json(400, errorBody('data_missing_url', 'missing ?url='));
   if (!renderer || !renderer.available) {
-    return json(503, { error: renderer ? renderer.reason : 'no renderer' });
+    return json(503, errorBody('renderer_unavailable', renderer ? renderer.reason : 'no renderer'));
   }
   let out;
   try {
@@ -348,9 +348,9 @@ export async function handleDataRequest(req, res, renderer, url) {
     // The loader threw. Reporting that is the whole point: a page that renders
     // an empty list because the fetch failed looks identical to one that has no
     // items, and only one of those is a bug.
-    return json(500, { error: e && e.message ? e.message : String(e), url: target });
+    return json(500, errorBody('loader_threw', e && e.message ? e.message : String(e), { url: target }));
   }
-  if (!out) return json(404, { error: 'no route matches', url: target });
+  if (!out) return json(404, errorBody('data_no_route', 'no route matches', { url: target }));
   return json(200, { pattern: out.pattern, url: target, data: out.data ?? null });
 }
 

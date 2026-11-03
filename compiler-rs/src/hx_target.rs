@@ -60,6 +60,13 @@ pub struct JsEmitter {
     /// `export def` yang menunggu ditulis ke head_lines: (nama, teks).
     pub exported_decls: Vec<(String, String)>,
     pub scopes: Vec<Scope>,
+    /// Where each imported name came from, so a keyword argument can be read
+    /// back from the source file. Without this the `.hys` target could not
+    /// reorder `f(b=2, a=1)` for an imported function at all: it has no other
+    /// way to know the signature.
+    pub import_specs: std::cell::RefCell<std::collections::HashMap<String, String>>,
+    /// The directory of the file being compiled, for resolving those specifiers.
+    pub base_dir: Option<std::path::PathBuf>,
 }
 
 impl JsEmitter {
@@ -79,7 +86,14 @@ impl JsEmitter {
             queued_decls: std::collections::HashSet::new(),
             exported_decls: Vec::new(),
             scopes: Vec::new(),
+            import_specs: std::cell::RefCell::new(std::collections::HashMap::new()),
+            base_dir: None,
         }
+    }
+
+    pub fn with_base_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.base_dir = Some(dir.into());
+        self
     }
 
     fn pad(&self) -> String {
@@ -948,7 +962,24 @@ impl JsEmitter {
                 // Keyword arguments: reorder against a known signature, or fail.
                 if !kwargs.is_empty() {
                     if let Kind::Name(id) = &func.kind {
-                        let sig = self.fn_params.borrow().get(id).cloned();
+                        // A LOCAL `def` first, then an imported one. The second
+                        // half is what makes `from "./lib/stats.hys" import f`
+                        // accept `f(b=2, a=1)` in a `.hys` file.
+                        let sig = match self.fn_params.borrow().get(id).cloned() {
+                            Some(names) => Some(names),
+                            None => self
+                                .import_specs
+                                .borrow()
+                                .get(id)
+                                .cloned()
+                                .and_then(|spec| {
+                                    crate::emitter::imported_fn_params_for_hx(
+                                        &spec,
+                                        id,
+                                        self.base_dir.as_deref(),
+                                    )
+                                }),
+                        };
                         if let Some(names) = sig {
                             let mut slots: Vec<Option<String>> = vec![None; names.len()];
                             let mut positional = args.len();
@@ -1698,6 +1729,21 @@ impl JsEmitter {
                 self.w("}");
             }
             Kind::Import { from, names } => {
+                // Remember WHERE each name came from, so a keyword argument at a
+                // call site can be reordered against the real signature. The
+                // React emitter has done this for a while; this target did not,
+                // so the same call compiled in a `.hsx` file and failed in a
+                // `.hys` one with "no signature to read".
+                if let Some(f) = from.as_ref() {
+                    for nm in names {
+                        let bare = nm.trim_start_matches("* as ").trim();
+                        if !bare.is_empty() && bare != "default" {
+                            self.import_specs
+                                .borrow_mut()
+                                .insert(bare.to_string(), f.clone());
+                        }
+                    }
+                }
                 if let Some(f) = from {
                     let mod_name = if f == "hydra_js" {
                         "hydra"
@@ -1830,6 +1876,21 @@ impl JsEmitter {
             match &s.kind {
                 Kind::Component { .. } | Kind::Tree { .. } => self.stmt(s)?,
                 Kind::Import { from, names } => {
+                    // Record WHERE each name came from BEFORE emitting the
+                    // import line. A keyword argument at a call site is resolved
+                    // against the signature in that file, and a top-level import
+                    // is the only spelling most `.hys` modules use — the other
+                    // match arm in `stmt` handles the ones inside a block.
+                    if let Some(f) = from.as_ref() {
+                        for nm in names {
+                            let bare = nm.trim_start_matches("* as ").trim();
+                            if !bare.is_empty() && bare != "default" {
+                                self.import_specs
+                                    .borrow_mut()
+                                    .insert(bare.to_string(), f.clone());
+                            }
+                        }
+                    }
                     if let Some(f) = from {
                         let mod_name = if f == "hydra_js" {
                             "hydra"

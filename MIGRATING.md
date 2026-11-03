@@ -86,6 +86,29 @@ asset, say. The default is on because the alternative is that a page you deleted
 from `src/pages` keeps answering at its old URL, with whatever data was baked
 into it.
 
+### 6. API error bodies have a `code`
+
+Every framework error is `{error, code, detail?}`. A client that only reads
+`error` keeps working; one that parsed `limit` or `allow` out of the top level
+now finds it under `detail`.
+
+```js
+// before
+const limit = (await res.json()).limit;
+// now
+const { detail } = await res.json();
+const limit = detail.limit;
+```
+
+`fail(status, data)` is unchanged: its body is whatever the handler returned.
+
+### 7. `src/api` folders are URLs
+
+A file that used to be ignored — `src/api/admin/users.hys` — now answers
+`/api/admin/users`. That is the intended direction, but a project that kept a
+folder of non-route helpers under `src/api` must rename it with a leading `_`,
+which is private at any level.
+
 ## Behaviour that changed without needing an edit
 
 - `redirect()` and `fail()` from a loader now answer with a real HTTP status. A

@@ -88,6 +88,10 @@ function project() {
     'export def post(req, body):\n    return {"name": body.get("name", "none")}\n',
   );
   fs.writeFileSync(
+    path.join(dir, 'src', 'api', 'boom.hys'),
+    'export def get(req):\n    raise RuntimeError("on purpose")\n',
+  );
+  fs.writeFileSync(
     path.join(dir, 'src', 'pages', 'blog', 'static.hyx'),
     'rendering = "ssr"\ncomponent S():\n    div(cls="s"): "STATIC-BUT-SSR"\n',
   );
@@ -269,7 +273,47 @@ try {
     `unmatched URL -> ${nf.status} with the project _404 (not the home page)`,
   );
 
-  record('A13', 'GAP', 'no nested API folders, no /api/[param], no cookie/session helper');
+  {
+    // A second project, because this one is built by now: nested API folders and
+    // a parameter have to be proven with a REQUEST, not by reading the scanner.
+    const adir = fs.mkdtempSync(path.join(os.tmpdir(), 'hydra-apidepth-'));
+    try {
+      fs.mkdirSync(path.join(adir, 'src', 'api', 'users'), { recursive: true });
+      fs.mkdirSync(path.join(adir, 'src', 'api', 'files'), { recursive: true });
+      fs.mkdirSync(path.join(adir, 'src', 'pages'), { recursive: true });
+      fs.symlinkSync(REACT, path.join(adir, 'node_modules'), 'dir');
+      fs.writeFileSync(path.join(adir, 'index.html'), '<!DOCTYPE html><html><head><title>a</title></head><body><div id="root"></div></body></html>');
+      fs.writeFileSync(path.join(adir, 'hydraconfig.json'), JSON.stringify({ name: 'a' }));
+      fs.writeFileSync(path.join(adir, 'src', 'main.hyx'), 'from hydra import mount\nfrom "./App.hyx" import App\nmount(App, document.getElementById("root"))\n');
+      fs.writeFileSync(path.join(adir, 'src', 'App.hyx'), 'from hydra import Router\ncomponent App():\n    Router()\n');
+      fs.writeFileSync(path.join(adir, 'src', 'pages', 'index.hyx'), 'component H():\n    div(): "h"\n');
+      fs.writeFileSync(path.join(adir, 'src', 'api', 'users', 'index.hys'), 'export def get(req):\n    return {"users": "list"}\n');
+      fs.writeFileSync(path.join(adir, 'src', 'api', 'users', '[id].hys'), 'export def get(req):\n    return {"id": req.params.get("id")}\n');
+      fs.writeFileSync(path.join(adir, 'src', 'api', 'files', '[...rest].hys'), 'export def get(req):\n    return {"rest": req.params.get("rest")}\n');
+      const ab = build(adir, ['build', '--target', 'node']);
+      const aserved = ab.status === 0 ? await serve(adir) : null;
+      try {
+        const list = aserved ? await req(aserved.port, 'GET', '/api/users') : { status: 0, body: '' };
+        const one = aserved ? await req(aserved.port, 'GET', '/api/users/42') : { status: 0, body: '' };
+        const rest = aserved ? await req(aserved.port, 'GET', '/api/files/a/b/c') : { status: 0, body: '' };
+        const ok =
+          list.status === 200 &&
+          one.status === 200 &&
+          JSON.parse(one.body).id === '42' &&
+          rest.status === 200 &&
+          JSON.parse(rest.body).rest.length === 3;
+        record(
+          'A13',
+          ok ? 'FIXED' : 'FAIL',
+          `nested folder /api/users -> ${list.status}, /api/users/[id] -> ${one.status} ${one.body}, catch-all -> ${rest.body}`,
+        );
+      } finally {
+        if (aserved) await stop(aserved);
+      }
+    } finally {
+      fs.rmSync(adir, { recursive: true, force: true });
+    }
+  }
   const cacheSrc = fs.readFileSync(path.join(ROOT, 'packages', 'cli', 'compile-cache.mjs'), 'utf8');
   const cacheWired = /\.prune\(\{\s*identity/.test(fs.readFileSync(path.join(ROOT, 'packages', 'cli', 'runner.mjs'), 'utf8'));
   record(
@@ -277,7 +321,22 @@ try {
     /prune\(\{ maxFiles/.test(cacheSrc) && cacheWired ? 'FIXED' : 'GAP',
     'compile cache prunes on compiler-identity change and caps its file count',
   );
-  record('A14', 'GAP', 'fail() answers its own status now, but the two error envelopes remain');
+  {
+    // Every framework error answers `{error, code, detail?}`; `fail()` keeps the
+    // project's own body, because that is the application talking.
+    const noRoute = await req(port, 'GET', '/api/definitely-not-a-route');
+    const thrown = await req(port, 'GET', '/api/boom');
+    const envelopesOk =
+      noRoute.status === 404 &&
+      typeof JSON.parse(noRoute.body).code === 'string' &&
+      thrown.status === 500 &&
+      typeof JSON.parse(thrown.body).code === 'string';
+    record(
+      'A14',
+      envelopesOk ? 'FIXED' : 'FAIL',
+      `404 -> ${noRoute.body}, 500 -> ${JSON.parse(thrown.body || '{}').code}`,
+    );
+  }
   const hdr = await req(port, 'GET', '/');
   const hasSecurity =
     hdr.headers['x-content-type-options'] === 'nosniff' &&
@@ -424,10 +483,45 @@ try {
     divOk && idxOk ? 'FIXED' : 'GAP',
     `ZeroDivisionError raised by / and //, IndexError on a negative out-of-range index; a plain xs[5] on a list is still undefined (list vs dict is not knowable statically)`,
   );
-  record('C5', 'GAP', 'keyword arguments across files still a compile error (documented in SPEC)');
+  {
+    const kdir = fs.mkdtempSync(path.join(os.tmpdir(), 'hydra-kw-'));
+    try {
+      fs.mkdirSync(path.join(kdir, 'src', 'lib'), { recursive: true });
+      fs.writeFileSync(path.join(kdir, 'hydraconfig.json'), JSON.stringify({ name: 'k' }));
+      fs.writeFileSync(path.join(kdir, 'src', 'lib', 'stats.hys'), 'export def greet(name, greeting="hi"):\n    return f"{greeting} {name}"\n');
+      fs.writeFileSync(path.join(kdir, 'src', 'use.hys'), 'from "./lib/stats.hys" import greet\nprint(greet(greeting="yo", name="hanzu"))\n');
+      fs.writeFileSync(path.join(kdir, 'src', 'use2.hys'), 'from "lib/stats.hys" import greet\nprint(greet(greeting="yo", name="hanzu"))\n');
+      const a = spawnSync(BIN, [path.join('src', 'use.hys')], { cwd: kdir, encoding: 'utf8' });
+      const b = spawnSync(BIN, [path.join('src', 'use2.hys')], { cwd: kdir, encoding: 'utf8' });
+      const bothEmit = a.status === 0 && b.status === 0;
+      const reordered =
+        /greet\("hanzu", "yo"\)/.test(a.stdout || '') && /greet\("hanzu", "yo"\)/.test(b.stdout || '');
+      record(
+        'C5',
+        bothEmit && reordered ? 'FIXED' : 'FAIL',
+        `keyword arguments across files, both spellings: ${bothEmit ? 'compile' : 'fail'} and ${reordered ? 'reorder to greet("hanzu", "yo")' : 'do not reorder'}`,
+      );
+    } finally {
+      fs.rmSync(kdir, { recursive: true, force: true });
+    }
+  }
 
   // ---- D: packaging -----------------------------------------------------
-  record('D1', 'GAP', 'binaries are still linux-x64 glibc 2.34 only; no per-platform packages');
+  {
+    const launcher = fs.readFileSync(path.join(ROOT, 'bin', 'hydra.js'), 'utf8');
+    const wf = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'binaries.yml'), 'utf8');
+    const targets = ['linux-x64', 'linux-arm64', 'linux-x64-musl', 'linux-arm64-musl', 'darwin-x64', 'darwin-arm64', 'win32-x64'];
+    const allTargets = targets.every((t) => wf.includes(`- target: ${t}`));
+    const resolves = /@hydrascript\/\$\{triple\}/.test(launcher) && /HYDRA_BINARY/.test(launcher);
+    const explains = /no native compiler for this machine/.test(launcher);
+    // The binaries themselves are built by CI on the runner for each platform;
+    // this machine can only prove the RESOLVER and the matrix exist.
+    record(
+      'D1',
+      allTargets && resolves && explains ? 'FIXED' : 'FAIL',
+      `launcher resolves @hydrascript/<triple> with a named failure, matrix builds ${targets.length} targets (glibc/musl/darwin/win32). The binaries are produced by .github/workflows/binaries.yml, not on this box`,
+    );
+  }
   record('D2', /Serving dist\//.test(served.log()) ? 'FIXED' : 'FAIL', 'hydra serve exists and serves');
   const counts = [
     fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8'),
@@ -451,7 +545,32 @@ try {
     encoding: 'utf8',
   });
   record('D5', (gi.stdout || '').trim().split('\n').length === 2 ? 'FIXED' : 'FAIL', `.env.local and .env.production.local are gitignored`);
-  record('D6', 'GAP', 'hydra types still emits `any` for props and for loader results');
+  {
+    const ddir = fs.mkdtempSync(path.join(os.tmpdir(), 'hydra-dts-'));
+    try {
+      fs.mkdirSync(path.join(ddir, 'src', 'pages'), { recursive: true });
+      fs.writeFileSync(path.join(ddir, 'hydraconfig.json'), JSON.stringify({ name: 'd' }));
+      fs.writeFileSync(
+        path.join(ddir, 'src', 'pages', 'blog.hyx'),
+        'component Blog(posts: list = [], region: str = "?"):\n    div(): "x"\n',
+      );
+      fs.writeFileSync(
+        path.join(ddir, 'src', 'pages', 'blog.server.hys'),
+        'export async def loader(event):\n    return {"posts": ["a", "b"], "region": fetch_it()}\n',
+      );
+      const r = spawnSync(BIN, ['types'], { cwd: ddir, encoding: 'utf8' });
+      const dtsPath = path.join(ddir, 'src', 'pages', 'blog.hyx.d.ts');
+      const dts = fs.existsSync(dtsPath) ? fs.readFileSync(dtsPath, 'utf8') : '';
+      const typed = /posts: string\[\]/.test(dts) && /region: any/.test(dts);
+      record(
+        'D6',
+        r.status === 0 && typed ? 'FIXED' : 'FAIL',
+        'a page props type comes from its loader: literal values keep their type, a call is `any`',
+      );
+    } finally {
+      fs.rmSync(ddir, { recursive: true, force: true });
+    }
+  }
   {
     const bdir = fs.mkdtempSync(path.join(os.tmpdir(), 'hydra-base-'));
     try {

@@ -846,9 +846,54 @@ fn import_shapes_as_default(spec: &str, base_dir: Option<&std::path::Path>) -> b
 /// Reads the source and finds `def name(a, b=1)` / `export def name(...)`.
 /// Defaults are not returned: they matter for a MISSING argument, and the
 /// compiler only reorders what the caller passed.
+/// Is this a bare package name (`react`, `@scope/pkg`) rather than a path?
+///
+/// The distinction decides whether the signature can be read from disk: a
+/// package's entrypoint is resolved by the bundler, not by this compiler.
+fn is_package_specifier(spec: &str) -> bool {
+    let s = spec.trim();
+    if s.starts_with("./") || s.starts_with("../") || s.starts_with('/') {
+        return false;
+    }
+    if s.starts_with("@scope/") || s.starts_with('@') {
+        // `@scope/name` or `@scope/name/sub` — a package either way.
+        return !s.contains(".h");
+    }
+    // No leading dot and no EXTENSION: `react`, `date-fns`. A project file
+    // always carries `.hys`/`.hyx`/`.hs`/`.hsx` or a slash.
+    !s.contains('/') && !s.contains(".h")
+}
+
+/// The same signature reader, for the plain-JS target.
+///
+/// `hx_target` compiles `.hys` files and has its own emitter with its own
+/// fields; rather than duplicate a line-oriented parser (and let the two
+/// disagree about what a `def` header looks like), this exposes the one that
+/// already exists.
+pub fn imported_fn_params_for_hx(
+    spec: &str,
+    name: &str,
+    base_dir: Option<&std::path::Path>,
+) -> Option<Vec<String>> {
+    imported_fn_params(spec, name, base_dir)
+}
+
 fn imported_fn_params(spec: &str, name: &str, base_dir: Option<&std::path::Path>) -> Option<Vec<String>> {
     let dir = base_dir?;
-    if !(spec.starts_with("./") || spec.starts_with("../")) {
+    // Only a RELATIVE specifier can be read back: an npm package's signature
+    // lives in `node_modules` behind whatever its entrypoint does, and reading
+    // it here would be guessing. That bound was always correct.
+    //
+    // What was WRONG was the test for "relative": it required a leading `./` or
+    // `../`, and the language's own idiom is `from "lib/stats.hys" import f`
+    // (no dot), which the bundler resolves fine. So keyword arguments to a
+    // function imported that way were a COMPILE ERROR while the same call with
+    // the same file spelled `./lib/stats.hys` worked — two answers for one
+    // import, decided by punctuation nobody documents.
+    //
+    // Anything that is not a bare package name is a project path. A package
+    // name is one identifier, optionally scoped, with no slash after it.
+    if spec.trim().is_empty() || is_package_specifier(spec) {
         return None;
     }
     let base = dir.join(spec);

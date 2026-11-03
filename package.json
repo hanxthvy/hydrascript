@@ -72,5 +72,6 @@
   "homepage": "https://github.com/hanxthvy/hydrascript#readme",
   "bugs": {
     "url": "https://github.com/hanxthvy/hydrascript/issues"
-  }
+  },
+  "optionalDependencies": {}
 }

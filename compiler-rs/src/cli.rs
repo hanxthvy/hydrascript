@@ -857,6 +857,135 @@ fn check(args: &[String]) -> ExitCode {
 ///
 /// A module with no exports produces no file, so a hand-written declaration is
 /// never overwritten with an empty one.
+/// What a page's `.server.hys` loader returns, as `(prop, ts type)` pairs.
+///
+/// The page's props ARE the loader's result — the language says so, the runtime
+/// does it, and the declaration was the one place that said `any`. This reads the
+/// loader's `return {...}` literal with a line-oriented scan, the same way
+/// `imported_fn_params` reads a `def` header: there is no cross-file parser, and
+/// inventing one for a declaration would be a second grammar to keep in sync.
+///
+/// A value's type is inferred from its literal, and anything that is not a
+/// literal is `any`: `return {"posts": await db.all()}` cannot know what the
+/// database hands back, and a guess would be a declaration that lies.
+fn loader_props_for(page: &std::path::Path) -> crate::dts::LoaderProps {
+    let name = page.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let stem = name.rsplit_once('.').map(|(a, _)| a).unwrap_or(&name);
+    let server = page.with_file_name(format!("{stem}.server.hys"));
+    let Ok(src) = fs::read_to_string(&server) else {
+        return Vec::new();
+    };
+
+    // Locate `return {` inside `loader`, then walk to its matching brace.
+    let Some(loader_at) = src.find("def loader") else { return Vec::new() };
+    let after = &src[loader_at..];
+    let Some(ret_at) = after.find("return {") else { return Vec::new() };
+    let body_start = loader_at + ret_at + "return ".len();
+    let bytes = src.as_bytes();
+    let mut depth = 0i32;
+    let mut end = None;
+    for (i, c) in src[body_start..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(body_start + i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let _ = bytes;
+    let Some(end) = end else { return Vec::new() };
+    let literal = &src[body_start..=end];
+
+    // Split the top-level `"key": value` pairs.
+    let inner = literal.trim_start_matches('{').trim_end_matches('}');
+    let mut out: crate::dts::LoaderProps = Vec::new();
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    let mut current = String::new();
+    let mut parts: Vec<String> = Vec::new();
+    for c in inner.chars() {
+        if let Some(q) = quote {
+            current.push(c);
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' => {
+                quote = Some(c);
+                current.push(c);
+            }
+            '{' | '[' | '(' => {
+                depth += 1;
+                current.push(c);
+            }
+            '}' | ']' | ')' => {
+                depth -= 1;
+                current.push(c);
+            }
+            ',' if depth == 0 => {
+                parts.push(std::mem::take(&mut current));
+            }
+            _ => current.push(c),
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current);
+    }
+
+    for part in parts {
+        let (k, v) = match part.split_once(':') {
+            Some((k, v)) => (k.trim(), v.trim()),
+            None => continue,
+        };
+        let key = k.trim_matches(|c| c == '"' || c == '\'').trim();
+        if key.is_empty() {
+            continue;
+        }
+        out.push((key.to_string(), infer_ts_type(v)));
+    }
+    out
+}
+
+/// A literal's TypeScript type, or `any` when it is not a literal.
+fn infer_ts_type(value: &str) -> String {
+    let v = value.trim();
+    if v.starts_with('"') || v.starts_with('\'') {
+        return "string".to_string();
+    }
+    if v == "True" || v == "False" || v == "true" || v == "false" {
+        return "boolean".to_string();
+    }
+    if v == "None" || v == "null" {
+        return "any".to_string();
+    }
+    if v.parse::<i64>().is_ok() {
+        return "number".to_string();
+    }
+    if v.parse::<f64>().is_ok() {
+        return "number".to_string();
+    }
+    if v.starts_with('[') {
+        // A list of string literals is `string[]`; anything else is `any[]`.
+        let inner = v.trim_start_matches('[').trim_end_matches(']');
+        let item = inner.split(',').next().unwrap_or("").trim();
+        if item.starts_with('"') || item.starts_with('\'') {
+            return "string[]".to_string();
+        }
+        return "any[]".to_string();
+    }
+    if v.starts_with('{') {
+        return "Record<string, any>".to_string();
+    }
+    "any".to_string()
+}
+
 pub fn types_cmd(args: &[String]) -> ExitCode {
     let files = targets(args);
     if files.is_empty() {
@@ -873,7 +1002,18 @@ pub fn types_cmd(args: &[String]) -> ExitCode {
         let name = path
             .file_name()
             .map_or_else(|| "out.hyx".into(), |n| n.to_string_lossy().to_string());
-        match crate::compile_dts(&src, &name) {
+        // The page's loader, if it has one, supplies the props' types.
+        let loader = loader_props_for(path);
+        let module = (|| {
+            let lines: Vec<String> = src.split('\n').map(|s| s.to_string()).collect();
+            let toks = crate::lexer::lex(&src).ok()?;
+            crate::parser::Parser::new(toks, lines).module().ok()
+        })();
+        let dts_result = match module {
+            Some(m) => crate::dts::emit_with_loader(&m, &name, &loader),
+            None => crate::compile_dts(&src, &name),
+        };
+        match dts_result {
             Ok(dts) if dts.is_empty() => skipped += 1,
             Ok(dts) => {
                 let out = PathBuf::from(format!("{}.d.ts", path.to_string_lossy()));

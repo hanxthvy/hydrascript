@@ -357,7 +357,10 @@ test('a body over the limit is 413 with a JSON answer, not a dead socket', async
     assert.equal(res.status, 413, `expected 413, got ${res.status}: ${res.body.slice(0, 300)}`);
     const payload = JSON.parse(res.body);
     assert.match(payload.error, /larger than/);
-    assert.ok(payload.limit > 0);
+    // The envelope is `{error, code, detail}` now — one shape for every
+    // framework failure — so the limit travels in `detail`.
+    assert.equal(payload.code, 'body_too_large');
+    assert.ok(payload.detail.limit > 0);
 
     // The server is still alive and answering.
     const after = await request(port, 'GET', '/api/list');

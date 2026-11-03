@@ -144,14 +144,23 @@ as bugs.
 - `f"{x:.0f}"` and `round(x)` round a tie to EVEN, like Python, via the runtime's
   `py_fixed` / `round_to`. This was a documented deviation; it no longer is.
   `format(2.5, ".0f")` is `2` and `format(1500.5, ".0f")` is `1500`.
+- `d[k]` on a missing key raises `KeyError`, `/` and `//` by zero raise
+  `ZeroDivisionError`, and a negative out-of-range index raises `IndexError`.
+  A plain `xs[i]` past the end of a list is still `undefined`: the compiler
+  cannot tell a list from a dict at a subscript, and a bounds check on every
+  one of them would break dict access.
 - `getattr`, and every other builtin not listed in section 6, is not
   implemented. Unlike multiple inheritance it is not rejected by the parser: it
   emits verbatim and fails at runtime. This is the known sharp edge of the
   language; see section 8 for the warning that catches it.
 - Multiple inheritance and `super().method()` with keyword arguments are compile
   errors, so they cannot reach runtime.
-- Keyword arguments work for functions defined in the same file (the signature is
-  known) and are a **compile error** for imported functions (it is not).
+- Keyword arguments work for a function defined in the same file, and for one
+  imported from a **project path** (`.hys`/`.hyx`/`.hs`/`.hsx`, with or without a
+  leading `./`): the signature is read from that file, so `f(b=2, a=1)` is
+  reordered rather than rejected. They remain a **compile error** for a package
+  import (`date-fns`, `react`), because that signature lives behind the
+  package's entrypoint and guessing it would be a lie.
 - Truthiness in a CONDITION is Python's: `if xs:` and `while xs:` go through the
   runtime's `truthy()`, so an empty list, dict or string is falsy. It applies to
   conditions the compiler can see (`if`, `elif`, `while`, a tree `if`); a

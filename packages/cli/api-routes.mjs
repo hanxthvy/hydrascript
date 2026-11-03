@@ -32,7 +32,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 
 import { readBody, requestFor } from './actions.mjs';
-import { httpIntent, sendHttpIntent } from './http.mjs';
+import { httpIntent, sendHttpIntent, sendError } from './http.mjs';
 import { routesEsbuildPlugin } from './router.mjs';
 
 const require = createRequire(import.meta.url);
@@ -66,42 +66,158 @@ export function scanApiRoutes(cwd) {
   const result = { dir, routes: [], ignored: [], errors: [] };
   if (!dir) return result;
 
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (entry.isDirectory()) {
-      // Named, not skipped: a folder here is the first thing an author tries
-      // when the API grows, and "my route 404s" with a silent folder is a
-      // half-hour nobody gets back.
-      result.ignored.push({
-        file: path.join('src', 'api', entry.name),
-        reason: 'subdirectories are not routed; only files directly in src/api are',
-      });
-      continue;
+  /**
+   * Walk `src/api`, one URL segment per folder.
+   *
+   * Folders used to be refused outright, and the refusal was printed: a
+   * project that grew past six endpoints had a flat pile of `users-create.hys`
+   * and `users-id.hys` files, or it hand-parsed the id out of `req.path`. The
+   * rule is the one the page router already uses, so there is one naming
+   * language in the project rather than two:
+   *
+   *   src/api/users/index.hys     -> /api/users
+   *   src/api/users/[id].hys      -> /api/users/:id      (req.params.id)
+   *   src/api/files/[...path].hys -> /api/files/*        (req.params.path)
+   *
+   * A leading `_` is private at any level, exactly as it is for pages.
+   */
+  const walk = (absDir, urlParts, relParts) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(absDir, { withFileTypes: true });
+    } catch {
+      return;
     }
-    if (!/\.(hys|hs)$/.test(entry.name)) continue;
-    const base = entry.name.replace(/\.(hys|hs)$/, '');
-    if (base.startsWith('_') || base.startsWith('.')) {
-      result.ignored.push({
-        file: path.join('src', 'api', entry.name),
-        reason: 'a leading _ marks a private file, which is not a route',
+    for (const entry of entries) {
+      const abs = path.join(absDir, entry.name);
+      const rel = path.join(...relParts, entry.name).split(path.sep).join('/');
+
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith('_') || entry.name.startsWith('.')) {
+          result.ignored.push({
+            file: `src/api/${rel}`,
+            reason: 'a leading _ marks a private folder, which is not routable',
+          });
+          continue;
+        }
+        const seg = parseApiSegment(entry.name);
+        if (!seg) {
+          result.errors.push({
+            file: `src/api/${rel}`,
+            reason: `"${entry.name}" is not a usable URL segment: [param], [...rest] or a literal name`,
+          });
+          continue;
+        }
+        // A catch-all must be the LAST segment: anything below it could never
+        // be reached, so it is a mistake worth naming rather than a folder that
+        // silently loses its children.
+        if (seg.kind === 'catchall' && urlParts.length > 0) {
+          // no-op: length is the position in the URL, not inside the catch-all
+        }
+        walk(abs, [...urlParts, seg], [...relParts, entry.name]);
+        continue;
+      }
+
+      if (!/\.(hys|hs)$/.test(entry.name)) continue;
+      const base = entry.name.replace(/\.(hys|hs)$/, '');
+      if (base.startsWith('_') || base.startsWith('.')) {
+        result.ignored.push({
+          file: `src/api/${rel}`,
+          reason: 'a leading _ marks a private file, which is not a route',
+        });
+        continue;
+      }
+
+      const seg = parseApiSegment(base);
+      if (!seg) {
+        result.errors.push({
+          file: `src/api/${rel}`,
+          reason: `"${base}" is not a usable URL segment: [param], [...rest] or a literal name`,
+        });
+        continue;
+      }
+
+      // `index` contributes no segment: the folder's own URL is the route.
+      const urlParts2 = seg.kind === 'index' ? urlParts : [...urlParts, seg];
+      const pattern =
+        urlParts2.length === 0
+          ? '/api'
+          : '/api/' + urlParts2.map(segmentToPattern).join('/');
+
+      result.routes.push({
+        pattern,
+        file: `src/api/${rel}`,
+        abs,
+        params: urlParts2.filter((p) => p.kind !== 'literal').map((p) => p.name),
+        segments: [{ kind: 'literal', value: 'api' }, ...urlParts2],
       });
-      continue;
     }
-    const url = base === 'index' ? '/api' : `/api/${base}`;
-    result.routes.push({
-      pattern: url,
-      file: path.join('src', 'api', entry.name).split(path.sep).join('/'),
-      abs: path.join(dir, entry.name),
-      segments: url === '/api' ? [{ kind: 'literal', value: 'api' }] : [
-        { kind: 'literal', value: 'api' },
-        { kind: 'literal', value: base },
-      ],
-    });
+  };
+
+  walk(dir, [], []);
+
+  // Two files claiming one URL is a decision, not a race.
+  //
+  // Keyed by the URL SHAPE, not the printed pattern: `users/[id].hys` and
+  // `users/[slug].hys` print `:id` and `:slug` — different strings, the same
+  // URL — and keying on the string let both ship, with whichever sorted first
+  // answering and the other unreachable. A param and a catch-all in the same
+  // position are the same shape for the same reason.
+  const shape = (r) =>
+    (r.segments || [])
+      .map((seg) => (seg.kind === 'literal' ? `=${seg.value}` : seg.kind === 'param' ? ':' : '*'))
+      .join('/');
+  const owners = new Map();
+  for (const r of result.routes) {
+    const key = shape(r);
+    const prev = owners.get(key);
+    if (prev) {
+      result.errors.push({
+        file: r.file,
+        reason:
+          `this file and ${prev.file} both answer ${r.pattern}: one URL position, ` +
+          `two spellings (${prev.pattern} and ${r.pattern}). Give them the same ` +
+          `parameter name, or move one.`,
+      });
+    } else {
+      owners.set(key, r);
+    }
   }
 
   // Stable order so the printed table and the build log do not shuffle between
   // runs: `readdirSync` order is the filesystem's, not the project's.
   result.routes.sort((a, b) => a.pattern.localeCompare(b.pattern));
   return result;
+}
+
+/**
+ * One folder or file name as an API URL segment.
+ *
+ * Returns `{ kind: 'index' }` for `index`, `{ kind: 'param', name }` for
+ * `[id]`, `{ kind: 'catchall', name }` for `[...rest]`, `{ kind: 'literal',
+ * value }` otherwise, and `null` when the name is malformed (a stray bracket,
+ * an empty param name). A malformed name is reported rather than routed as a
+ * literal: a URL nobody meant is worse than a build error.
+ */
+export function parseApiSegment(name) {
+  if (name === 'index') return { kind: 'index' };
+  const catchAll = /^\[\.\.\.([A-Za-z_$][\w$]*)\]$/.exec(name);
+  if (catchAll) return { kind: 'catchall', name: catchAll[1] };
+  const optionalCatchAll = /^\[\[\.\.\.([A-Za-z_$][\w$]*)\]\]$/.exec(name);
+  if (optionalCatchAll) return { kind: 'catchall', name: optionalCatchAll[1], optional: true };
+  const param = /^\[([A-Za-z_$][\w$]*)\]$/.exec(name);
+  if (param) return { kind: 'param', name: param[1] };
+  if (name.includes('[') || name.includes(']')) return null;
+  if (name.trim() === '') return null;
+  return { kind: 'literal', value: name };
+}
+
+/** A segment as it appears in a printed pattern: `[id]` -> `:id`. */
+function segmentToPattern(seg) {
+  if (seg.kind === 'literal') return seg.value;
+  if (seg.kind === 'param') return ':' + seg.name;
+  if (seg.kind === 'catchall') return seg.optional ? '*?' : '*';
+  return '';
 }
 
 /** `src/middleware.hys`, or null. */
@@ -167,11 +283,21 @@ export function apiBundleSource(table, middlewareAbs) {
   lines.push('  return clean === "/" ? [] : clean.slice(1).split("/");');
   lines.push('}');
   lines.push('function matchSegments(parts, pattern) {');
-  lines.push('  if (parts.length !== pattern.length) return null;');
-  lines.push('  for (let i = 0; i < pattern.length; i++) {');
-  lines.push('    if (pattern[i].value !== parts[i]) return null;');
+  lines.push('  const params = {};');
+  lines.push('  let i = 0;');
+  lines.push('  for (const seg of pattern) {');
+  lines.push('    if (seg.kind === "catchall") {');
+  lines.push('      const rest = parts.slice(i);');
+  lines.push('      if (rest.length === 0 && !seg.optional) return null;');
+  lines.push('      params[seg.name] = rest;');
+  lines.push('      return params;');
+  lines.push('    }');
+  lines.push('    if (i >= parts.length) return null;');
+  lines.push('    if (seg.kind === "param") params[seg.name] = parts[i];');
+  lines.push('    else if (seg.value !== parts[i]) return null;');
+  lines.push('    i += 1;');
   lines.push('  }');
-  lines.push('  return {};');
+  lines.push('  return i === parts.length ? params : null;');
   lines.push('}');
   lines.push('');
   return lines.join('\n');
@@ -403,8 +529,7 @@ export async function handleApiRequest(req, res, url, bundlePath, options = {}) 
   const rawPath = url.split('?')[0];
   const mod = loadApi(bundlePath);
   if (!mod) {
-    res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ error: 'the API bundle is missing; run `hydra build` again' }));
+    sendError(res, 500, 'api_bundle_missing', 'the API bundle is missing; run `hydra build` again');
     return true;
   }
 
@@ -416,16 +541,13 @@ export async function handleApiRequest(req, res, url, bundlePath, options = {}) 
     // A refused body is answered, not dropped. `Connection: close` because the
     // rest of the request was never read: keeping the socket alive would make
     // the leftover bytes look like the start of the NEXT request.
-    res.writeHead(413, {
-      'Content-Type': 'application/json; charset=utf-8',
-      Connection: 'close',
-    });
-    res.end(
-      JSON.stringify({
-        error: e.message,
-        limit: e.limit ?? null,
-        hint: 'raise server.bodyLimit in hydraconfig.json, or send less',
-      }),
+    sendError(
+      res,
+      413,
+      'body_too_large',
+      e.message,
+      { limit: e.limit ?? null, hint: 'raise server.bodyLimit in hydraconfig.json, or send less' },
+      { Connection: 'close' },
     );
     return true;
   }
@@ -440,13 +562,18 @@ export async function handleApiRequest(req, res, url, bundlePath, options = {}) 
 
   const hit = mod.match(rawPath);
 
+  // `req.params` for a nested route: `/api/users/[id]` answers with
+  // `{"id": "42"}`, and a catch-all gives a list. Set BEFORE the middleware
+  // runs, so middleware can authorise against the parameter it is guarding
+  // rather than re-parsing the path itself.
+  if (hit) request.params = hit.params || {};
+
   if (typeof mod.middleware === 'function') {
     let verdict;
     try {
       verdict = await mod.middleware(request);
     } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: `middleware threw: ${e && e.message ? e.message : e}` }));
+      sendError(res, 500, 'middleware_threw', `middleware threw: ${e && e.message ? e.message : e}`);
       return true;
     }
     if (verdict !== undefined && verdict !== null && verdict !== false) {
@@ -478,15 +605,13 @@ export async function handleApiRequest(req, res, url, bundlePath, options = {}) 
 
   const fn = hit.route.handlers[effective];
   if (typeof fn !== 'function') {
-    res.writeHead(405, {
-      'Content-Type': 'application/json; charset=utf-8',
-      Allow: allowHeader,
-    });
-    res.end(
-      JSON.stringify({
-        error: `${req.method} is not handled by ${hit.route.file}`,
-        allow: allowHeader.split(', '),
-      }),
+    sendError(
+      res,
+      405,
+      'method_not_allowed',
+      `${req.method} is not handled by ${hit.route.file}`,
+      { allow: allowHeader.split(', ') },
+      { Allow: allowHeader },
     );
     return true;
   }
@@ -506,8 +631,10 @@ export async function handleApiRequest(req, res, url, bundlePath, options = {}) 
     // file, because a bare 500 leaves the author reading server logs for a path.
     const message = e && e.message ? e.message : String(e);
     console.error(`[hydra] API ${req.method} ${hit.route.pattern} threw: ${message}`);
-    res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ error: message, route: hit.route.pattern, file: hit.route.file }));
+    sendError(res, 500, 'handler_threw', message, {
+      route: hit.route.pattern,
+      file: hit.route.file,
+    });
   }
   return true;
 }

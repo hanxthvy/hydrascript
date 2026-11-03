@@ -623,8 +623,23 @@ curl -X POST /api/hello    -> 201 {"created": "..."}
   shape an `action` already returns.
 - A method the file does not export is `405` with an `Allow` header listing the
   ones it does. A URL with no file is a **JSON `404`**, never `index.html`.
-- `index.hys` answers `/api` itself. Subdirectories are **not** routed, and they
-  are printed as ignored at build time rather than skipped in silence.
+- `index.hys` answers `/api` itself. A **folder is a URL segment**, and the
+  naming rules are the same ones the page router uses — one naming language in a
+  project, not two:
+
+```
+src/api/users/index.hys     -> /api/users
+src/api/users/[id].hys      -> /api/users/:id      req.params["id"]
+src/api/files/[...path].hys -> /api/files/*        req.params["path"] (a list)
+```
+
+  A leading `_` is private at any level. Two files that answer the same URL —
+  `users/[id].hys` and `users/[slug].hys` — are a **build error naming both**,
+  because the URL shape is the same even though the printed patterns differ.
+- Every error this layer produces is one envelope: `{"error": "...", "code":
+  "machine_readable", "detail": {...}}`. `fail(status, data)` is the exception,
+  deliberately: that body is the application's answer, not the framework's
+  complaint.
 
 `hydra dev` and `hydra preview` serve these. A `--target static` build cannot,
 and says so with every dropped route named — an endpoint that builds

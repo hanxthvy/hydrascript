@@ -105,20 +105,38 @@ five remain open on purpose and are named at the end of this entry.
 - **One lockfile.** `bun.lock` sat beside `package-lock.json` while every
   workflow ran `npm ci`.
 
+## The five that were still open, now closed
+
+- **Nested API folders, parameters and catch-alls.** A folder is a URL segment,
+  with the same naming rules as the page router: `src/api/users/[id].hys`
+  answers `/api/users/42` and fills `req.params.id`; `[...rest].hys` gives a
+  list. Two files that answer one URL are a build error naming both — keyed on
+  the URL SHAPE, because `[id]` and `[slug]` print different patterns for the
+  same address.
+- **One error envelope.** Every framework failure is `{error, code, detail?}`,
+  in the API layer, the action path and the data endpoint. `fail(status, data)`
+  stays unwrapped on purpose: that body is the application's answer, not the
+  framework's complaint.
+- **Keyword arguments across files**, in both spellings. The `.hys` emitter had
+  no `import_specs` at all, so it could not read a signature it had just
+  imported; and the "is this a relative specifier" test required a leading `./`,
+  which the language's own `from "lib/stats.hys" import f` does not have.
+- **Page props types come from the loader.** `hydra types` reads the loader's
+  `return {...}` and emits `posts: string[]`, `region: any` — a literal keeps
+  its type, a call is `any`, and a loader-supplied prop is not optional, because
+  the loader always supplies it.
+- **Per-platform binaries.** `bin/hydra.js` resolves `@hydrascript/<triple>`
+  (glibc, musl, darwin, win32) from `optionalDependencies`, then the bundled
+  binary, and names the triple and the fix when neither exists.
+  `.github/workflows/binaries.yml` builds and publishes the seven targets, each
+  proven to start on the runner that built it.
+
 ## Still open, and why
 
-- **Nested API folders and `/api/[param]`.** A naming convention for a second
-  matcher; worth doing, not a production blocker.
-- **Two error envelopes.** `fail()` answers its status now, but a thrown handler
-  answers `{error}` and a `fail()` answers its data. One envelope is a breaking
-  change and was left for the release that can carry it.
 - **`xs[5]` past the end is still `undefined`.** Division raises, a negative
   out-of-range index raises, but a plain subscript cannot: the compiler does not
   know `list` from `dict` statically, and a bounds check on every subscript would
   break dict access.
-- **Keyword arguments across files** is a compile error, documented in SPEC §7.
-- **Per-platform binaries.** Still linux-x64 glibc 2.34 only; the matrix is a
-  release-engineering job, not a code change.
 
 ## Performance
 

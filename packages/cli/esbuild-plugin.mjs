@@ -46,12 +46,26 @@ export const COMPONENT_EXT = /\.(hyx|hsx)$/;
 /** Extensions compiled to plain JavaScript. */
 export const SCRIPT_EXT = /\.(hys|hs)$/;
 
+/**
+ * Where the native addon lives.
+ *
+ * `bin/hydra.js` sets `HYDRA_COMPILER_DIR` when it resolves a per-platform
+ * package (`@hydrascript/linux-x64`, `-darwin-arm64`, …), because that package
+ * keeps its own `hydra` and `hydra.node` together. Without it, a machine whose
+ * binary came from an optional dependency would still be asked for the addon in
+ * `bin/`, which is the failure "the CLI runs but `hydra build` cannot compile".
+ */
+function compilerDir() {
+  const dir = process.env.HYDRA_COMPILER_DIR;
+  return dir && fs.existsSync(dir) ? dir : path.join(HERE, '../../bin');
+}
+
 function defaultAddonPath() {
-  return path.join(HERE, '../../bin/hydra.node');
+  return path.join(compilerDir(), 'hydra.node');
 }
 
 function defaultCliPath() {
-  return path.join(HERE, '../../bin/hydra');
+  return path.join(compilerDir(), process.platform === 'win32' ? 'hydra.exe' : 'hydra');
 }
 
 function loadAddon(p) {

@@ -180,7 +180,23 @@ fn fn_params(params: &[Param]) -> String {
 /// WidgetProps` itself. Printing both produces a duplicate identifier and the
 /// consumer's build fails. The map lets the generated one — the one the emitted
 /// JavaScript actually references — replace the hand-written one.
+/// What a page's loader returns, as `(prop, ts type)` pairs.
+///
+/// A page's props ARE its loader's result, so a declaration that says `any` for
+/// them makes the one boundary the framework is proud of the one place TypeScript
+/// is switched off. The pairs are read from the loader's own `return {...}`
+/// literal by `cli::loader_props_for`, and pass through here.
+pub type LoaderProps = Vec<(String, String)>;
+
 pub fn emit(module: &Node, filename: &str) -> Result<String, CompileError> {
+    emit_with_loader(module, filename, &LoaderProps::new())
+}
+
+pub fn emit_with_loader(
+    module: &Node,
+    filename: &str,
+    loader: &LoaderProps,
+) -> Result<String, CompileError> {
     let body = match &module.kind {
         Kind::Module(b) => b,
         _ => return Err(CompileError::new("not a module", 1, 1, Vec::new())),
@@ -251,8 +267,20 @@ pub fn emit(module: &Node, filename: &str) -> Result<String, CompileError> {
                 let mut members = Vec::new();
                 let mut children = false;
                 for p in params {
-                    if let Some(m) = param_member(p) {
-                        members.push(m);
+                    let m_loader_or_param = param_member(p);
+                    if let Some(m) = m_loader_or_param.clone() {
+                        // A loader-sourced prop keeps the loader's TYPE and
+                        // loses its default: the loader always supplies it, so
+                        // `?` would be a lie that lets a page be used without
+                        // one. The parameter name is the contract both sides
+                        // agree on; the value travels as the loader's return.
+                        if let Some((_, ty)) =
+                            loader.iter().find(|(n, _)| n == &p.name)
+                        {
+                            members.push(format!("{}: {};", p.name, ty));
+                        } else if let Some(m) = m_loader_or_param {
+                            members.push(m);
+                        }
                     }
                     if p.name == "children" {
                         children = true;

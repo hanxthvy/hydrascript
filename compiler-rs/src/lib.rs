@@ -143,6 +143,19 @@ pub fn compile_for(
         }
         Target::Js => {
             let mut em = hx_target::JsEmitter::new();
+            // Same base directory rule as the React target: a relative
+            // specifier is resolved against the file being compiled, which is
+            // what lets a keyword argument be checked against the imported
+            // function's real signature.
+            let parent = std::path::Path::new(filename).parent();
+            let hx_dir = match parent {
+                Some(d) if !d.as_os_str().is_empty() => Some(d.to_path_buf()),
+                _ if filename != "-" && !filename.is_empty() => std::env::current_dir().ok(),
+                _ => None,
+            };
+            if let Some(d) = hx_dir {
+                em = em.with_base_dir(d);
+            }
             let code = em.run(&module)?;
             let map = em.sourcemap(filename, src);
             validate::check_output(&code, &em.linemap, &lines, true)?;

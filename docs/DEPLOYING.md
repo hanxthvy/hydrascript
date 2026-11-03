@@ -108,7 +108,7 @@ All four are gitignored.
 | a dynamic route | rendered per request by `.hydra/server.cjs`, with the real headers and the full URL |
 | a route marked `rendering = "ssr"` | rendered per request, never pre-rendered |
 | a URL nothing matches | the project's `_404`, with status **404** |
-| `/api/...` | the matching handler in `src/api`, or JSON 404 — never `index.html` |
+| `/api/...` | the matching handler in `src/api`, or JSON 404 — never `index.html`. A folder is a URL segment: `/api/users/[id].hys` answers `/api/users/42` with `req.params.id === "42"`, and `[...rest].hys` gives a list |
 | `/__hydra/data?url=...` | the loader's result as JSON, used by a client navigation |
 | a missing file with an extension | 404, never the SPA shell |
 | `.hydra-build.json`, any dotfile | 404 |
@@ -160,6 +160,35 @@ export async def loader(event):
 `body_error`). `redirect()` and `fail(status, data)` are honoured by loaders,
 actions and API routes alike — the same two helpers, read the same way, so an
 endpoint cannot disagree with a page about what a redirect means.
+
+## Installing on a platform the tarball was not built for
+
+`bin/hydra.js` resolves the native compiler in this order: `HYDRA_BINARY`, then
+`@hydrascript/<platform>-<arch>[-musl]` from `optionalDependencies`, then the
+binary beside itself. `.github/workflows/binaries.yml` builds and publishes one
+package per target — linux x64/arm64 on glibc and musl, darwin x64/arm64,
+win32 x64 — so npm installs exactly the one your machine needs and skips the
+rest.
+
+If none is present the launcher says which triple it looked for and the two ways
+to get one:
+
+```
+[hydra] no native compiler for this machine (linux-x64).
+
+  expected either @hydrascript/linux-x64 in node_modules,
+  or a binary at .../bin/hydra.
+
+  fixes:
+    npm i @hydrascript/linux-x64          # the prebuilt one
+    npm run build:compiler              # from a source checkout (needs Rust)
+  or point HYDRA_BINARY at one you already have.
+```
+
+A Linux binary is linked against the glibc of the runner that built it, which is
+why the workflow pins the oldest LTS (`ubuntu-22.04`, glibc 2.35) rather than
+`ubuntu-latest`. Older distros use the `-musl` builds, which are what Alpine
+needs anyway.
 
 ## Known limits
 

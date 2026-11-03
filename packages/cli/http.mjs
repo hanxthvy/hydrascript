@@ -59,3 +59,33 @@ export function sendHttpIntent(res, intent, extraHeaders = {}) {
   res.end(JSON.stringify(intent.data === null ? null : intent.data));
   return true;
 }
+
+/**
+ * The framework's error envelope — ONE shape for every failure it produces.
+ *
+ * There used to be no shape at all: each site wrote its own object, so a client
+ * saw `{error: "..."}` from a thrown handler, `{error, hint}` from a 404,
+ * `{error, route, file}` from a 500, and `fail(401, {...})` answering the
+ * project's own data with no wrapper. Four schemes for one question — "did this
+ * request fail, and why" — and the only field they shared was `error`, whose
+ * TYPE was not even stable.
+ *
+ * `error` stays a human string so nothing breaks; `code` is the machine field a
+ * client branches on, and `detail` carries whatever the site knows (the route, a
+ * limit, the file). `fail(status, data)` is deliberately NOT wrapped: that is the
+ * application's answer, not the framework's complaint, and a project that wants
+ * a body of its own shape must be able to have one.
+ */
+export function errorBody(code, message, detail = null) {
+  return { error: String(message), code, ...(detail ? { detail } : {}) };
+}
+
+/** Write a framework error. Returns nothing; the response is finished. */
+export function sendError(res, status, code, message, detail = null, headers = {}) {
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    ...headers,
+  });
+  res.end(JSON.stringify(errorBody(code, message, detail)));
+}
+

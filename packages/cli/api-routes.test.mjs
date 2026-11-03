@@ -255,23 +255,70 @@ test('the client scan flags a secret and a computed key, and allows PUBLIC_', ()
   assert.equal(found.some((v) => v.name === 'PUBLIC_SITE'), false);
 });
 
-test('scanApiRoutes maps files to URLs and names what it will not route', () => {
+test('scanApiRoutes maps files to URLs, including nested folders and params', () => {
   const dir = project({ middleware: false, env: false });
   try {
     fs.mkdirSync(path.join(dir, 'src', 'api', 'admin'), { recursive: true });
-    for (const rel of ['admin/users.hys', '_private.hys', 'index.hys']) {
+    fs.mkdirSync(path.join(dir, 'src', 'api', 'users'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'src', 'api', 'files'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'src', 'api', '_internal'), { recursive: true });
+    const write = (rel) =>
       fs.writeFileSync(
         path.join(dir, 'src', 'api', rel),
         '# [xihanzu-NR]\nexport def get(req):\n    return {}\n',
       );
+    for (const rel of [
+      'admin/users.hys',
+      '_private.hys',
+      'index.hys',
+      'users/index.hys',
+      'users/[id].hys',
+      'files/[...rest].hys',
+      '_internal/hidden.hys',
+    ]) {
+      write(rel);
     }
+
     const table = scanApiRoutes(dir);
-    assert.deepEqual(
-      table.routes.map((r) => r.pattern),
-      ['/api', '/api/hello'],
-    );
+    assert.deepEqual(table.routes.map((r) => r.pattern).sort(), [
+      '/api',
+      '/api/admin/users',
+      '/api/files/*',
+      '/api/hello',
+      '/api/users',
+      '/api/users/:id',
+    ]);
+
+    // A parameter is NAMED, because `req.params` is keyed by it.
+    const byId = table.routes.find((r) => r.pattern === '/api/users/:id');
+    assert.deepEqual(byId.params, ['id']);
+    assert.equal(byId.segments.at(-1).kind, 'param');
+
+    const rest = table.routes.find((r) => r.pattern === '/api/files/*');
+    assert.deepEqual(rest.params, ['rest']);
+    assert.equal(rest.segments.at(-1).kind, 'catchall');
+
     const ignored = table.ignored.map((i) => i.file.split(path.sep).join('/'));
-    assert.deepEqual(ignored.sort(), ['src/api/_private.hys', 'src/api/admin']);
+    assert.deepEqual(ignored.sort(), ['src/api/_internal', 'src/api/_private.hys']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a malformed segment and a duplicate URL are reported, not routed', () => {
+  const dir = project({ middleware: false, env: false });
+  try {
+    fs.mkdirSync(path.join(dir, 'src', 'api', 'users'), { recursive: true });
+    const write = (rel, body = 'export def get(req):\n    return {}\n') =>
+      fs.writeFileSync(path.join(dir, 'src', 'api', rel), '# [xihanzu-NR]\n' + body);
+    write('users/[bad.hys');          // unclosed bracket
+    write('users/[id].hys');
+    write('users/[slug].hys');        // same URL position, another name
+
+    const table = scanApiRoutes(dir);
+    const errors = table.errors.map((e) => e.reason).join('\n');
+    assert.match(errors, /not a usable URL segment/, 'a malformed bracket is named');
+    assert.match(errors, /both answer \/api\/users\/:(id|slug)/, "a duplicate URL is named");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

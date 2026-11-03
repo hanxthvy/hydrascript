@@ -14,7 +14,7 @@ const selfRequire = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 import { writeActionBundle, bundleActions, loadActions, readBody, requestFor } from './actions.mjs';
-import { httpIntent, sendHttpIntent } from './http.mjs';
+import { httpIntent, sendHttpIntent, sendError } from './http.mjs';
 import { loadProjectEnv, publicEnvValues, clientEnvViolations, describeClientEnvViolation } from './env.mjs';
 import {
   API_BUNDLE,
@@ -138,9 +138,12 @@ function findNativeAddon() {
   // No absolute paths: this file ships with the package, so anything anchored
   // to the author's home directory works on exactly one machine and silently
   // picks up a stranger's binary everywhere else.
+  // `HYDRA_COMPILER_DIR` is set by `bin/hydra.js` when the binary came from a
+  // per-platform package, which keeps its addon next to its own `hydra`.
+  const compilerDir = process.env.HYDRA_COMPILER_DIR || path.join(HERE, '../../bin');
   const candidates = [
     process.env.HYDRA_NATIVE,
-    path.join(HERE, '../../bin/hydra.node'),
+    path.join(compilerDir, 'hydra.node'),
   ].filter(Boolean);
 
   for (const c of candidates) {
@@ -192,8 +195,9 @@ function compilerIdentityKey() {
   if (compilerIdentity !== null) return compilerIdentity;
   try {
     const h = createHash('sha256');
+    const dir = process.env.HYDRA_COMPILER_DIR || path.join(HERE, '../../bin');
     for (const f of ['hydra', 'hydra.node']) {
-      const p = path.join(HERE, '../../bin', f);
+      const p = path.join(dir, f);
       h.update(fs.existsSync(p) ? createHash('sha256').update(fs.readFileSync(p)).digest('hex') : 'missing');
       h.update('\0');
     }
@@ -2600,13 +2604,13 @@ async function handleAction(req, res, reqPath, rawUrl, bundlePath, opts = {}) {
       originHost = '';
     }
     if (!originHost || originHost !== host) {
-      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8', ...baseHeaders() });
-      res.end(
-        JSON.stringify({
-          error: 'cross-origin action refused',
-          origin,
-          hint: 'actions accept same-origin requests; a browser sent this from another site',
-        }),
+      sendError(
+        res,
+        403,
+        'cross_origin_action',
+        'cross-origin action refused',
+        { origin, hint: 'actions accept same-origin requests; a browser sent this from another site' },
+        baseHeaders(),
       );
       return;
     }
@@ -2616,19 +2620,14 @@ async function handleAction(req, res, reqPath, rawUrl, bundlePath, opts = {}) {
   try {
     mod = await loadActions(bundlePath);
   } catch (e) {
-    res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ error: `could not load actions: ${e.message}` }));
+    sendError(res, 500, 'actions_unavailable', `could not load actions: ${e.message}`);
     return;
   }
   const hit = mod && mod.actionFor ? mod.actionFor(reqPath) : null;
   if (!hit) {
-    res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(
-      JSON.stringify({
-        error: `no action for ${req.method} ${reqPath}`,
-        hint: 'a route accepts a mutation only if a .server.hys beside it exports `action`',
-      }),
-    );
+    sendError(res, 405, 'no_action', `no action for ${req.method} ${reqPath}`, {
+      hint: 'a route accepts a mutation only if a .server.hys beside it exports `action`',
+    });
     return;
   }
 
@@ -2638,16 +2637,13 @@ async function handleAction(req, res, reqPath, rawUrl, bundlePath, opts = {}) {
   } catch (e) {
     // The same answered refusal the API layer gives. `req.destroy()` used to run
     // before this line, so the client saw an empty reply and no status at all.
-    res.writeHead(413, {
-      'Content-Type': 'application/json; charset=utf-8',
-      Connection: 'close',
-    });
-    res.end(
-      JSON.stringify({
-        error: e.message,
-        limit: e.limit ?? null,
-        hint: 'raise server.bodyLimit in hydraconfig.json, or send less',
-      }),
+    sendError(
+      res,
+      413,
+      'body_too_large',
+      e.message,
+      { limit: e.limit ?? null, hint: 'raise server.bodyLimit in hydraconfig.json, or send less' },
+      { Connection: 'close' },
     );
     return;
   }
@@ -2667,8 +2663,7 @@ async function handleAction(req, res, reqPath, rawUrl, bundlePath, opts = {}) {
   } catch (e) {
     // An action that throws is a bug in the action, and the browser deserves to
     // know rather than receiving a 200 with an empty body.
-    res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ error: e && e.message ? e.message : String(e) }));
+    sendError(res, 500, 'action_threw', e && e.message ? e.message : String(e));
   }
 }
 
@@ -2785,13 +2780,11 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
     // fall through to the SPA shell and return HTML with a 200 to a client that
     // asked for JSON.
     if (opts.api && (reqPath === '/api' || reqPath.startsWith('/api/'))) {
-      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(
-        JSON.stringify({
-          error: `no API route for ${req.method} ${reqPath}`,
-          hint: 'src/api/*.hys exports one function per HTTP method (get, post, put, patch, delete)',
-        }),
-      );
+      sendError(res, 404, 'api_route_not_found', `no API route for ${req.method} ${reqPath}`, {
+        hint:
+          'src/api/**/*.hys exports one function per HTTP method (get, post, put, patch, delete); ' +
+          'a folder is a URL segment and [id] is a parameter',
+      });
       return;
     }
 

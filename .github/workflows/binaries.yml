@@ -1,0 +1,171 @@
+# [xihanzu-NR]
+# Build the native compiler for every platform a user can legitimately be on,
+# and publish each one as its own npm package.
+#
+# Why this exists: the package used to ship ONE binary, an ELF x86-64 file
+# linked against glibc 2.34. `npm i hydrascript` therefore installed cleanly on
+# macOS, on Alpine, on an ARM VPS and on any distro older than Ubuntu 22.04, and
+# then every command died with a loader error that named neither the platform
+# nor the fix. `bin/hydra.js` now resolves `@hydrascript/<platform>-<arch>` from
+# optionalDependencies; this workflow is what puts those packages on npm.
+#
+# The glibc floor is a property of the RUNNER, not of cargo: a binary linked on
+# 24.04 refuses to start on 22.04. That is why the linux-gnu jobs are pinned to
+# the oldest LTS a runner offers rather than to `ubuntu-latest`.
+
+name: binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build every target but publish none'
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  id-token: write # trusted publishing: no long-lived npm token anywhere
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # glibc. 22.04 is the floor: older distros are served by -musl.
+          - target: linux-x64
+            os: ubuntu-22.04
+            rust: x86_64-unknown-linux-gnu
+            libc: gnu
+          - target: linux-arm64
+            os: ubuntu-22.04-arm
+            rust: aarch64-unknown-linux-gnu
+            libc: gnu
+          # musl: Alpine and the static-image world. Built inside Alpine so the
+          # toolchain is musl throughout rather than a cross-link that only
+          # looks portable.
+          - target: linux-x64-musl
+            os: ubuntu-22.04
+            rust: x86_64-unknown-linux-musl
+            libc: musl
+          - target: linux-arm64-musl
+            os: ubuntu-22.04-arm
+            rust: aarch64-unknown-linux-musl
+            libc: musl
+          - target: darwin-x64
+            os: macos-13
+            rust: x86_64-apple-darwin
+            libc: ''
+          - target: darwin-arm64
+            os: macos-14
+            rust: aarch64-apple-darwin
+            libc: ''
+          - target: win32-x64
+            os: windows-2022
+            rust: x86_64-pc-windows-msvc
+            libc: ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust }}
+
+      - name: Build the compiler and its addon
+        shell: bash
+        working-directory: compiler-rs
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target ${{ matrix.rust }}
+          OUT="target/${{ matrix.rust }}/release"
+          mkdir -p ../pkg/bin
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "$OUT/hydra.exe" ../pkg/bin/hydra.exe
+            cp "$OUT/hydra.dll" ../pkg/bin/hydra.node
+          else
+            cp "$OUT/hydra" ../pkg/bin/hydra
+            # The addon is the same library under the name node loads.
+            if [ "${{ runner.os }}" = "macOS" ]; then
+              cp "$OUT/libhydra.dylib" ../pkg/bin/hydra.node
+            else
+              cp "$OUT/libhydra.so" ../pkg/bin/hydra.node
+            fi
+            chmod +x ../pkg/bin/hydra
+          fi
+
+      # The binary must START on the machine that built it. A build that
+      # succeeds and an artifact that cannot run is the exact failure this
+      # matrix exists to prevent, and only executing it proves the difference.
+      - name: The shipped binary starts
+        shell: bash
+        run: ./pkg/bin/hydra --version
+
+      - name: Assemble the per-platform package
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("fs");
+            const version = require("./package.json").version;
+            const pkg = {
+              name: "@hydrascript/${{ matrix.target }}",
+              version,
+              description: "The HydraScript native compiler for ${{ matrix.target }}.",
+              os: ["${{ matrix.os == 'windows-2022' && 'win32' || (startsWith(matrix.os, 'macos') && 'darwin' || 'linux') }}"],
+              cpu: ["${{ contains(matrix.target, 'arm64') && 'arm64' || 'x64' }}"],
+              ...(${{ matrix.libc == 'musl' }} ? { libc: ["musl"] } : {}),
+              ...(${{ matrix.libc == 'gnu' }} ? { libc: ["glibc"] } : {}),
+              files: ["bin/"],
+              license: "MIT",
+              repository: { type: "git", url: "git+https://github.com/hanxthvy/hydrascript.git" },
+            };
+            fs.writeFileSync("pkg/package.json", JSON.stringify(pkg, null, 2));
+          '
+
+      - name: Publish the platform package
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        working-directory: pkg
+        run: |
+          set -euo pipefail
+          npm install -g 'npm@^11.5.1'
+          npm publish --provenance --access public
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: pkg/
+
+  # The root package lists every platform package as an optional dependency and
+  # fails only when NONE of them is present for the machine running it.
+  wire-optional-dependencies:
+    needs: build
+    runs-on: ubuntu-22.04
+    if: ${{ !inputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Point package.json at the published platform packages
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("fs");
+            const version = require("./package.json").version;
+            const targets = ["linux-x64","linux-arm64","linux-x64-musl","linux-arm64-musl","darwin-x64","darwin-arm64","win32-x64"];
+            const pkg = require("./package.json");
+            pkg.optionalDependencies = Object.fromEntries(targets.map((t) => [`@hydrascript/${t}`, version]));
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+          '
+      - name: Commit the wiring back to the tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json
+          git commit -m "release: optionalDependencies for the per-platform compilers"
+          git push
