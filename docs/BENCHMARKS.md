@@ -18,6 +18,7 @@ believing any of it.
 | Token count, one component | 130 vs 188 (−30.9%) | `benchmarks/tokens.py`, `cl100k_base` |
 | SSG output, small page | 3.6 KB HTML | `examples/blog` with `ssg: true` |
 | Dev rebuild (`hydra dev` save) | 508–756 ms vs 1252 ms before | `benchmarks/build-ab.mjs --dev`, 3 edits each |
+| Save-to-reload (`hydra dev`) | **190 ms** median (169–234) | `node benchmarks/dev-reload.mjs examples/blog 3`: a websocket is opened, one byte is written to a page, and the gap to the reload frame is timed. First build: ~1.4 s. |
 | Production build (portfolio) | ~2.3–2.6 s | Same script, 4 runs each, **runtime gate off** |
 
 That last row has a footnote now. The production build runs a runtime gate at

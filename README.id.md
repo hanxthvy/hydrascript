@@ -392,11 +392,15 @@ membutuhkan `vite.config.ts`, `tailwind.config.ts` maupun `postcss.config.js`.
 | `hydra dev` | Build, sajikan, dan build ulang saat berkas berubah |
 | `hydra build` | Build produksi: aset ber-hash, CSS terminifikasi, SSG |
 | `hydra preview` | Menyajikan `dist/` (build dulu kalau belum ada) |
+| `hydra serve` / `hydra start` | Menyajikan hasil build untuk deploy; menolak start kalau separuh server tidak ada |
 | `hydra run <file.hys>` | Menjalankan skrip in-process |
+
+Artefak, header respons, kompresi, dan batas platform ada di
+[`docs/DEPLOYING.md`](docs/DEPLOYING.md).
 
 **Soal "HMR":** `hydra dev` memantau `src/`, build ulang, dan **memuat ulang
 halaman di browser lewat websocket** — tanpa dependensi, tanpa ekstensi, sekitar
-10 detik dari simpan ke reload. Yang *tidak* ia lakukan adalah mempertahankan
+**~190 ms** dari simpan ke reload, median 3 edit (`node benchmarks/dev-reload.mjs`); build pertama ~1,4 detik. Yang *tidak* ia lakukan adalah mempertahankan
 state komponen melintasi perubahan: edit yang berhasil memuat ulang halaman, bukan
 menukar modul di tempat. Menyebutnya React Fast Refresh akan salah, jadi README
 ini menyebutnya live reload.

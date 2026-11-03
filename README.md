@@ -403,8 +403,9 @@ Autoprefixer and Tailwind are driven programmatically, so a project needs no
 | `hydra run <file.hys>` | Executes a script in-process |
 
 **On "HMR":** `hydra dev` watches `src/`, rebuilds, and **reloads the page in the
-browser over a websocket** — no dependency, no browser extension, ~10 seconds
-from save to reload. What it does *not* do is preserve component state across a
+browser over a websocket** — no dependency, no browser extension. Measured
+save-to-reload is **~190 ms** on this repo, median of 3 edits
+(`node benchmarks/dev-reload.mjs`); the first build is ~1.4 s. What it does *not* do is preserve component state across a
 change: a successful edit reloads, it does not hot-swap the module. Calling that
 React Fast Refresh would be wrong, so this README calls it live reload.
 
