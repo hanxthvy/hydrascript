@@ -21,6 +21,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { makeArtifacts } from './fixtures/fake-binary.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '../..');
@@ -67,21 +68,9 @@ function stubNpm(behaviour) {
   return dir;
 }
 
-function artifacts(targets) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plat-'));
-  for (const t of targets) {
-    fs.mkdirSync(path.join(dir, t, 'bin'), { recursive: true });
-    const real =
-      t.includes('arm64') && fs.existsSync(path.join('/tmp/plat', t, 'bin', 'hydra'))
-        ? path.join('/tmp/plat', t, 'bin', 'hydra')
-        : path.join(REPO, 'bin', 'hydra');
-    fs.copyFileSync(real, path.join(dir, t, 'bin', 'hydra'));
-    fs.chmodSync(path.join(dir, t, 'bin', 'hydra'), 0o755);
-    const addon = path.join('/tmp/plat', t, 'bin', 'hydra.node');
-    if (fs.existsSync(addon)) fs.copyFileSync(addon, path.join(dir, t, 'bin', 'hydra.node'));
-  }
-  return dir;
-}
+// Fixtures, not /tmp/plat: a test that needs an artifact from one CI run on one
+// machine fails on a clean checkout, which is exactly what CI is.
+const artifacts = (targets) => makeArtifacts(targets);
 
 function run(args, { stub, log } = {}) {
   const env = { ...process.env };

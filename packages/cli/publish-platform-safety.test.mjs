@@ -18,6 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { makeArtifacts } from './fixtures/fake-binary.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '../..');
@@ -55,33 +56,9 @@ function stubRegistry(state) {
   return bin;
 }
 
-/** A minimal artifact tree for the targets named. */
-function artifacts(targets) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plat-'));
-  for (const t of targets) {
-    fs.mkdirSync(path.join(dir, t, 'bin'), { recursive: true });
-    // The arch check reads the binary header, so each target needs a real binary
-    // of ITS OWN arch. /tmp/plat holds one of each from a CI run; fall back to
-    // the host binary only for targets whose arch cannot be faked.
-    const real =
-      t.startsWith('linux-arm64') || t.startsWith('darwin-arm64')
-        ? path.join('/tmp/plat', t, 'bin', 'hydra')
-        : path.join(REPO, 'bin', 'hydra');
-    if (!fs.existsSync(real)) {
-      // No cross-arch fixture on this machine: skip rather than publish-test a
-      // wrong-arch binary, which the script correctly refuses.
-      throw new Error(`fixture missing for ${t}: ${real}`);
-    }
-    fs.copyFileSync(real, path.join(dir, t, 'bin', 'hydra'));
-    fs.chmodSync(path.join(dir, t, 'bin', 'hydra'), 0o755);
-    // The addon is optional (musl has none), so give the fixtures one where the
-    // real artifacts have it: a missing addon is a warning, and this test is
-    // about publish decisions, not about warnings.
-    const addon = path.join('/tmp/plat', t, 'bin', 'hydra.node');
-    if (fs.existsSync(addon)) fs.copyFileSync(addon, path.join(dir, t, 'bin', 'hydra.node'));
-  }
-  return dir;
-}
+// Fixtures with real headers in a real layout, so the container and CPU checks
+// are exercised for real without needing a compiler or a CI artifact.
+const artifacts = (targets) => makeArtifacts(targets);
 
 const run = (args, env = {}) =>
   spawnSync(process.execPath, [SCRIPT, ...args], {
