@@ -63,8 +63,12 @@ jobs:
             rust: aarch64-unknown-linux-musl
             libc: musl
             supports_addon: false
+          # `macos-13` is the last image GitHub ships for Intel, and it is
+          # deprecated: jobs sit in the queue for hours and sometimes never
+          # start, which reads as "the Intel build is broken" when it is really
+          # "there is no machine". `macos-15-intel` is the supported replacement.
           - target: darwin-x64
-            os: macos-13
+            os: macos-15-intel
             rust: x86_64-apple-darwin
             libc: ''
             supports_addon: true
