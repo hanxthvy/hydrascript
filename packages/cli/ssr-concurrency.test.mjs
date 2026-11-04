@@ -220,3 +220,32 @@ test('a loader that throws is a 500 with a message, never empty data', async () 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/**
+ * A dynamic route must render ITS OWN page, not the home page.
+ *
+ * The bug this locks: `renderSync` passed the route PATTERN as the element's
+ * `path`, so `Router` matched `/blog/:slug` against a route table whose routes
+ * are `/` and `/blog/:slug` — and a parameterised string is not a URL, so no
+ * route matched, the not-found branch ran, and the home page was rendered with
+ * the correct loader data inlined beside it. Both the crawler and the first
+ * paint got the wrong document, and the data tag made it look right.
+ *
+ * SSG could not catch it: a static route's pattern and url are the same string.
+ */
+test('a dynamic route renders its own page, not the home page', async () => {
+  const dir = project();
+  await runBuild(dir, { dev: false, mode: 'production' });
+  const renderer = await createRenderer({
+    cwd: dir,
+    bundlePath: path.join(dir, SERVER_BUNDLE),
+    shellPath: path.join(dir, 'dist', 'index.html'),
+  });
+  assert.ok(renderer.available, renderer.reason);
+  const out = await renderer.render('/blog/two', {});
+  assert.ok(out, 'no render output');
+  // The page renders `slug=<slug>` and `tag=<tag>`; the home page (if rendered)
+  // has neither. The loader returns slug "two" with its own tag.
+  assert.ok(out.html.includes('slug=two'), `the dynamic route did not render its own slug: ${out.html}`);
+  assert.ok(out.html.includes('tag=tag-two'), 'the loader data did not reach the page');
+});
