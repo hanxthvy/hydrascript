@@ -35,6 +35,72 @@ import path from 'node:path';
 export const META_KEYS = ['title', 'description'];
 
 /**
+ * The keys `generateMetadata` may return, and the tag each one becomes.
+ *
+ * Deliberately a fixed allowlist with a fixed tag shape rather than "whatever
+ * you put in the object". A metadata block is where a framework usually starts
+ * growing a template language, and an open-ended one is an injection surface:
+ * `title` from a database row would otherwise reach the document unescaped, or
+ * a key would be emitted as an attribute name chosen by the data. Every value
+ * here is escaped as text, and every tag is built by this file.
+ *
+ * `og:*` and `twitter:*` are included because their absence was the concrete
+ * complaint: a share card with no title is worse than no share card, and SSG is
+ * HydraScript's own selling point, so the pages most likely to be shared were
+ * the ones with nothing to share.
+ */
+export const RICH_META_KEYS = [
+  'title',
+  'description',
+  'canonical',
+  'og:title',
+  'og:description',
+  'og:image',
+  'og:type',
+  'og:url',
+  'twitter:card',
+  'twitter:title',
+  'twitter:description',
+  'twitter:image',
+];
+
+/** Length caps. A 4 KB title is a bug in the caller, not a design choice. */
+const MAX_META_LEN = 2000;
+
+/**
+ * Validate what a `generateMetadata` returned.
+ *
+ * Throws rather than dropping a key: a metadata function that returns
+ * `{titel: "..."}` and gets silence ships a page with no title, and the person
+ * who wrote the typo has no way to find out. The message names the key.
+ */
+export function validateRichMeta(input, where = 'generateMetadata()') {
+  if (input === null || input === undefined) return {};
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error(`${where} must return a dict, got ${Array.isArray(input) ? 'a list' : typeof input}`);
+  }
+  const out = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (!RICH_META_KEYS.includes(key)) {
+      throw new Error(
+        `${where} returned "${key}", which this build does not apply. ` +
+          `Supported: ${RICH_META_KEYS.join(', ')}.`,
+      );
+    }
+    if (value === null || value === undefined) continue;
+    if (typeof value !== 'string' && typeof value !== 'number') {
+      throw new Error(`${where} returned "${key}" as ${typeof value}; metadata values are strings`);
+    }
+    const text = String(value);
+    if (text.length > MAX_META_LEN) {
+      throw new Error(`${where} returned "${key}" at ${text.length} characters (max ${MAX_META_LEN})`);
+    }
+    out[key] = text;
+  }
+  return out;
+}
+
+/**
  * Read `meta` out of a page's source.
  *
  * Returns `{ meta, error }` and never throws: the scanner collects diagnostics
@@ -198,7 +264,47 @@ export function applyMeta(html, meta) {
     }
   }
 
+  // og:/twitter:/canonical. Built here, never templated, so a value from a
+  // database cannot become markup. `canonical` is a <link>; the rest are
+  // property= (Open Graph) or name= (Twitter) meta tags.
+  if (typeof meta.canonical === 'string') {
+    out = upsertTag(out, '<link rel="canonical"', `<link rel="canonical" href="${escapeHtml(meta.canonical)}" />`);
+  }
+  for (const [key, attr] of [
+    ['og:title', 'property'],
+    ['og:description', 'property'],
+    ['og:image', 'property'],
+    ['og:type', 'property'],
+    ['og:url', 'property'],
+    ['twitter:card', 'name'],
+    ['twitter:title', 'name'],
+    ['twitter:description', 'name'],
+    ['twitter:image', 'name'],
+  ]) {
+    const value = meta[key];
+    if (typeof value !== 'string') continue;
+    out = upsertTag(
+      out,
+      `<meta ${attr}="${key}"`,
+      `<meta ${attr}="${key}" content="${escapeHtml(value)}" />`,
+    );
+  }
+
   return out;
+}
+
+/**
+ * Replace the tag that starts with `matcher`, or insert one before `</head>`.
+ *
+ * Replace rather than append: a document with two `<meta property="og:title">`
+ * shows whichever the crawler reads first, which is the one from the shell, not
+ * the page. The same reason the title replacement above exists.
+ */
+function upsertTag(html, matcher, tag) {
+  const escaped = matcher.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`${escaped}[^>]*>`, 'i');
+  if (re.test(html)) return html.replace(re, tag);
+  return html.includes('</head>') ? html.replace(/<\/head>/i, `  ${tag}\n  </head>`) : html;
 }
 
 /**

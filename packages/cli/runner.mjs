@@ -51,7 +51,7 @@ import {
   routesJson,
   matchRoute,
 } from './router.mjs';
-import { applyMeta } from './meta.mjs';
+import { applyMeta, validateRichMeta } from './meta.mjs';
 
 /**
  * The entrypoint filenames, in priority order. ONE list: the runner resolves
@@ -2005,6 +2005,31 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
         // single URL to render, so it is skipped and SAID OUT LOUD: a project
         // that ships a `/blog/:slug` and finds an empty shell in the served HTML
         // has to be able to read why, not infer it.
+        /**
+         * `/blog/:slug` + `{slug: "hello"}` -> `/blog/hello`. Null when a
+         * parameter is unfilled, so a half-specified entry is reported rather
+         * than silently written to a path with a literal `:slug` in it.
+         */
+        const fillPattern = (pattern, params) => {
+          let ok = true;
+          const url = pattern.replace(/:([A-Za-z_$][\w$]*)/g, (_, name) => {
+            const v = params[name];
+            if (v === undefined || v === null) {
+              ok = false;
+              return '';
+            }
+            return String(v);
+          });
+          // A catch-all consumes the rest of the path; `[...rest]` in a pattern
+          // is spelled `*` by the router's own matcher.
+          const withRest = params.rest !== undefined && url.includes('*');
+          const final = withRest
+            ? url.replace('*', [].concat(params.rest).join('/'))
+            : url;
+          if (final.includes('*')) ok = false;
+          return ok ? final.replace(/\/{2,}/g, '/') : null;
+        };
+
         const preRenderable = routesTable
           ? routesTable.routes.filter(
               (r) => !r.hasParams && r.rendering !== 'csr' && r.rendering !== 'ssr',
@@ -2090,24 +2115,85 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
           return path.join(dir, 'index.html');
         };
 
-        let renderedCount = 0;
-        if (sourceHtml && routesTable && staticRoutes.length > 0 && typeof ssgMod.renderFor === 'function') {
-          for (const route of staticRoutes) {
+        /**
+         * Expand the static routes with the ones a page opted into.
+         *
+         * A route with a parameter has no single URL, so it used to be left to
+         * the server — correct for a static deploy and useless for the thing SSG
+         * is FOR: a crawler asking for `/blog/hello`. `staticParamsFor` asks the
+         * page's own `.server.hys` for the instances it knows, and each one is
+         * rendered like any other static route.
+         *
+         * `[]` means "none, render per request" and is honoured; `null` means the
+         * page did not opt in and the route stays dynamic with a note. The
+         * difference matters: a dashboard must not be prerendered, and a blog
+         * must not be silently skipped.
+         */
+        const expandedRoutes = [];
+        const dynamicWithoutParams = [];
+        if (routesTable && typeof ssgMod.staticParamsFor === 'function') {
+          for (const route of preRenderable) expandedRoutes.push({ ...route, params: {} });
+          for (const route of dynamicRoutes) {
+            if (route.rendering === 'ssr' || route.rendering === 'csr') continue;
+            let list;
             try {
-              // Always `{ element, data }`. There is no fallback to the raw
-              // return value: an earlier version fell back when `element` was
-              // null, which handed React the wrapper object and produced
-              // "Objects are not valid as a React child" instead of the reason.
-              const out = await ssgMod.renderFor(route.pattern, {}, route.pattern);
-              const element = out ? out.element : null;
-              if (!element) {
+              list = await ssgMod.staticParamsFor(route.pattern);
+            } catch (err) {
+              console.error(
+                `[hydra] SSG: static_params() for ${route.pattern} failed: ${err.message || err}`,
+              );
+              continue;
+            }
+            if (list === null) {
+              dynamicWithoutParams.push(route.pattern);
+              continue;
+            }
+            for (const params of list) {
+              if (!params || typeof params !== 'object') continue;
+              const url = fillPattern(route.pattern, params);
+              if (!url) {
+                console.error(
+                  `[hydra] SSG: static_params() for ${route.pattern} returned ${JSON.stringify(params)}, ` +
+                    'which does not fill every parameter; skipped',
+                );
+                continue;
+              }
+              expandedRoutes.push({ ...route, params, url });
+            }
+          }
+        }
+
+        let renderedCount = 0;
+        if (sourceHtml && routesTable && expandedRoutes.length > 0 && typeof ssgMod.renderFor === 'function') {
+          for (const route of expandedRoutes) {
+            try {
+              // Always `{ render, withRequest, data }`. There is no fallback to
+              // the raw return value: an earlier version fell back when the
+              // element was null, which handed React the wrapper object and
+              // produced "Objects are not valid as a React child" instead of the
+              // reason.
+              //
+              // The render itself runs INSIDE `withRequest`, which is what puts
+              // the loader's data in this request's async context. Outside it,
+              // `Router` sees no seed and renders the route as if it were the
+              // browser's first paint — an empty shell with correct data beside
+              // it.
+              // A `generateStaticParams` entry renders its OWN url with its own
+              // params; a plain static route is the pattern with an empty map.
+              const renderUrl = route.url || route.pattern;
+              const out = await ssgMod.renderFor(route.pattern, route.params || {}, renderUrl);
+              if (!out || typeof out.withRequest !== 'function') {
                 console.warn(`[hydra] SSG: ${route.pattern} (src/pages/${route.file}) exports no component; skipped`);
                 continue;
               }
-              const rendered = renderToString(element);
-              // The seed outlives `renderFor` on purpose (see the generated
-              // entry), so it is cleared here, once the render has read it.
-              if (typeof ssgMod.__clear_seed === 'function') ssgMod.__clear_seed();
+              const rendered = out.withRequest(() => {
+                const element = out.render();
+                return element ? renderToString(element) : null;
+              });
+              if (rendered === null) {
+                console.warn(`[hydra] SSG: ${route.pattern} (src/pages/${route.file}) exports no component; skipped`);
+                continue;
+              }
               // The loader's result travels with the HTML so the client's first
               // paint has the same data the server rendered from. Without it the
               // client fetches again and the two frames disagree — React says so
@@ -2118,15 +2204,39 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
               // route rather than the app. It is read from the scanner's table —
               // the same source the client's route table is generated from — so
               // the static HTML and a later client navigation cannot disagree.
+              // A page that exports `metadata(event)` gets a title built from
+              // its data. This is what makes a per-slug title possible at all:
+              // the static `meta = {...}` dict is one dict for the whole route,
+              // so `/blog/hello` and `/blog/world` could only ever share a
+              // title. The merge order is deliberate — the dynamic result wins
+              // over the static dict, because a function that ran with the
+              // request knows more than a literal that did not.
+              let routeMeta = route.meta;
+              if (typeof ssgMod.metadataFor === 'function') {
+                try {
+                  const dynamicMeta = await ssgMod.metadataFor(
+                    route.pattern,
+                    route.params || {},
+                    renderUrl,
+                  );
+                  if (dynamicMeta) {
+                    routeMeta = { ...(routeMeta || {}), ...validateRichMeta(dynamicMeta, `metadata() for ${route.pattern}`) };
+                  }
+                } catch (err) {
+                  // A metadata function that throws must not cost the page its
+                  // HTML. Named, and the static dict still applies.
+                  console.error(`[hydra] SSG: ${route.pattern}: ${err.message || err}`);
+                }
+              }
               const html = applyMeta(
                 injectLoaderData(
                   withBundle(inject(sourceHtml, rendered)),
                   route.pattern,
                   out && out.data,
                 ),
-                route.meta,
+                routeMeta,
               );
-              fs.writeFileSync(htmlPathForPattern(route.pattern), html, 'utf8');
+              fs.writeFileSync(htmlPathForPattern(renderUrl), html, 'utf8');
               renderedCount += 1;
             } catch (err) {
               // One page that throws must not cost the other pages their HTML.
@@ -2134,8 +2244,16 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
             }
           }
           console.log(
-            `[hydra] SSG: pre-rendered ${renderedCount}/${staticRoutes.length} static route(s) into ${path.relative(cwd, outDir)}/`,
+            `[hydra] SSG: pre-rendered ${renderedCount}/${expandedRoutes.length} static route(s) into ${path.relative(cwd, outDir)}/`,
           );
+          if (dynamicWithoutParams.length > 0) {
+            // Said out loud rather than inferred: a project that ships a
+            // `/blog/:slug` and finds a shell in the HTML has to be able to read
+            // WHY, and the fix (export static_params) named where they will look.
+            console.log(
+              `[hydra] SSG: left dynamic (no static_params export): ${dynamicWithoutParams.join(', ')}`,
+            );
+          }
           // A STATIC host has no router: Netlify, Cloudflare Pages, GitHub
           // Pages and nginx all look for `404.html` when nothing matches. The
           // project's `_404` existed but only ever reached the browser through
@@ -2881,8 +2999,46 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
             sendHttpIntent(res, out.intent);
             return;
           }
-          if (out) {
-            const body = opts.injectHtml ? opts.injectHtml(out.document) : out.document;
+          // Streaming first: the shell goes out as soon as it is ready and the
+          // rest follows, so a slow loader does not hold a blank document. It
+          // falls back to the buffered page when the renderer cannot stream
+          // (no renderToPipeableStream, or a shell with no root element), and
+          // `renderPage` is then the answer — never both, because two flushes
+          // would append one document to another.
+          const streamed = opts.ssr.renderPageStream
+            ? await opts.ssr.renderPageStream(rawUrl, {
+                request: requestFor(req, rawUrl, ''),
+              })
+            : null;
+          if (streamed && streamed.intent) {
+            sendHttpIntent(res, streamed.intent);
+            return;
+          }
+          if (streamed && streamed.stream) {
+            res.writeHead(200, {
+              'Content-Type': 'text/html; charset=utf-8',
+              ...baseHeaders(),
+              'Cache-Control': 'no-store',
+              // Chunked, explicitly: a Content-Length would promise a size this
+              // response does not know until the last boundary resolves.
+              'Transfer-Encoding': 'chunked',
+            });
+            streamed.stream.pipe(res);
+            streamed.stream.on('error', (err) => {
+              console.error(`[hydra] SSR stream failed for ${reqPath}: ${err.message || err}`);
+              res.destroy(err);
+            });
+            return;
+          }
+          const out2 = streamed ? null : await opts.ssr.renderPage(rawUrl, {
+            request: requestFor(req, rawUrl, ''),
+          });
+          if (out2 && out2.intent) {
+            sendHttpIntent(res, out2.intent);
+            return;
+          }
+          if (out2) {
+            const body = opts.injectHtml ? opts.injectHtml(out2.document) : out2.document;
             // Rendered per request, so it must never be cached: the same URL can
             // answer differently for two visitors.
             res.writeHead(200, {
@@ -3570,7 +3726,50 @@ function gitSha() {
   }
 }
 
-const cwd = process.cwd();
+/**
+ * The project directory, as a POSITIONAL argument.
+ *
+ * `hydra build examples/blog` used to ignore the word `examples/blog` entirely
+ * and build `process.cwd()`. In a directory with no project that meant the
+ * native compiler was handed the path as a FILE, compiled nothing, and printed
+ * `OK: compiled 0 file(s)` with exit 0 — a command that reports success while
+ * doing nothing is worse than one that fails, because nobody looks at it twice.
+ *
+ * The commands that take a directory are the ones whose whole job is a project.
+ * `dev`, `preview` and `serve` stay on cwd: they own a port and a session, and
+ * a positional path there was never documented.
+ */
+const positionalDir = (() => {
+  const takesDir = new Set(['build', 'routes', 'analyze', 'stats', 'doctor', 'init', 'clean']);
+  if (!takesDir.has(cmd)) return null;
+  const rest = argv.slice(1);
+  for (let i = 0; i < rest.length; i += 1) {
+    const a = rest[i];
+    if (!a || a.startsWith('-')) continue;
+    // Skip a value that belongs to a flag we know takes one.
+    if (rest[i - 1] === '--port' || rest[i - 1] === '--host' || rest[i - 1] === '--target') continue;
+    return a;
+  }
+  return null;
+})();
+
+const cwd = positionalDir ? path.resolve(process.cwd(), positionalDir) : process.cwd();
+
+if (positionalDir && !fs.existsSync(cwd)) {
+  console.error(`[hydra] ${cmd}: no such directory: ${positionalDir}`);
+  process.exit(1);
+}
+if (positionalDir && !fs.existsSync(path.join(cwd, 'hydraconfig.json'))) {
+  // A missing config is legal (defaults apply), but a directory that holds no
+  // project at all is almost always a typo, and building it silently is how the
+  // old behaviour wasted a person's afternoon.
+  const hasSource = fs.existsSync(path.join(cwd, 'src'));
+  if (!hasSource) {
+    console.error(`[hydra] ${cmd}: ${positionalDir} has no hydraconfig.json and no src/ — not a project`);
+    process.exit(1);
+  }
+}
+
 const runOpts = { port: portOverride, host: hostOverride, version: VERSION, sha: gitSha(), target: targetOverride };
 
 // Only act when this file IS the program. Importing the runner used to start a

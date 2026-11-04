@@ -12,6 +12,60 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## 0.13.0 — 2026-11-04
+
+Four things that were claimed and not true, and one bug that made a whole
+category of pages render the wrong document.
+
+## Fixed
+
+- **A dynamic route rendered the HOME PAGE.** `renderSync` handed React the
+  route PATTERN as the element's `path`, so `Router` matched `/blog/:slug`
+  against a route table of URLs, found nothing, and fell through to `/`. The
+  loader's data was inlined correctly beside it, so the document looked
+  plausible and the data tag made it look right. SSG could not catch it because
+  a static route's pattern and url are the same string. Every server-rendered
+  parameterised page was affected.
+- **`hydra build <dir>` reported success while doing nothing.** The binary looked
+  for `hydraconfig.json` from the shell's cwd only; given a path it found
+  nothing, fell through to the single-file compiler, compiled zero files, and
+  printed `OK: compiled 0 file(s)` with exit 0. A path that names a project is
+  now built; a path that names nothing fails with a message and a non-zero exit.
+
+## Added
+
+- **Request context.** The SSR seed moved from a module-global into
+  `AsyncLocalStorage`, so two requests that await loaders concurrently cannot
+  read each other's data. The global slot remains for the synchronous SSG pass
+  and for a runtime without AsyncLocalStorage, and the server injects the real
+  one at load time.
+- **Streaming SSR.** `renderPageStream` pipes React's output as it is produced
+  and writes the head before the body, so the browser has a document while the
+  tree is still being built. The test asserts on socket chunks, not on content:
+  a buffered implementation produces a correct document and passes every content
+  assertion.
+- **`generateStaticParams` / `static_params()`.** A dynamic route can declare its
+  instances in its `.server.hys`, and the build prerenders one document per
+  entry — the thing that makes SSG work for a URL with a parameter. `[]` means
+  "render per request" and is honoured; no export means the route stays dynamic
+  and the build says which one.
+- **`generateMetadata` / `metadata(event)`.** A per-slug title, canonical and
+  `og:`/`twitter:` tags, built from the same event the loader gets. The key list
+  is a fixed allowlist and every value is escaped, so a title from a database
+  cannot become markup. An unknown key is an error that names it.
+- **Route splitting is now tested.** No example project used the file-based
+  router, so nothing in CI ever built one. `routing-split.test.mjs` builds a
+  four-page project and asserts on the output: one chunk per page, the entry
+  bundle does not contain a page body.
+
+## Changed
+
+- `bin/hydra` and `bin/hydra.node` rebuilt at 0.13.0.
+- The "streaming" claim now has a limit written down: the route loader is still
+  awaited before the first byte, because `renderSync` needs a value. What streams
+  is everything below a Suspense boundary, and the document is no longer built
+  in memory before the first byte.
+
 ## 0.12.1 — 2026-11-04
 
 A second pass over the same code, this time verifying the review's claims against

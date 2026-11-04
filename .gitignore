@@ -60,3 +60,4 @@ editors/**/out/
 # ran `npm ci`, so one of them was always stale and nothing said which. npm is
 # what CI, the release and the install check use, so npm is the one kept.
 bun.lock
+watch-out/

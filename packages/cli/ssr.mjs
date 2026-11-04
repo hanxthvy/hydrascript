@@ -25,6 +25,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
@@ -87,6 +88,36 @@ export function injectData(html, tag) {
  * reason the pre-render pass reads that rather than `dist/index.html`. This
  * handles both correctly rather than depending on it.
  */
+/**
+ * Split a shell at the root element: everything up to and including
+ * `<div id="root">`, and everything from its closing tag on.
+ *
+ * The streamed path needs this because the app's markup is written BETWEEN the
+ * two halves as React produces it, rather than injected into a saved copy. Null
+ * when the shell has no root element, which is a project the buffered path also
+ * cannot render — so the caller falls back rather than guessing.
+ */
+export function splitAtRoot(html) {
+  const open = /<div\s+id=["']root["'][^>]*>/i.exec(html);
+  if (!open) return [null, null];
+  const start = open.index + open[0].length;
+  let depth = 1;
+  const re = /<\/div\s*>|<div\b[^>]*>/gi;
+  re.lastIndex = start;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    if (m[0][1] === '/') {
+      depth -= 1;
+      if (depth === 0) {
+        return [html.slice(0, start), html.slice(m.index)];
+      }
+    } else {
+      depth += 1;
+    }
+  }
+  return [null, null];
+}
+
 export function injectMarkup(html, rendered) {
   const open = /<div\s+id=["']root["'][^>]*>/i.exec(html);
   if (!open) {
@@ -152,10 +183,32 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
         'the server bundle predates 0.8 (no loadFor/renderSync) — run `hydra build` again',
     };
   }
+  // Hand the runtime a real AsyncLocalStorage, ONCE, before the first request.
+  //
+  // The runtime cannot `require('node:async_hooks')` itself: that import would
+  // have to resolve for the browser bundle too, and a bundler would either fail
+  // or ship a shim. Injecting it here keeps the browser build free of it and
+  // makes the server path concurrent by construction. This is what lets two
+  // requests await a loader at the same time without sharing a seed.
+  if (typeof mod.__with_ssr_seed !== 'function' || typeof mod.__set_async_local_storage !== 'function') {
+    return {
+      available: false,
+      reason:
+        'the server bundle predates request context (no __with_ssr_seed) — run `hydra build` again',
+    };
+  }
+  try {
+    const { AsyncLocalStorage } = await import('node:async_hooks');
+    mod.__set_async_local_storage(AsyncLocalStorage);
+  } catch (e) {
+    return { available: false, reason: `AsyncLocalStorage is unavailable: ${e.message}` };
+  }
 
   const reactDomServerPath = requireFrom.resolve('react-dom/server');
   const reactPath = requireFrom.resolve('react');
-  const { renderToString } = await import(pathToFileURL(reactDomServerPath).href);
+  const reactDomServer = await import(pathToFileURL(reactDomServerPath).href);
+  const { renderToString, renderToPipeableStream } = reactDomServer;
+  const canStream = typeof renderToPipeableStream === 'function';
   const reactMod = await import(pathToFileURL(reactPath).href);
   const React = reactMod.default || reactMod;
 
@@ -257,13 +310,24 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
       const params = hit.params;
       const pattern = hit.route.pattern;
       const data = await mod.loadFor(pattern, params, url, request);
-      // No `await` from here to `renderToString`: the loader seed is
-      // module-global, and an interleaved request would render this page with
-      // the other one's data. `ensureFresh` is synchronous for that reason.
-      const element = mod.renderSync(pattern, params, url, data);
-      if (!element) return null;
-      const rendered = renderToString(element);
-      if (typeof mod.__clear_seed === 'function') mod.__clear_seed();
+      // The render runs INSIDE this request's async context, so another request
+      // awaiting its own loader cannot see — or overwrite — this one's data.
+      // Before request context existed the comment here said the opposite: that
+      // nothing may `await` between the seed write and renderToString, because
+      // the seed was one module-global. It still is one global for the SSG
+      // pass, which is synchronous; a server is not.
+      const rendered = mod.withRequest
+        ? mod.withRequest({ path: pattern, url, data }, () => {
+            const element = mod.renderSync(pattern, params, url, data);
+            return element ? renderToString(element) : null;
+          })
+        : (() => {
+            const element = mod.renderSync(pattern, params, url, data);
+            const html = element ? renderToString(element) : null;
+            if (typeof mod.__clear_seed === 'function') mod.__clear_seed();
+            return html;
+          })();
+      if (rendered === null) return null;
       return { pattern, params, data, html: rendered, meta: hit.route.meta || null };
     },
     /** Render a URL into a complete HTML document. */
@@ -288,6 +352,125 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
       // the static build of every OTHER route had the page's.
       html = applyMeta(html, out.meta);
       return { ...out, intent: null, document: html };
+    },
+    /**
+     * Render a URL into a complete HTML document, streamed.
+     *
+     * Why this exists: `renderToString` buffers the whole tree, so a page whose
+     * loader takes 400 ms sends nothing for 400 ms and the browser shows a blank
+     * document. `renderToPipeableStream` sends the shell immediately, and React
+     * streams the rest as boundaries resolve — which is what every framework of
+     * this class does and what "streaming SSR" means when it is claimed.
+     *
+     * The shape is different from the buffered path in two ways that matter:
+     *
+     *   - The document is assembled as TWO writes: everything before the app's
+     *     markup, then everything after it. The loader data tag is written in
+     *     the second part, because the data only exists once the loader has
+     *     resolved — which is exactly the wait this avoids making the visitor
+     *     sit through.
+     *   - The rendered markup is NOT injected into a saved copy of the shell. It
+     *     is written between the two halves, so reactivity is progressive: a
+     *     boundary that suspends leaves its fallback in the first flush and its
+     *     content in a later one.
+     *
+     * `onShellReady` fires when the shell is complete. Before that, a throw can
+     * still be answered with a real error page, which is why nothing is written
+     * until then.
+     *
+     * @returns {null | { pattern, params, data, meta, stream }}
+     *   `stream` is a Node Readable; the caller pipes it and is responsible for
+     *   the status line and headers.
+     */
+    async renderPageStream(url, opts = {}) {
+      if (!canStream) return null;
+      ensureFresh();
+      const hit = this.match(url);
+      if (!hit) return null;
+      const params = hit.params;
+      const pattern = hit.route.pattern;
+      const request = opts.request || null;
+
+      // The route loader is awaited here, BEFORE the head is written.
+      //
+      // That is a real limit, and it is stated rather than glossed: streaming
+      // buys nothing for the ROOT loader's own latency, because `renderSync`
+      // needs a value for the page to render with. What it does buy is that
+      // everything below a Suspense boundary in the page streams as it resolves
+      // instead of arriving with the first flush, and the document no longer
+      // waits for the whole tree to be built in memory. A framework that streams
+      // the loader itself needs React Server Components or a resolver-based
+      // renderer; neither exists here yet, and pretending otherwise would be the
+      // exact "claimed but not measured" failure this release is cleaning up.
+      const data = await mod.loadFor(pattern, params, url, request);
+      const intent = httpIntent(data);
+      if (intent) return { pattern, params, data, meta: hit.route.meta || null, intent, stream: null };
+
+      const [before, after] = splitAtRoot(shell);
+      if (before === null) return null; // no <div id="root">; the buffered path decides
+
+      const head = applyMeta(before, hit.route.meta || null);
+      const tail = after;
+
+      // `renderToPipeableStream` returns `{ pipe, abort }` SYNCHRONOUSLY, but it
+      // does not begin rendering until `pipe()` is called. Waiting for
+      // `onShellReady` before piping deadlocks: the callback fires from the
+      // pipe and the pipe waits for the callback. So the stream is piped first,
+      // and the head is written before any of its chunks reach the response.
+      const render = () => mod.renderSync(pattern, params, url, data);
+      const element = mod.withRequest
+        ? React.createElement(() => mod.withRequest({ path: pattern, url, data }, render))
+        : render();
+      if (!element) return null;
+
+      let shellFailed = null;
+      const handle = renderToPipeableStream(element, {
+        onShellError(err) {
+          shellFailed = err;
+        },
+        onError(err) {
+          // A boundary failed AFTER the shell. The page still ships, so this is
+          // a log line rather than a failed request — the same distinction the
+          // buffered path makes between a 500 and a rendered error boundary.
+          console.error(`[hydra] SSR stream error for ${pattern}: ${err && err.message ? err.message : err}`);
+        },
+      });
+
+      // Three writes, in order: the head (that is the early first byte), React's
+      // chunks as they are produced, then the data tag and the closing tags.
+      // The last part can only be written once the loader's result exists —
+      // which is the wait streaming exists to hide.
+      const out = new PassThrough();
+      out.write(head);
+
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        if (shellFailed) {
+          out.destroy(shellFailed);
+          return;
+        }
+        out.end(injectData('', dataTag(pattern, url, data)) + tail);
+      };
+
+      // React's pipe writes into `sink` and ends it when the render is done;
+      // completion is observed there because the handle is not an emitter.
+      //
+      // React's FIRST chunk begins with a script that hides the fallbacks it
+      // intends to replace later, and the markup follows immediately. The data
+      // tag must come after ALL of it, not merely after the first chunk — the
+      // previous version appended it on React's `end` but React had not flushed
+      // its last chunk yet, so the tag landed between the shell and the markup.
+      // A client reading it would trust a payload for a document that had not
+      // finished arriving.
+      const sink = new PassThrough();
+      sink.on('data', (chunk) => out.write(chunk));
+      sink.on('end', finish);
+      sink.on('error', (err) => out.destroy(err));
+      handle.pipe(sink);
+
+      return { pattern, params, data, meta: hit.route.meta || null, intent: null, stream: out };
     },
     /** Run just the loader, for the data endpoint. */
     async load(url, { request = null } = {}) {

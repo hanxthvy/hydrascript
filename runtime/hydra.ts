@@ -401,8 +401,9 @@ export function use_path(): string {
     // compare against `"/about"`, and the query is `use_query_string()`'s job.
     // The seed's `path` is the route PATTERN, so `url` is split here to keep a
     // render on `/blog?page=2` from looking like a different route.
-    if (ssr_seed && ssr_seed.url) return ssr_seed.url.split('#')[0].split('?')[0]
-    if (ssr_seed && ssr_seed.path) return ssr_seed.path
+    const seed = currentSeed()
+    if (seed && seed.url) return seed.url.split('#')[0].split('?')[0]
+    if (seed && seed.path) return seed.path
     if (typeof window === 'undefined') return '/'
     return (window.location.pathname !== '/' ? window.location.pathname : window.location.hash) || '/'
   }
@@ -613,10 +614,101 @@ export interface SsrSeed {
 
 let ssr_seed: SsrSeed | null = null
 
+/**
+ * Per-request seed storage.
+ *
+ * `ssr_seed` above is one slot for the whole module instance, which is correct
+ * for a pre-render pass (one synchronous walk, one URL at a time) and wrong for
+ * a server: two requests that both `await` a loader would write to the same slot
+ * and the second page would render with the first one's data — silently, with
+ * both pages looking plausible.
+ *
+ * `AsyncLocalStorage` gives each async call chain its own store, so a concurrent
+ * server is correct by construction rather than by the discipline of never
+ * awaiting between the write and the render. It is Node-only (`node:async_hooks`
+ * does not exist in a browser), so it is loaded lazily and only when a caller
+ * asks for it; a client bundle never reaches this code because the store is
+ * always empty there.
+ *
+ * Kept alongside the global rather than replacing it: the SSG pass renders
+ * synchronously and does not need an async context, and the browser has none.
+ */
+type Als = { run: <T>(store: SsrSeed, fn: () => T) => T; getStore: () => SsrSeed | undefined }
+let als: Als | null = null
+let alsTried = false
+
+function seedStore(): Als | null {
+  if (alsTried) return als
+  alsTried = true
+  try {
+    // A literal specifier so a bundler can decide for itself; the browser build
+    // never evaluates this branch because `process.versions.node` is undefined.
+    const req = (globalThis as any).__hydra_require_async_hooks
+    if (typeof req === 'function') {
+      const { AsyncLocalStorage } = req()
+      als = new AsyncLocalStorage() as Als
+    }
+  } catch {
+    als = null
+  }
+  return als
+}
+
+/**
+ * Register the AsyncLocalStorage constructor.
+ *
+ * A bundler cannot be handed a runtime `require('node:async_hooks')` without
+ * either failing to resolve it for the browser or shipping a shim, so the server
+ * entry injects it once at startup. Nothing else calls this.
+ */
+export function __set_async_local_storage(Ctor: new () => Als): void {
+  // NOT `alsTried = true` with the constructor left unset: `seedStore()` marks
+  // itself tried the first time anything asks for a store, and if that happened
+  // before this ran — which it does, because the generated entry imports the
+  // runtime and calls `renderSync` at module scope — the injection was
+  // overwritten by `als = null` and every request fell back to the global slot.
+  // That is exactly the bug this line fixes: the store existed, was created, and
+  // was then forgotten.
+  als = new Ctor()
+  alsTried = true
+}
+
+/** The seed for the CURRENT async context, falling back to the global one. */
+function currentSeed(): SsrSeed | null {
+  if (als) {
+    const store = als.getStore()
+    if (store) return store
+  }
+  return ssr_seed
+}
+
 /** Called by the generated pre-render entry. Not for application code. */
 export function __seed_for_ssr(seed: SsrSeed): void {
   ssr_seed = seed
   if (seed.table) route_table_cache = seed.table
+}
+
+/**
+ * Run `fn` with `seed` as this async context's request state.
+ *
+ * This is what a server calls per request. Everything inside — the loader's
+ * `use_loader`, `use_path`, the route table — reads this context and nothing
+ * else, so two renders in flight cannot see each other's data.
+ */
+export function __with_ssr_seed<T>(seed: SsrSeed, fn: () => T): T {
+  if (!seedStore()) {
+    // No AsyncLocalStorage (a browser, or a Node without it): fall back to the
+    // global slot with the same discipline the single-threaded path had. The
+    // caller still gets a correct render; it just cannot be concurrent.
+    __seed_for_ssr(seed)
+    try {
+      return fn()
+    } finally {
+      __clear_ssr_seed()
+    }
+  }
+  if (seed.table) route_table_cache = seed.table
+  return als!.run(seed, fn)
 }
 
 /** Clear the seed. Called after pre-rendering so nothing leaks into a later call. */
@@ -657,7 +749,8 @@ function readGeneratedTable(): RouteTable {
  * URLs with one module instance.
  */
 export function get_route_table_sync(): RouteTable {
-  if (ssr_seed) return ssr_seed.table
+  const seed = currentSeed()
+  if (seed) return seed.table
   if (route_table_cache === undefined) route_table_cache = readGeneratedTable()
   return route_table_cache
 }
@@ -1109,8 +1202,9 @@ export function Router(props: RouterProps) {
   // The hook is called unconditionally: a conditional hook changes the hook
   // order between renders the first time a navigation happens.
   const live = use_loader(pattern, path)
+  const requestSeed = currentSeed()
   const loaderData =
-    ssr_seed && ssr_seed.path === pattern ? ssr_seed.data : live.data
+    requestSeed && requestSeed.path === pattern ? requestSeed.data : live.data
 
 
   const layoutChain = useMemo(() => {

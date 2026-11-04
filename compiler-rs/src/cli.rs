@@ -13,7 +13,19 @@ use crate::compile;
 use crate::check_source;
 
 fn find_hydraconfig() -> Option<PathBuf> {
-    let mut current = std::env::current_dir().ok()?;
+    find_hydraconfig_from(&std::env::current_dir().ok()?)
+}
+
+/// Walk up from `start` looking for a project root.
+///
+/// Split out of `find_hydraconfig` so the positional-directory form can ask the
+/// same question about the directory it was given. `hydra build examples/blog`
+/// used to answer "no project here" for a path that is plainly a project, fall
+/// through to the single-file compiler, and print
+/// `OK: compiled 0 file(s)` with exit 0 — success reported for work that never
+/// happened.
+fn find_hydraconfig_from(start: &Path) -> Option<PathBuf> {
+    let mut current = start.to_path_buf();
     loop {
         let candidate = current.join("hydraconfig.json");
         if candidate.is_file() {
@@ -24,6 +36,66 @@ fn find_hydraconfig() -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// The first positional argument, skipping flags and the values they take.
+///
+/// Kept in one place because three commands ask for it, and a command that
+/// guesses wrong here is the difference between building the project named on
+/// the command line and building whatever directory the shell happened to be in.
+fn positional_dir(args: &[String]) -> Option<PathBuf> {
+    let mut skip_next = false;
+    for a in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if a == "--port" || a == "--host" || a == "--target" || a == "-o" || a == "--out" {
+            skip_next = true;
+            continue;
+        }
+        if a.starts_with('-') {
+            continue;
+        }
+        return Some(PathBuf::from(a));
+    }
+    None
+}
+
+/// What a positional directory means for a project-level command.
+enum Positional {
+    /// No positional argument: decide from the current directory.
+    None,
+    /// A real project: run the command against it.
+    Project(PathBuf),
+    /// The argument named something that cannot be a project. Already reported;
+    /// the caller must exit non-zero rather than fall through to a different
+    /// command — falling through is what turned "not a project" into
+    /// "OK: compiled 29 file(s)".
+    Invalid,
+}
+
+fn project_root(args: &[String]) -> Positional {
+    let Some(dir) = positional_dir(args) else {
+        return Positional::None;
+    };
+    let Ok(cwd) = std::env::current_dir() else {
+        eprintln!("hydra: cannot read the current directory");
+        return Positional::Invalid;
+    };
+    let abs = cwd.join(dir);
+    if find_hydraconfig_from(&abs).is_some() {
+        return Positional::Project(abs);
+    }
+    if abs.is_dir() {
+        eprintln!(
+            "hydra: {} is not a HydraScript project (no hydraconfig.json)",
+            abs.display()
+        );
+    } else {
+        eprintln!("hydra: no such directory: {}", abs.display());
+    }
+    Positional::Invalid
 }
 
 /// Locate `packages/cli/runner.mjs`, which ships alongside the binary.
@@ -92,10 +164,23 @@ pub fn dev_cmd(args: &[String]) -> ExitCode {
 
 pub fn build_cmd(args: &[String]) -> ExitCode {
     let has_help = args.iter().any(|a| a == "--help" || a == "-h");
-    if find_hydraconfig().is_some() || has_help {
-        spawn_runner("build", args)
-    } else {
-        build(args)
+    // `hydra build path/to/project` is the form every other toolchain accepts,
+    // and it has to be honoured BEFORE the cwd lookup: the old order asked the
+    // current directory, found nothing, and handed the path to the single-file
+    // compiler, which compiled zero files and called it success.
+    if has_help {
+        return spawn_runner("build", args);
+    }
+    match project_root(args) {
+        Positional::Project(_) => spawn_runner("build", args),
+        Positional::Invalid => ExitCode::from(1),
+        Positional::None => {
+            if find_hydraconfig().is_some() {
+                spawn_runner("build", args)
+            } else {
+                build(args)
+            }
+        }
     }
 }
 
