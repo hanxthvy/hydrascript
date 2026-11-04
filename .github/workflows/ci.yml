@@ -43,7 +43,15 @@ jobs:
       # compile error rather than a silently empty table.
       - name: Build
         working-directory: compiler-rs
-        run: cargo build --release --locked
+        run: |
+          set -euo pipefail
+          # Same split as `binaries.yml`: the CLI has no Node-API imports, the
+          # addon is a cdylib build with the feature on. Copying the plain
+          # `libhydra.so` over `bin/hydra.node` would hand Node a library whose
+          # only export is gone, and the pool tests would wait forever on a
+          # promise that nothing resolves.
+          cargo build --release --locked --bin hydra
+          cargo rustc --release --locked --lib --features node-addon --crate-type cdylib
       - name: Test
         working-directory: compiler-rs
         run: cargo test --locked
@@ -54,6 +62,9 @@ jobs:
           cp compiler-rs/target/release/hydra bin/hydra
           cp compiler-rs/target/release/libhydra.so bin/hydra.node
           chmod +x bin/hydra
+          # The addon must actually load, not merely exist: a library built
+          # without the feature is a valid .so with no `compile` export.
+          node -e 'if (!require("./bin/hydra.node").compile) { console.error("bin/hydra.node has no compile export"); process.exit(1) }'
       - uses: actions/upload-artifact@v4
         with:
           name: hydra-binaries
@@ -202,7 +213,7 @@ jobs:
       - name: Build the compiler
         run: |
           cd compiler-rs
-          cargo build --release --locked
+          cargo build --release --locked --bin hydra
           mkdir -p ../bin
           cp target/release/hydra ../bin/hydra
           chmod +x ../bin/hydra

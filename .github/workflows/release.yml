@@ -98,11 +98,16 @@ jobs:
         run: |
           set -euo pipefail
           cd compiler-rs
-          cargo build --release --locked
+          # CLI and addon are separate builds; see `binaries.yml` for why. The
+          # plain `libhydra.so` no longer contains the Node-API export, so
+          # copying it to `hydra.node` publishes an addon Node cannot use.
+          cargo build --release --locked --bin hydra
+          cargo rustc --release --locked --lib --features node-addon --crate-type cdylib
           mkdir -p ../bin
           cp target/release/hydra ../bin/hydra
           cp target/release/libhydra.so ../bin/hydra.node
           chmod +x ../bin/hydra
+          node -e 'if (!require("../bin/hydra.node").compile) { console.error("bin/hydra.node has no compile export"); process.exit(1) }'
 
       - name: Rust tests
         run: cd compiler-rs && cargo test
