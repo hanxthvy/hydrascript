@@ -294,6 +294,30 @@ yang upgrade tanpa membaca changelog.
 
 ---
 
+### F14. Request context, streaming, prerender dinamis `SELESAI`
+
+Tiga hal yang di 0.12 masih disebut celah arsitektural, dan satu bug yang jadi
+penyebab gejala "route dinamis tidak bisa dipakai".
+
+**Request context.** Seed SSR dulu satu variabel global, jadi dua request yang
+sama-sama menunggu loader bisa saling menimpa — diam-diam, dua halaman sama-sama
+masuk akal. Sekarang di `AsyncLocalStorage`, disuntikkan server saat load.
+Global-nya tetap ada untuk pass SSG yang sinkron.
+
+**Streaming.** `renderPageStream` menulis head dulu, lalu menyambung keluaran
+React. Diuji dengan menghitung chunk socket; renderer buffering menghasilkan
+dokumen benar dan lolos semua asersi isi.
+
+**`static_params()`.** Route dinamis menyatakan instance-nya di `.server.hys`, dan
+build menulis satu dokumen per entri. `[]` berarti "per request" dan dihormati.
+
+**Bug yang ditemukan di jalan.** `renderSync` mengirim route *pattern* sebagai
+`path` elemen, jadi `Router` mencocokkan `/blog/:slug` terhadap tabel berisi URL,
+tidak ketemu, lalu merender halaman Home — dengan data loader yang benar terpasang
+di sampingnya. Semua route berparameter yang dirender server salah. SSG tidak bisa
+menangkapnya karena pada route statis pattern dan URL adalah string yang sama.
+
+---
 ## Yang sengaja tidak dibangun
 
 Ditulis di README sebagai keputusan, bukan sebagai kekurangan:
@@ -301,7 +325,11 @@ Ditulis di README sebagai keputusan, bukan sebagai kekurangan:
 - **React Server Components.** Ini ganti arsitektur, bukan tambahan. Emit
   HydraScript adalah React client biasa, dan itu disebut sebagai kelebihan,
   bukan utang.
-- **Streaming SSR dan islands (Astro).** Sama: modelnya berbeda, bukan kurang.
+- **Islands (Astro).** Modelnya berbeda, bukan kurang.
+- ~~Streaming SSR~~ — **sudah dibangun di 0.13.** `renderPageStream` mengirim head
+  lebih dulu lalu mengalirkan keluaran React. Batasnya ditulis di README: loader
+  milik route masih ditunggu sebelum byte pertama, karena `renderSync` butuh
+  nilai. Yang mengalir adalah semua di bawah boundary Suspense.
 - **Route paralel dan intercepting route (Next).** Fitur niche, biaya konseptual
   tinggi, dan di Next pun jarang dipakai.
 - **Auto-import komponen ala Nuxt.** Bertabrakan dengan `hydra check` dan dengan

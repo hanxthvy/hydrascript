@@ -1240,7 +1240,34 @@ dates; the version numbers are targets and the order is the honest part.
 | 0.11 | `hydra doctor`: route table, and a param collision as a FAILURE | shipped |
 | 0.11 | Python semantics: `sorted`, `%`, negative index, `round`, `int`, truthiness | shipped |
 | 0.11 | Fast Refresh: state preserved across an edit | partial — see below |
+| 0.12 | Route code-splitting: one chunk per page, `lazyPages` map | shipped |
+| 0.12 | API routes: nested folders, `[param]`, `[...catchall]` | shipped |
+| 0.12 | Middleware (`src/middleware.hys`) on every API and action request | shipped |
+| 0.12 | Security headers on every answer, origin check on action POSTs | shipped |
+| 0.13 | Request context: SSR seed in `AsyncLocalStorage`, not a module global | shipped |
+| 0.13 | Streaming SSR: head flushed first, React's output piped | shipped — see below |
+| 0.13 | `static_params()` / `generateStaticParams`: dynamic routes prerendered | shipped |
+| 0.13 | `metadata(event)`: per-slug title, canonical, `og:`/`twitter:` | shipped |
+| 0.13.1 | Compiler error recovery: every broken line reported in one run | shipped |
+| 0.13.1 | Prebuilt binaries for seven targets, via `optionalDependencies` | shipped |
 | next | Fast Refresh: the edited markup swaps into the live tree | open |
+
+### Streaming, precisely
+
+The row above says shipped, and it is, with the limit stated where the claim is
+made rather than in a footnote. `renderPageStream` writes the document head
+immediately and pipes React's output as it is produced, so a page with a slow
+boundary is not a blank document for the duration of that boundary. The test
+asserts on socket chunks, not on content, because a buffered renderer produces a
+correct document and passes every content assertion — the difference is only
+visible in when the bytes arrive.
+
+What does **not** stream is the route's own loader. It is awaited before the first
+byte, because `renderSync` needs a value to render with, and storing a pending
+promise in the seed would make the render non-deterministic. Streaming the loader
+itself needs a resolver-based renderer (or RSC), which this is not. So: everything
+below a Suspense boundary streams, the root loader does not, and both sentences
+are true at once.
 
 ### Fast Refresh, precisely
 

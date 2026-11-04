@@ -848,7 +848,31 @@ versinya target, dan urutannya bagian yang jujur.
 | 0.11 | `hydra doctor`: tabel route, dan tabrakan param sebagai KEGAGALAN | rilis |
 | 0.11 | Semantik Python: `sorted`, `%`, indeks negatif, `round`, `int`, truthiness | rilis |
 | 0.11 | Fast Refresh: state dipertahankan lintas edit | sebagian — lihat di bawah |
+| 0.12 | Code-splitting per route: satu chunk per halaman, peta `lazyPages` | rilis |
+| 0.12 | API route: folder bersarang, `[param]`, `[...catchall]` | rilis |
+| 0.12 | Middleware (`src/middleware.hys`) pada tiap request API dan action | rilis |
+| 0.12 | Header keamanan di tiap jawaban, cek origin pada POST action | rilis |
+| 0.13 | Request context: seed SSR di `AsyncLocalStorage`, bukan global modul | rilis |
+| 0.13 | Streaming SSR: head dikirim dulu, keluaran React dialirkan | rilis — lihat di bawah |
+| 0.13 | `static_params()` / `generateStaticParams`: route dinamis di-prerender | rilis |
+| 0.13 | `metadata(event)`: title per-slug, canonical, `og:`/`twitter:` | rilis |
+| 0.13.1 | Pemulihan error compiler: semua baris rusak dilaporkan sekali jalan | rilis |
+| 0.13.1 | Biner prabangun tujuh target, lewat `optionalDependencies` | rilis |
 | berikutnya | Fast Refresh: markup hasil edit ikut berganti di pohon yang hidup | terbuka |
+
+### Streaming, tepatnya
+
+Baris di atas bilang rilis, dan memang, dengan batasnya ditulis di tempat
+klaimnya dibuat. `renderPageStream` mengirim head dokumen segera dan mengalirkan
+keluaran React begitu diproduksi, jadi halaman dengan boundary lambat bukan
+dokumen kosong selama boundary itu berjalan. Tesnya memeriksa chunk socket, bukan
+isi, karena renderer yang buffering menghasilkan dokumen yang benar dan lolos
+semua asersi isi — bedanya hanya terlihat pada kapan byte-nya datang.
+
+Yang **tidak** dialirkan adalah loader milik route itu sendiri. Ia ditunggu
+sebelum byte pertama, karena `renderSync` butuh nilai untuk merender. Jadi:
+semua di bawah boundary Suspense mengalir, loader akar tidak, dan kedua kalimat
+itu benar sekaligus.
 
 ### Fast Refresh, tepatnya
 
