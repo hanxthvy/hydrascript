@@ -66,6 +66,44 @@ const ONLY = (() => {
   return at > -1 ? args[at + 1].split(',') : null;
 })();
 
+/**
+ * `--otp <code>`, optional.
+ *
+ * Held in a module-local for the lifetime of this process and nowhere else: not
+ * written to a file, not put in the environment, not part of any message. It is
+ * passed to npm as an argv element because that is the only interface npm
+ * offers (`npm publish --otp=...`); the value is therefore visible to `ps` for
+ * the duration of the call, which is inherent to npm's own design, and is one
+ * more reason the interactive path is the default and this is the shortcut.
+ *
+ * Never printed. Every message in this file that mentions OTP talks about the
+ * FLAG, never the value.
+ */
+const OTP = (() => {
+  const at = args.indexOf('--otp');
+  if (at === -1) return null;
+  const value = args[at + 1];
+  // Validate here rather than at the registry: an empty or malformed code would
+  // be sent, refused, and reported as an authentication failure, which sends the
+  // reader looking at their token instead of their typing.
+  if (value === undefined || value === '') {
+    console.error('--otp needs a value: the 6-digit code from your authenticator');
+    process.exit(2);
+  }
+  if (!/^\d{6}$/.test(value)) {
+    // Deliberately does NOT echo the value: a mistyped OTP may be a mistyped
+    // something-else.
+    console.error('--otp must be exactly 6 digits. The value is not repeated here on purpose.');
+    process.exit(2);
+  }
+  return value;
+})();
+
+/** The arguments that carry the OTP to npm, or none. Never logged. */
+function otpArgs() {
+  return OTP ? [`--otp=${OTP}`] : [];
+}
+
 if (!DIR) {
   console.error(
     'usage: node scripts/publish-platform-packages.mjs --dir <artifacts> [--audit|--dry-run] [--only a,b]',
@@ -150,42 +188,71 @@ function verifyBinary(target, binPath) {
   return { size, arch };
 }
 
-/** Is this exact name@version already on the registry? */
-function alreadyPublished(name, version) {
+/**
+ * What the registry said about one query.
+ *
+ * Three DISTINCT outcomes, not a boolean. The old version collapsed "not
+ * published" with "could not find out" into `false`, so a timeout or an auth
+ * failure read as "the package is not there" and the script would try to
+ * publish over a version that already existed — the exact thing the idempotence
+ * check exists to prevent.
+ */
+const PRESENT = 'present';
+const ABSENT = 'absent';
+const UNKNOWN = 'unknown';
+
+/** Run `npm view` and classify the answer. */
+function viewVersion(spec, { timeoutMs = 20000 } = {}) {
   try {
-    const out = execFileSync('npm', ['view', `${name}@${version}`, 'version'], {
+    const out = execFileSync('npm', ['view', spec, 'version', ...otpArgs()], {
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 60000,
+      // stdin closed: `npm view` cannot prompt, and a prompt that hangs is worse
+      // than an error. The OTP travels as an argument when one was supplied.
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: timeoutMs,
     }).trim();
-    return out === version;
-  } catch {
-    // E404 is "not published"; any other failure (network, auth) is treated the
-    // same way here — the publish attempt below is what reports the real error.
-    return false;
+    return { state: PRESENT, value: out.split('\n').pop().trim() };
+  } catch (err) {
+    const stderr = String(err.stderr || '');
+    const msg = String(err.message || '');
+    // A 404 from the registry is the ONLY answer that means "not published".
+    // npm spells it `E404` and prints `404 Not Found`; the two patterns below
+    // are the forms both the CLI and the registry use.
+    if (/E404|404 Not Found|code E404/.test(stderr) || /E404/.test(msg)) {
+      return { state: ABSENT };
+    }
+    if (err.killed || /ETIMEDOUT|timed? ?out/i.test(msg) || err.signal) {
+      return { state: UNKNOWN, reason: `timed out after ${timeoutMs}ms` };
+    }
+    if (/EOTP|one-time password/i.test(stderr) || /EOTP/.test(msg)) {
+      return { state: UNKNOWN, reason: 'the registry wants a one-time password' };
+    }
+    if (/E401|E403|Unauthorized|Forbidden/i.test(stderr) || /E40[13]/.test(msg)) {
+      return { state: UNKNOWN, reason: 'authentication was refused' };
+    }
+    // Anything else is still "I do not know", never "absent".
+    return { state: UNKNOWN, reason: (stderr.split('\n').find((l) => l.trim()) || msg).slice(0, 160) };
   }
 }
 
-/** Does the name exist at ALL, at any version? */
-function nameExists(name) {
-  try {
-    execFileSync('npm', ['view', name, 'version'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 60000,
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function npmPublish(cwd) {
-  return execFileSync('npm', ['publish', '--access', 'public'], {
+/** `npm publish`, with the real TTY attached so npm can prompt. */
+function npmPublish(cwd, { timeoutMs = 300000 } = {}) {
+  // `inherit`, not pipes.
+  //
+  // npm only shows its OTP prompt when `process.stdin.isTTY` is true, and with
+  // `stdio: ['ignore', ...]` it is /dev/null — so npm threw EOTP without ever
+  // asking. `inherit` hands it this process's terminal, which is what makes the
+  // interactive path work at all.
+  //
+  // The cost is that npm's own output (and its OTP prompt) goes to our stdout,
+  // which is the point: a prompt the user cannot see is a prompt that does not
+  // exist. The package name is printed before the call so the prompt is not
+  // ambiguous, and nothing here ever prints a token — npm does not either.
+  execFileSync('npm', ['publish', '--access', 'public', ...otpArgs()], {
     cwd,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  }).trim();
+    stdio: 'inherit',
+    timeout: timeoutMs,
+  });
 }
 
 const results = [];
@@ -226,20 +293,35 @@ for (const [target, spec] of Object.entries(TARGETS)) {
   }
 
   // ---- idempotence: never re-publish a version that is already there --------
-  const existsAtVersion = alreadyPublished(name, VERSION);
-  if (existsAtVersion) {
+  const atVersion = viewVersion(`${name}@${VERSION}`);
+  if (atVersion.state === PRESENT && atVersion.value === VERSION) {
     // Not a failure. This is what makes a re-run after a partial failure cheap:
     // the packages that made it are reported and skipped, the rest are sent.
     stage(target, `ALREADY ${VERSION}`);
     continue;
   }
-  if (nameExists(name)) {
+  if (atVersion.state === UNKNOWN) {
+    // The registry did not answer. That is NOT evidence the package is absent —
+    // publishing on a guess is how a version gets written twice or a name gets
+    // claimed by the wrong build. Stop for this target and say why.
+    stage(target, 'FAIL cannot tell if it exists');
+    failed.push(`${target}: could not query the registry (${atVersion.reason}); not publishing blind`);
+    continue;
+  }
+
+  const anyVersion = viewVersion(name);
+  if (anyVersion.state === UNKNOWN) {
+    stage(target, 'FAIL cannot tell if it exists');
+    failed.push(`${target}: could not query the registry (${anyVersion.reason}); not publishing blind`);
+    continue;
+  }
+  if (anyVersion.state === PRESENT) {
     // The name is claimed by a version that is NOT this one. Publishing a second
     // artefact under a name that already sold something is a decision, not a
     // bootstrap, so it stops here and says what is there.
     stage(target, 'FAIL name taken (other version)');
     failed.push(
-      `${target}: ${name} exists at another version; this script bootstraps new names only`,
+      `${target}: ${name} exists at ${anyVersion.value}; this script bootstraps new names only`,
     );
     continue;
   }
@@ -313,6 +395,9 @@ for (const [target, spec] of Object.entries(TARGETS)) {
   }
 
   try {
+    // Printed BEFORE the call: npm's own prompt appears next, and a bare
+    // "Enter OTP:" with no context does not say which of seven packages it is.
+    console.log(`  publishing ${name}@${VERSION} ...`);
     npmPublish(pkgDir);
     stage(target, `SENT ${VERSION}`);
   } catch (err) {
