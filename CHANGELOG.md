@@ -12,6 +12,38 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## 0.13.1 — 2026-11-04
+
+## Fixed
+
+- **The published package named no platform binary.** `release.yml` published
+  the root manifest before `optionalDependencies` was filled, so every release up
+  to 0.12.1 shipped `{}` — npm installed it everywhere and the first command died
+  on any machine that was not Linux x86-64. `release.yml` now wires the field,
+  verifies every wired package exists at that version on the registry, and
+  refuses to publish when one does not. `binaries.yml` no longer writes the field
+  at all: two workflows writing it is how they drifted.
+
+## Added
+
+- **Error recovery in the lexer and parser.** A file with three broken lines now
+  reports three, in source order, in one run. The build still stops at the first
+  error — a half-parsed module must not be emitted — but `hydra check` and the
+  single-file path report everything.
+- **Spans.** `CompileError` carries an end position, so a caret underlines the
+  offending token instead of its first column. A span that ends before it starts
+  is dropped rather than drawn wrong.
+- The cascade is suppressed: a line that could not be tokenised does not also
+  report the parser error it caused, and `unexpected Dedent`/`Eof` — always the
+  end of a failure already reported — are removed.
+
+## Changed
+
+- Four new test files: `routing-split` (file-based routing and per-route
+  splitting, which had no test at all), `ssr-stream` (chunked arrival, measured on
+  the socket), `build-arg` (the `hydra build <dir>` dispatch), `release-wiring`
+  (the manifest is wired before publish).
+
 ## 0.13.0 — 2026-11-04
 
 Four things that were claimed and not true, and one bug that made a whole

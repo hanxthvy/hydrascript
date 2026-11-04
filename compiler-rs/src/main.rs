@@ -180,6 +180,25 @@ fn main() -> ExitCode {
         }
         Err(e) => {
             eprintln!("{}", e.pretty());
+            // A single-file invocation is what a person uses while editing, so
+            // report the rest of the file's findings too. `compile` stops at the
+            // first error by design; this second pass is what turns "fix, rerun,
+            // fix, rerun" into one list.
+            let rest = hydra::parse_errors(&src);
+            let mut shown = 1usize;
+            for extra in &rest {
+                if extra.line == e.line && extra.col == e.col {
+                    continue;
+                }
+                eprintln!("{}", extra.pretty());
+                shown += 1;
+            }
+            if shown > 1 {
+                eprintln!(
+                    "\n  {} error(s) in this file; the build reports the first, this lists them all.",
+                    shown
+                );
+            }
             ExitCode::from(1)
         }
     }

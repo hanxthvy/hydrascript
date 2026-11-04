@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use crate::compile;
+use crate::{compile, parse_errors};
 use crate::check_source;
 
 fn find_hydraconfig() -> Option<PathBuf> {
@@ -883,6 +883,27 @@ fn check(args: &[String]) -> ExitCode {
             // was only used for warnings.
             eprintln!("\x1b[1;31m{}\x1b[0m", path.display());
             eprintln!("{}", e.pretty());
+            // `compile` stops at the first error. Report the rest of the file's
+            // syntax errors now, so one run fixes all of them instead of one per
+            // rebuild — the reason `hydra check` exists rather than "run the
+            // build and read the first line".
+            let rest = parse_errors(&src);
+            let mut seen = 1usize; // the error above is the first
+            for extra in &rest {
+                // The fail-fast error is the first in source order; skip it if
+                // the recovering pass found the same one.
+                if extra.line == e.line && extra.col == e.col {
+                    continue;
+                }
+                eprintln!("{}", extra.pretty());
+                seen += 1;
+            }
+            if seen > 1 {
+                eprintln!(
+                    "\n  {} error(s) in this file; the build reports the first, `hydra check` reports them all.",
+                    seen
+                );
+            }
             errors += 1;
             continue;
         }

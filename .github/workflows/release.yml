@@ -179,6 +179,61 @@ jobs:
             exit 1
           fi
 
+      # The root package must NAME the per-platform packages before it is
+      # published, or it goes out with `optionalDependencies: {}` — which is what
+      # every release up to 0.12.1 did. `bin/hydra.js` resolves
+      # `@hydrascript/<triple>` from that field, so an empty one means the
+      # installer picks nothing and the first command dies on a machine that is
+      # not Linux x86-64. The wiring used to be a separate job that committed
+      # AFTER this publish, which is a window in which the tag is broken.
+      - name: Wire the platform packages into the root manifest
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("fs");
+            const { execFileSync } = require("child_process");
+            const pkg = require("./package.json");
+            const version = pkg.version;
+            const targets = [
+              "linux-x64", "linux-arm64",
+              "linux-x64-musl", "linux-arm64-musl",
+              "darwin-x64", "darwin-arm64",
+              "win32-x64",
+            ];
+            const absent = [];
+            for (const t of targets) {
+              const name = `@hydrascript/${t}`;
+              let got = "";
+              try {
+                got = execFileSync("npm", ["view", `${name}@${version}`, "version"], {
+                  encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+                }).trim();
+              } catch {
+                got = "";
+              }
+              if (got !== version) absent.push(`${name}@${version}`);
+            }
+            if (absent.length) {
+              // Refusing is the point. Publishing the root with a field naming
+              // packages that are not there makes `npm i hydrascript` a 404 with
+              // no explanation; publishing with an EMPTY field makes it install
+              // and then die at the first command. Neither is recoverable by the
+              // person who hit it, so the release stops here and names what is
+              // missing.
+              console.error(
+                "these platform packages are not on npm at this version, so the " +
+                "root manifest would point at nothing:\n  " + absent.join("\n  ") +
+                "\nRun the `binaries` workflow for this tag first.",
+              );
+              process.exit(1);
+            }
+            pkg.optionalDependencies = Object.fromEntries(
+              targets.map((t) => [`@hydrascript/${t}`, version]),
+            );
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+            console.log(`optionalDependencies: ${targets.length} targets at ${version}`);
+          '
+
       - name: Publish
         if: ${{ !inputs.dry_run }}
         run: |

@@ -16,7 +16,7 @@ HydraScript mengompilasi berkas `.hyx` berbasis indentasi menjadi React TSX, dan
 berkas `.hys` menjadi JavaScript biasa. Compiler-nya biner Rust; runner Node
 kecil membungkus esbuild, PostCSS dan Tailwind untuk menghasilkan situs.
 
-**Status: 0.13.0, pra-1.0.** Compiler, file-based router, prerender, server
+**Status: 0.13.1, pra-1.0.** Compiler, file-based router, prerender, server
 rendering, language server, dan test runner sudah jadi dan ditutup 408 tes Rust
 (271 unit + 137 integrasi) serta 156 tes Node di 22 suite. Sintaks bahasanya
 dibekukan (lihat di bawah); yang dirilis sampai 1.0 adalah perkakas, bukan

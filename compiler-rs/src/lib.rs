@@ -64,6 +64,67 @@ pub fn compile_checked(
     Ok((code, map, warnings))
 }
 
+/// Parse-only pass that reports EVERY syntax error in the file.
+///
+/// `compile` stops at the first one, which is right for a build and wrong for a
+/// person: fixing ten typos one rebuild at a time is the single most complained
+/// about property of a small compiler. This runs the recovering parser and
+/// returns all of them, in source order.
+///
+/// It does not emit, and it does not type-check: a file with a syntax error has
+/// no tree to check, so anything below that would be a second opinion about
+/// code that does not exist yet.
+pub fn parse_errors(src: &str) -> Vec<CompileError> {
+    let lines: Vec<String> = src.split('\n').map(|s| s.to_string()).collect();
+    // Lex with recovery FIRST: a file with two unterminated strings used to
+    // report one, and the second only appeared after fixing the first. Skipped
+    // lines contribute no tokens, so the parser below sees fewer statements than
+    // the file has — the lex errors say which lines, and both lists are returned
+    // together so nothing is silently lost.
+    let (toks, mut errors) = lexer::lex_collect(src);
+    let had_lex_error = !errors.is_empty();
+    let (_, parse_errs) = parser::Parser::new(toks, lines).module_recover();
+    errors.extend(parse_errs);
+    // Source order, so a reader fixing them top-down does one pass.
+    errors.sort_by_key(|e| (e.line, e.col));
+
+    // Drop the cascade.
+    //
+    // A line that could not be tokenised produces a SECOND error from the parser
+    // — `unexpected Newline` where the missing token would have been. Reporting
+    // both doubles the count, and the second one is never actionable: the line is
+    // already named by the first. The rule: on a line that had a lexer error, a
+    // parser error is a symptom, not a finding.
+    let lex_lines: Vec<usize> = errors
+        .iter()
+        .filter(|e| {
+            e.msg.contains("unterminated")
+                || e.msg.starts_with("unexpected character")
+                || e.msg.contains("indentation")
+        })
+        .map(|e| e.line)
+        .collect();
+    // `unexpected Dedent` / `unexpected Eof` are always the END of a failure the
+    // parser has already reported: the expression it was waiting for ran out of
+    // block. Keeping them doubles every truncated-line error with a second one
+    // that points at an empty line.
+    errors.retain(|e| {
+        !(e.msg.starts_with("unexpected Dedent") || e.msg.starts_with("unexpected Eof"))
+    });
+
+    if had_lex_error && !lex_lines.is_empty() {
+        errors.retain(|e| {
+            let is_lex = e.msg.contains("unterminated")
+                || e.msg.starts_with("unexpected character")
+                || e.msg.contains("indentation");
+            // Keep a parser error only on a line the lexer did NOT already fail
+            // on — that one is a real second problem.
+            is_lex || !lex_lines.contains(&e.line)
+        });
+    }
+    errors
+}
+
 /// Which output language to emit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
@@ -174,6 +235,68 @@ pub fn compile_for(
             validate::check_output(&code, &em.linemap, &lines, true)?;
             Ok((code, map))
         }
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    /// Three separate problems on three lines must all be reported by one call.
+    /// The alternative — one per run — is what made "fix, rebuild, fix, rebuild"
+    /// the normal way to use this compiler.
+    #[test]
+    fn reports_every_broken_line_not_just_the_first() {
+        let src = "a = \"unclosed\nb = 1\nc = \"also unclosed\n";
+        let errs = parse_errors(src);
+        let lines: Vec<usize> = errs.iter().map(|e| e.line).collect();
+        assert!(lines.contains(&1), "line 1 not reported: {lines:?}");
+        assert!(lines.contains(&3), "line 3 not reported: {lines:?}");
+    }
+
+    /// A truncated line produces ONE error, not a pair: the parser's follow-up
+    /// (`unexpected Dedent`) is the end of the same failure and points at an
+    /// empty line.
+    #[test]
+    fn a_truncated_line_does_not_double_report() {
+        let src = "component A():\n    return 1 +\n";
+        let errs = parse_errors(src);
+        assert_eq!(errs.len(), 1, "expected one finding, got {:?}", errs.iter().map(|e| (&e.msg, e.line)).collect::<Vec<_>>());
+        assert!(errs[0].msg.contains("Newline") || errs[0].msg.contains("expression"));
+    }
+
+    /// A lexer error is not duplicated by the parser error it causes on the SAME
+    /// line; a parser error on a DIFFERENT line is a real second finding and is
+    /// kept.
+    #[test]
+    fn a_lex_error_suppresses_only_its_own_line() {
+        let src = "a = \"unclosed\nb = (1\n";
+        let errs = parse_errors(src);
+        let line1: Vec<_> = errs.iter().filter(|e| e.line == 1).collect();
+        assert_eq!(line1.len(), 1, "line 1 reported {} times", line1.len());
+        assert!(
+            errs.iter().any(|e| e.line >= 2),
+            "the second, unrelated problem was swallowed: {:?}",
+            errs.iter().map(|e| (e.line, &e.msg)).collect::<Vec<_>>(),
+        );
+        let _ = src;
+    }
+
+    /// A caret covers the offending token, not one column of it.
+    #[test]
+    fn an_error_spans_its_token() {
+        let e = CompileError::new("bad", 1, 4, vec!["    NotAToken here".into()]).with_span(1, 13);
+        let pretty = e.pretty();
+        let caret_line = pretty.lines().find(|l| l.contains('^')).expect("no caret line");
+        let carets = caret_line.matches('^').count();
+        assert_eq!(carets, 9, "expected a 9-character span, got {carets}: {caret_line}");
+    }
+
+    /// A span that ends before it starts is dropped rather than drawn wrong.
+    #[test]
+    fn a_backwards_span_is_not_drawn() {
+        let e = CompileError::new("bad", 2, 8, vec!["".into(), "        x".into()]).with_span(2, 3);
+        assert!(e.end_col.is_none(), "a backwards span was accepted");
     }
 }
 

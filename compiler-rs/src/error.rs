@@ -9,6 +9,15 @@ pub struct CompileError {
     pub msg: String,
     pub line: usize,
     pub col: usize,
+    /// End of the offending region, when it is longer than one character.
+    ///
+    /// `None` means "the caret is one column", which is what every error before
+    /// this had. A span makes the caret underline the whole token or expression:
+    /// an editor draws a squiggle under `foo.bar(` rather than under its first
+    /// character, and a person reading a terminal sees which part is wrong
+    /// without counting columns.
+    pub end_line: Option<usize>,
+    pub end_col: Option<usize>,
     pub src: Vec<String>,
     pub hint: Option<String>,
 }
@@ -19,6 +28,8 @@ impl CompileError {
             msg: msg.into(),
             line,
             col,
+            end_line: None,
+            end_col: None,
             src,
             hint: None,
         }
@@ -27,6 +38,31 @@ impl CompileError {
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
         self
+    }
+
+    /// Give this error a span. Cheap to call and chainable, so a call site that
+    /// knows more about the region can say so without restructuring.
+    pub fn with_span(mut self, end_line: usize, end_col: usize) -> Self {
+        // A span that ends before it starts is a bug at the call site, and a
+        // negative-length underline renders as a caret pointing past the line.
+        // Drop it rather than draw something wrong.
+        if end_line > self.line || (end_line == self.line && end_col > self.col) {
+            self.end_line = Some(end_line);
+            self.end_col = Some(end_col);
+        }
+        self
+    }
+
+    /// The length of the caret line for the FIRST line of the span.
+    fn caret_len(&self) -> usize {
+        match (self.end_line, self.end_col) {
+            (Some(el), Some(ec)) if el == self.line => ec.saturating_sub(self.col).max(1),
+            // A multi-line span underlines to the end of the first line; drawing
+            // an underline that wraps would need a second line of carets, and
+            // the message already names the region.
+            (Some(el), _) if el > self.line => usize::MAX,
+            _ => 1,
+        }
     }
 
     /// Human-facing rendering with ANSI colour, ready for a terminal or a
@@ -40,7 +76,16 @@ impl CompileError {
             let s = &self.src[self.line - 1];
             o.push("   |".to_string());
             o.push(format!("{:2} | {}", self.line, s));
-            o.push(format!("   | {}\x1b[1;31m^\x1b[0m", " ".repeat(self.col)));
+            // The caret covers the span when there is one, and one column when
+            // there is not. Clamped to the line so a span that overshoots (a
+            // token at the end of a line, say) cannot paint past it.
+            let len = self.caret_len().min(s.chars().count().saturating_sub(self.col).max(1));
+            let carets = "^".repeat(len.max(1));
+            o.push(format!(
+                "   | {}\x1b[1;31m{}\x1b[0m",
+                " ".repeat(self.col),
+                carets
+            ));
         }
         if let Some(h) = &self.hint {
             o.push(format!("   = \x1b[1;36mhint\x1b[0m: {}", h));

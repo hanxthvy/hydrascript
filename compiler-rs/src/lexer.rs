@@ -144,8 +144,27 @@ fn digit_in_radix(b: u8, radix: u32) -> bool {
 }
 
 pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
+    let (toks, errors) = lex_collect(src);
+    match errors.into_iter().next() {
+        None => Ok(toks),
+        Some(e) => Err(e),
+    }
+}
+
+/// Lex the whole file, skipping lines that cannot be tokenised and collecting
+/// their errors.
+///
+/// `lex` returns the FIRST error, which is right for a build and wrong for a
+/// diagnostic pass: a file with three unterminated strings reported one of them,
+/// and fixing it revealed the next. A skipped line contributes no tokens, so the
+/// parser sees fewer statements than the file has — the errors name exactly which
+/// lines were lost, so a caller cannot mistake the result for a complete tree.
+/// That is why `compile` still goes through `lex` and only `parse_errors` uses
+/// this.
+pub fn lex_collect(src: &str) -> (Vec<Token>, Vec<CompileError>) {
     let lines: Vec<&str> = src.split('\n').collect();
     let mut out: Vec<Token> = Vec::new();
+    let mut errors: Vec<CompileError> = Vec::new();
     let mut stack: Vec<usize> = vec![0];
     let mut bracket_depth: usize = 0;
 
@@ -165,13 +184,18 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
                 .len();
         let leading_ws = &raw[..leading_ws_len];
         if let Some(tab_pos) = leading_ws.find('\t') {
-            return Err(CompileError::new(
-                "tab indentation is not allowed",
-                line_no,
-                tab_pos,
-                lines.iter().map(|s| s.to_string()).collect(),
-            )
-            .with_hint("use spaces for indentation"));
+            errors.push(
+                CompileError::new(
+                    "tab indentation is not allowed",
+                    line_no,
+                    tab_pos,
+                    lines.iter().map(|s| s.to_string()).collect(),
+                )
+                .with_hint("use spaces for indentation"),
+            );
+            // Skip the line: its indentation cannot be trusted, and emitting
+            // tokens for it would give the parser a block it cannot close.
+            continue;
         }
 
         let indent = raw.len() - raw.trim_start_matches(' ').len();
@@ -196,7 +220,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
                     });
                 }
                 if indent != *stack.last().unwrap() {
-                    return Err(CompileError::new(
+                    errors.push(CompileError::new(
                         format!(
                             "inconsistent indentation: expected {} spaces, got {}",
                             stack.last().unwrap(),
@@ -207,12 +231,16 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
                         lines.iter().map(|s| s.to_string()).collect(),
                     )
                     .with_hint("keep one indent width across the file"));
+                    continue;
                 }
             }
         }
 
         let bytes = raw.as_bytes();
         let mut pos = indent;
+        // Set when this line cannot be tokenised past a point. The remainder is
+        // dropped rather than guessed at; the error list says which line.
+        let mut bad_line = false;
         while pos < bytes.len() {
             let c = bytes[pos];
             // whitespace
@@ -242,13 +270,17 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
                     end += 1;
                 }
                 if end > bytes.len() || bytes.get(end - 1) != Some(&b'`') {
-                    return Err(CompileError::new(
-                        "unterminated template literal",
-                        line_no,
-                        start,
-                        lines.iter().map(|s| s.to_string()).collect(),
-                    )
-                    .with_hint("close the backtick"));
+                    errors.push(
+                        CompileError::new(
+                            "unterminated template literal",
+                            line_no,
+                            start,
+                            lines.iter().map(|s| s.to_string()).collect(),
+                        )
+                        .with_hint("close the backtick"),
+                    );
+                    bad_line = true;
+                    break;
                 }
                 out.push(Token {
                     ty: TokType::Template,
@@ -270,13 +302,20 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
                 let end = match scan_string(bytes, pos) {
                     Some(end) => end,
                     None => {
-                        return Err(CompileError::new(
-                            "unterminated string literal",
-                            line_no,
-                            start,
-                            lines.iter().map(|s| s.to_string()).collect(),
-                        )
-                        .with_hint("close the quote, or escape it with a backslash"));
+                        errors.push(
+                            CompileError::new(
+                                "unterminated string literal",
+                                line_no,
+                                start,
+                                lines.iter().map(|s| s.to_string()).collect(),
+                            )
+                            .with_hint("close the quote, or escape it with a backslash"),
+                        );
+                        // Drop the rest of this line only. A quoted string cannot
+                        // span lines, so nothing after it can be recovered into a
+                        // meaningful token.
+                        bad_line = true;
+                        break;
                     }
                 };
                 let text = &raw[start..end];
@@ -457,7 +496,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
                     b'=' | b'+' | b'-' | b'*' | b'/' | b'%' | b'<' | b'>' | b'!' | b'&' | b'|'
                     | b'?' | b'@' => (TokType::Op, 1),
                     _ => {
-                        return Err(CompileError::new(
+                        errors.push(CompileError::new(
                             format!(
                                 "unexpected character {:?}",
                                 raw[pos..].chars().next().unwrap_or('\0')
@@ -465,7 +504,17 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
                             line_no,
                             start,
                             lines.iter().map(|s| s.to_string()).collect(),
-                        ))
+                        ));
+                        // One bad character does not invalidate the rest of the
+                        // line: advance past it and keep tokenising, so a stray
+                        // `$` in a file does not hide the next five findings.
+                        //
+                        // Past the whole CHARACTER, not one byte: `start + 1`
+                        // lands inside a multi-byte codepoint and the next
+                        // `raw[pos..]` slice panics on a non-char boundary.
+                        let width = raw[start..].chars().next().map_or(1, char::len_utf8);
+                        pos = start + width;
+                        continue;
                     }
                 }
             };
@@ -478,6 +527,9 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
             pos = start + len;
         }
 
+        // A broken line still ends: the next line's indentation is compared
+        // against the stack, and skipping the newline would merge two blocks.
+        let _ = bad_line;
         if bracket_depth == 0 {
             out.push(Token {
                 ty: TokType::Newline,
@@ -503,8 +555,9 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
         line: lines.len() + 1,
         col: 0,
     });
-    Ok(out)
+    (out, errors)
 }
+
 
 #[cfg(test)]
 mod tests {
