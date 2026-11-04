@@ -95,9 +95,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          NODE_V=$(node -p "process.versions.node.split('.')[0]")
+          # The FULL version, not the major: `dist/v22/win-x64/node.lib` is a
+          # 404, and the file lives under `dist/v<major.minor.patch>/`.
+          NODE_V=$(node -p "process.versions.node")
+          ARCH="${{ contains(matrix.target, 'arm64') && 'win-arm64' || 'win-x64' }}"
           mkdir -p compiler-rs/node-lib
-          curl -fsSL "https://nodejs.org/dist/v${NODE_V}/win-x64/node.lib" \
+          curl -fsSL "https://nodejs.org/dist/v${NODE_V}/${ARCH}/node.lib" \
             -o compiler-rs/node-lib/node.lib
           ls -la compiler-rs/node-lib/
 
