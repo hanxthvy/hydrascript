@@ -36,9 +36,20 @@ on:
         description: 'Pack and validate only, do not upload'
         type: boolean
         default: false
-  push:
-    tags:
-      - 'v*'
+  # NO `push: tags` trigger, on purpose.
+  #
+  # Both workflows used to fire on a `v*` tag, so one tag started them
+  # concurrently — and `release.yml` publishes the root package, which names the
+  # seven `@hydrascript/*` packages as optional dependencies. If it won the race
+  # the guard below stopped it with "run the binaries workflow first", which is a
+  # red X on a release that was not wrong. When the guard did not exist yet, it
+  # published a root manifest pointing at packages that did not exist.
+  #
+  # A tag now does exactly one thing: build and publish the platform packages.
+  # The root release is a deliberate second action, after those exist.
+  workflow_run:
+    workflows: ['binaries']
+    types: [completed]
 
 permissions:
   contents: read
@@ -78,9 +89,18 @@ jobs:
       # that fails on permissions says nothing about the package.
       - name: Ensure a recent npm
         run: |
+          set -euo pipefail
+          # Same private-prefix install as `binaries.yml`, and for the same
+          # reason: the image's bundled npm has been 10.9.x, which cannot do
+          # trusted publishing, and `npm install -g` hits EACCES on the system
+          # prefix. `GITHUB_PATH` carries the override into later steps, which a
+          # plain `export` cannot do across steps.
+          npm install --prefix "$RUNNER_TEMP/npm11" --no-audit --no-fund npm@^11.5.1
+          echo "$RUNNER_TEMP/npm11/node_modules/.bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/npm11/node_modules/.bin/npm" --version
           node -e '
             const { execFileSync } = require("child_process");
-            const v = execFileSync("npm", ["--version"], { encoding: "utf8" }).trim();
+            const v = execFileSync(process.env.RUNNER_TEMP + "/npm11/node_modules/.bin/npm", ["--version"], { encoding: "utf8" }).trim();
             const [maj, min, patch] = v.split(".").map(Number);
             const ok = maj > 11 || (maj === 11 && (min > 5 || (min === 5 && patch >= 1)));
             if (!ok) {
@@ -186,6 +206,17 @@ jobs:
       # installer picks nothing and the first command dies on a machine that is
       # not Linux x86-64. The wiring used to be a separate job that committed
       # AFTER this publish, which is a window in which the tag is broken.
+      # A `workflow_run` fires for a FAILED binaries run too, and publishing the
+      # root after a failed platform build is the one thing that must never
+      # happen. `workflow_dispatch` has no `workflow_run` context, so the check is
+      # skipped there — a manual run is a person deciding, and the manifest guard
+      # below still refuses when a package is missing.
+      - name: Refuse when the binaries run did not succeed
+        if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success' }}
+        run: |
+          echo "::error::binaries concluded '${{ github.event.workflow_run.conclusion }}'; not publishing the root package"
+          exit 1
+
       - name: Wire the platform packages into the root manifest
         run: |
           set -euo pipefail

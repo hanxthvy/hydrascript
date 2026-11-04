@@ -162,15 +162,22 @@ jobs:
             chmod +x ../pkg/bin/hydra
           fi
 
-          # The binary must not carry Node-API imports: nothing in the CLI
+          # The binary must not IMPORT Node-API symbols: nothing in the CLI
           # resolves them, and their presence is exactly what broke the
           # cross-platform link. Checked here so a regression fails the build
           # that introduced it rather than a platform job three weeks later.
+          #
+          # Through a script, not `nm -D | grep -q ' napi_'`. That grep matched
+          # the NAME anywhere on the line, so a binary that DEFINES a napi symbol
+          # — which the addon legitimately does, and which a stripped CLI can
+          # carry as a local — was reported as a violation. The script reads the
+          # symbol TYPE and only `U` (undefined) counts.
           if [ "${{ runner.os }}" != "Windows" ]; then
-            if nm -D ../pkg/bin/hydra 2>/dev/null | grep -q ' napi_'; then
-              echo "::error::the CLI binary imports Node-API symbols; it must not"
-              exit 1
-            fi
+            node ../scripts/check-no-napi-imports.mjs ../pkg/bin/hydra
+          else
+            echo "Windows binaries are PE; nm cannot read their import table, and the"
+            echo "Node-API imports are caught on the ELF/Mach-O jobs plus by the link"
+            echo "itself: link.exe fails with LNK1120 on an unresolved napi_* symbol."
           fi
 
       # The binary must START on the machine that built it. A build that
@@ -208,14 +215,29 @@ jobs:
         working-directory: pkg
         run: |
           set -euo pipefail
-          # The runner's own npm, not a global upgrade.
+          # Trusted publishing needs npm >= 11.5.1, and the runner image is not a
+          # fixed thing: `node-version: '22'` resolves to whatever 22.x the image
+          # ships, and the npm bundled with it has been 10.9.x on the ubuntu-22.04
+          # image — which failed here with "npm 10.9.9 is too old".
           #
-          # `npm install -g npm@^11.5.1` needs write access to the system prefix
-          # (`/usr/local/share/man`) and fails with EACCES on the macOS runners,
-          # which is how every darwin job died at this step while the linux ones
-          # passed. Trusted publishing needs npm >= 11.5.1, and the Node 22 image
-          # already ships a new enough npm — so the version is CHECKED, not
-          # replaced, and a too-old one says so instead of failing at publish.
+          # `npm install -g npm@^11.5.1` is NOT the fix: it writes to the system
+          # prefix (`/usr/local/share/man`) and dies with EACCES on macOS runners.
+          # Neither is `npx npm@11`, which cannot publish with provenance because
+          # the OIDC token is minted for the running npm process.
+          #
+          # So the version is installed into a PRIVATE prefix and put on PATH:
+          # writable on every runner, no sudo, and `npm` is genuinely npm 11 from
+          # then on. The check below proves it, and names the path it found.
+          #
+          # `GITHUB_PATH`, not `export PATH`: an export only lives for this
+          # shell, so the moment the publish moves into its own step — which is
+          # where it belongs, and where `release.yml` already puts it — the
+          # override silently disappears and the old npm comes back. Writing to
+          # GITHUB_PATH makes the install visible to EVERY later step in the job,
+          # which is the only version of this that cannot rot.
+          npm install --prefix "$RUNNER_TEMP/npm11" --no-audit --no-fund npm@^11.5.1
+          echo "$RUNNER_TEMP/npm11/node_modules/.bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/npm11/node_modules/.bin/npm" --version
           node -e '
             const { execFileSync } = require("child_process");
             const v = execFileSync("npm", ["--version"], { encoding: "utf8" }).trim();
@@ -223,6 +245,7 @@ jobs:
             const ok = maj > 11 || (maj === 11 && (min > 5 || (min === 5 && patch >= 1)));
             if (!ok) {
               console.error(`npm ${v} is too old for trusted publishing (needs >= 11.5.1)`);
+              console.error(`resolved from: ${execFileSync("which", ["npm"], { encoding: "utf8" }).trim()}`);
               process.exit(1);
             }
             console.log(`npm ${v} supports trusted publishing`);
