@@ -17,8 +17,8 @@ berkas `.hys` menjadi JavaScript biasa. Compiler-nya biner Rust; runner Node
 kecil membungkus esbuild, PostCSS dan Tailwind untuk menghasilkan situs.
 
 **Status: 0.13.1, pra-1.0.** Compiler, file-based router, prerender, server
-rendering, language server, dan test runner sudah jadi dan ditutup 408 tes Rust
-(271 unit + 137 integrasi) serta 156 tes Node di 22 suite. Sintaks bahasanya
+rendering, language server, dan test runner sudah jadi dan ditutup 413 tes Rust
+(276 unit + 137 integrasi) serta 197 tes Node di 26 suite. Sintaks bahasanya
 dibekukan (lihat di bawah); yang dirilis sampai 1.0 adalah perkakas, bukan
 konstruksi baru.
 
@@ -710,8 +710,28 @@ Untuk mengunci commit tertentu alih-alih versi rilis:
 npm install -D hydrascript@github:hanxthvy/hydrascript#<sha>
 ```
 
-Paket npm mengirim biner prabangun hanya untuk Linux x86_64. Di macOS, Windows
-atau ARM, bangun dari sumber:
+Paket npm mengirim biner prabangun untuk setiap platform tempat npm bisa jalan.
+Tidak ada yang dikompilasi saat install, dan tidak butuh Rust untuk memakainya:
+
+| Target | Paket yang terpasang | Addon in-process |
+|---|---|---|
+| Linux x64 (glibc) | `@hydrascript/linux-x64` | ya |
+| Linux arm64 (glibc) | `@hydrascript/linux-arm64` | ya |
+| Linux x64 (musl / Alpine) | `@hydrascript/linux-x64-musl` | tidak |
+| Linux arm64 (musl) | `@hydrascript/linux-arm64-musl` | tidak |
+| macOS Intel | `@hydrascript/darwin-x64` | ya |
+| macOS Apple silicon | `@hydrascript/darwin-arm64` | ya |
+| Windows x64 | `@hydrascript/win32-x64` | ya |
+
+Ketujuhnya adalah `optionalDependencies` dari `hydrascript`, jadi npm memasang
+persis satu yang cocok dengan mesinnya dan melewati sisanya. Addon adalah compiler
+in-process (`bin/hydra.node`); tanpa itu — dua target musl — CLI dipanggil sebagai
+subprocess per berkas, yang jalan di mana saja. Bedanya 0,025 ms versus ~7 ms per
+kompilasi di `vite dev`, bukan antara jalan dan tidak.
+
+Kalau platformmu tidak ada di tabel itu, `bin/hydra.js` gagal dengan menyebut
+triple yang ia cari dan dua jalan keluarnya, bukan error loader yang tidak
+menyebut apa pun. Untuk membangun dari sumber:
 
 ```bash
 git clone https://github.com/hanxthvy/hydrascript.git
@@ -739,8 +759,8 @@ memanggil biner `hydra` untuk diagnostik; tidak ada language server terpisah.
 ## Pengujian
 
 ```bash
-cd compiler-rs && cargo test          # 408 tes: 271 unit + 137 integrasi
-node --test packages/cli/*.test.mjs   # 156 tes CLI/runtime, sebagian terhadap browser nyata
+cd compiler-rs && cargo test          # 413 tes: 276 unit + 137 integrasi
+node --test packages/cli/*.test.mjs   # 197 tes CLI/runtime, sebagian terhadap browser nyata
 node benchmarks/measure.mjs           # angka yang dikutip di atas
 bash scripts/hx-examples-check.sh     # build semua proyek examples/
 ```
@@ -786,9 +806,15 @@ di sini biar bisa dibantah, bukan ditebak.
   melempar `AttributeError`, bukan mengembalikan `undefined` — itulah yang bikin
   bentuk tiga-argumen punya arti. `repr` adalah JSON untuk data biasa dan
   `String(x)` untuk sisanya, karena objek JS tidak punya `__repr__`.
-- **Biner prabangun hanya Linux x86_64.** macOS, Windows dan ARM membangun
-  compiler dari sumber; paket npm-nya bilang begitu, dan CI tidak pernah
-  menerbitkan biner yang tidak dibangun untuk target itu.
+- **Biner Linux butuh glibc 2.35+; kalau tidak, pakai build musl.** Lantainya
+  Ubuntu 22.04, karena itu runner tempat rilis dibangun: biner yang di-link
+  terhadap glibc lebih baru menolak *start* di sistem lama. Workflow rilis gagal
+  kalau sebuah biner menuntut glibc lebih baru daripada runner-nya, dan dua target
+  musl ada persis untuk sistem yang tidak bisa memenuhi lantai itu.
+- **Dua target musl tidak mengirim addon in-process.** Cargo menolak `cdylib`
+  untuk target itu, jadi `bin/hydra.node` tidak ada di sana dan compiler berjalan
+  sebagai subprocess. Benar di mana saja, lebih lambat per kompilasi di
+  `vite dev`.
 - **Pembulatan mengikuti Python, sampai ke tie-nya.** `format(1.5, ".0f")` = `2`
   dan `format(0.5, ".0f")` = `0`: tie ke digit genap, dinilai terhadap ekspansi
   biner eksak. `toFixed` membulatkan tie menjauh dari nol, jawaban berbeda untuk

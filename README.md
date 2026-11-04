@@ -18,7 +18,7 @@ esbuild, PostCSS and Tailwind to produce a site.
 
 **Status: 0.13.1, pre-1.0.** The compiler, file-based router, prerendering,
 server rendering, language server and test runner are implemented and covered by
-408 Rust tests (271 unit + 137 integration) and 156 Node tests across 22 suites.
+413 Rust tests (276 unit + 137 integration) and 197 Node tests across 26 suites.
 The language syntax is frozen (see below); what ships between now and 1.0 is
 tooling, not new constructs.
 
@@ -461,6 +461,53 @@ in the build log, because a URL with a parameter has no single page to build:
 The runtime gate now loads **every** `index.html` the build produced, not only the
 root one: with per-route HTML, checking one page leaves every other route
 unchecked, which is exactly where a route bug lives.
+
+**A dynamic route becomes real pages when it says which ones.** Export
+`static_params()` (or `generateStaticParams`) from the page's `.server.hys` and the
+build renders one document per entry:
+
+```python
+# src/pages/blog/[slug].server.hys
+POSTS = ["hello", "world"]
+
+export def static_params():
+    return [{"slug": p} for p in POSTS]
+
+export def loader(event):
+    return {"slug": event.params["slug"]}
+```
+
+```
+[hydra] SSG: pre-rendered 4/4 static route(s) into dist/     # index + 2 posts + not-found
+```
+
+Returning `[]` means "no static instances, render per request" and is honoured —
+a dashboard should not be prerendered. Not exporting it at all means the route
+stays dynamic and the build names it, so a crawler that sees a shell can be
+explained by reading the log.
+
+**A page's title can come from its data.** The static `meta = {...}` dict is one
+dict for the whole route, so `/blog/hello` and `/blog/world` could only ever share
+a title. `metadata(event)` fixes that, with the same event the loader receives:
+
+```python
+# src/pages/blog/[slug].server.hys
+export def metadata(event):
+    slug = event.params["slug"]
+    return {
+        "title": "Post " + slug + " — Hanz",
+        "canonical": "https://example.com/blog/" + slug,
+        "og:title": "Post " + slug,
+        "og:type": "article",
+        "twitter:card": "summary_large_image",
+    }
+```
+
+The key list is a fixed allowlist — `title`, `description`, `canonical`, the
+`og:` set and the `twitter:` set — and every value is escaped. An unknown key is
+a build error that names it, because a typo that ships silently is a page with no
+title and no way to find out why. Nothing here is a template: a value from a
+database cannot become markup.
 
 **SSG is on by default for static routes.** A project with `src/pages` and a
 `Router()` pre-renders every static route without any configuration. Static
@@ -975,8 +1022,28 @@ To pin a specific commit instead of the released version:
 npm install -D hydrascript@github:hanxthvy/hydrascript#<sha>
 ```
 
-The npm package ships prebuilt binaries for Linux x86_64 only. On macOS, Windows
-or ARM, build from source:
+The npm package ships a prebuilt compiler for every platform npm can run on.
+Nothing is compiled on install, and no Rust toolchain is needed to use it:
+
+| Target | Package installed | In-process addon |
+|---|---|---|
+| Linux x64 (glibc) | `@hydrascript/linux-x64` | yes |
+| Linux arm64 (glibc) | `@hydrascript/linux-arm64` | yes |
+| Linux x64 (musl / Alpine) | `@hydrascript/linux-x64-musl` | no |
+| Linux arm64 (musl) | `@hydrascript/linux-arm64-musl` | no |
+| macOS Intel | `@hydrascript/darwin-x64` | yes |
+| macOS Apple silicon | `@hydrascript/darwin-arm64` | yes |
+| Windows x64 | `@hydrascript/win32-x64` | yes |
+
+These are `optionalDependencies` of `hydrascript`, so npm installs exactly the one
+that matches the machine and skips the rest. The addon is the in-process compiler
+(`bin/hydra.node`); without it — the two musl targets — the CLI is spawned per
+file instead, which works everywhere and is the difference between 0.025 ms and
+~7 ms per compile in `vite dev`, not between working and not working.
+
+If a platform is missing from that table, `bin/hydra.js` fails with the triple it
+wanted and the two ways out, rather than a loader error that names nothing. To
+build from source anyway:
 
 ```bash
 git clone https://github.com/hanxthvy/hydrascript.git
@@ -1019,8 +1086,8 @@ and wiring both would double every squiggle.
 ## Testing
 
 ```bash
-cd compiler-rs && cargo test          # 408 tests: 271 unit + 137 integration
-node --test packages/cli/*.test.mjs   # 156 CLI/runtime tests, some against a real browser
+cd compiler-rs && cargo test          # 413 tests: 276 unit + 137 integration
+node --test packages/cli/*.test.mjs   # 197 CLI/runtime tests, some against a real browser
 node benchmarks/measure.mjs           # the numbers quoted above
 node benchmarks/compile.mjs           # what the compile cache and the pool buy
 bash scripts/hx-examples-check.sh     # builds every example/ project
@@ -1129,15 +1196,17 @@ here so it can be argued with rather than guessed at.
   with no default raises `AttributeError` rather than returning `undefined`,
   which is what makes the three-argument form mean anything. `repr` is JSON for
   plain data and `String(x)` elsewhere, because a JS object has no `__repr__`.
-- **Prebuilt binary is Linux x86_64 only, and needs glibc 2.35+.** macOS,
-  Windows and ARM build the compiler from source; the npm package says so and CI
-  has never published a binary it did not build for that target. The glibc floor
-  is Ubuntu 22.04, because that is the runner the release is built on: a binary
-  linked against a newer glibc refuses to *start* on an older system, which is
-  how 0.7.0 shipped a tarball whose `hydra build` worked (it runs the Node
-  runner) while `hydra run` and `hydra check` died with "weak version
-  `GLIBC_2.39' not found". The release workflow now fails if the binary requires
-  a glibc newer than the runner it was built on.
+- **The Linux binaries need glibc 2.35+; use the musl build otherwise.** The
+  glibc floor is Ubuntu 22.04, because that is the runner the release is built
+  on: a binary linked against a newer glibc refuses to *start* on an older
+  system, which is how 0.7.0 shipped a tarball whose `hydra build` worked (it
+  runs the Node runner) while `hydra run` and `hydra check` died with "weak
+  version `GLIBC_2.39' not found". The release workflow fails if a binary
+  requires a glibc newer than the runner it was built on, and the two musl
+  targets exist for exactly the systems that cannot meet the floor.
+- **The two musl targets ship no in-process addon.** Cargo refuses a `cdylib`
+  for those targets, so `bin/hydra.node` is absent there and the compiler runs as
+  a subprocess. Correct everywhere, slower per compile in `vite dev`.
 - **Rounding is Python's, to the tie.** `format(1.5, ".0f")` is `2` and
   `format(0.5, ".0f")` is `0`: ties go to the even digit, judged against the
   value's exact binary expansion. `toFixed` rounds ties away from zero, which is
@@ -1189,9 +1258,18 @@ itself, not the boundary. Until it lands the row says `open` rather than
 `shipped`, because calling this Fast Refresh would be the kind of green lie this
 project keeps removing.
 
-Not planned, and not a gap: React Server Components, islands, streaming SSR and
-multi-platform deploy adapters. The compiler's output is ordinary React on the
-client, and that is a feature with a name rather than an unfinished one.
+Not planned, and not a gap: React Server Components, islands and multi-platform
+deploy adapters. The compiler's output is ordinary React on the client, and that
+is a feature with a name rather than an unfinished one.
+
+**Streaming SSR is real, with one limit written down.** `renderPageStream` writes
+the document head immediately and pipes React's output as it is produced, so a
+slow boundary does not hold a blank page. The route's own loader is still awaited
+before the first byte, because the renderer needs a value; streaming the loader
+itself needs a resolver-based renderer, which this is not. The test asserts on
+socket chunks rather than content, because a buffered renderer produces a correct
+document and passes every content assertion — the difference is only visible in
+when the bytes arrive.
 
 ---
 
