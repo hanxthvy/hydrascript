@@ -16,7 +16,7 @@ HydraScript compiles indentation-based `.hyx` files to React TSX and `.hys` file
 to plain JavaScript. The compiler is a Rust binary; a small Node runner wraps
 esbuild, PostCSS and Tailwind to produce a site.
 
-**Status: 0.12.0, pre-1.0.** The compiler, file-based router, prerendering,
+**Status: 0.12.1, pre-1.0.** The compiler, file-based router, prerendering,
 server rendering, language server and test runner are implemented and covered by
 408 Rust tests (271 unit + 137 integration) and 156 Node tests across 22 suites.
 The language syntax is frozen (see below); what ships between now and 1.0 is
@@ -1019,12 +1019,16 @@ and wiring both would double every squiggle.
 ## Testing
 
 ```bash
-cd compiler-rs && cargo test          # 394 tests: 269 unit + 125 integration
-node --test packages/cli/*.test.mjs   # 115 CLI/runtime tests, some against a real browser
+cd compiler-rs && cargo test          # 408 tests: 271 unit + 137 integration
+node --test packages/cli/*.test.mjs   # 156 CLI/runtime tests, some against a real browser
 node benchmarks/measure.mjs           # the numbers quoted above
 node benchmarks/compile.mjs           # what the compile cache and the pool buy
 bash scripts/hx-examples-check.sh     # builds every example/ project
 ```
+
+`cargo test --release` does not work and is not supposed to: the release profile
+sets `panic = "abort"` for the shipped binary, and a test harness needs `unwind`.
+Use `cargo test --profile testrelease` for a release-optimised test run.
 
 The examples are the end-to-end suite. `examples/ecosystem` deliberately depends
 on 14 real React packages (radix, tanstack query, zustand, zod, motion, recharts,

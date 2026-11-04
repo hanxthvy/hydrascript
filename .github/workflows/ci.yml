@@ -94,6 +94,17 @@ jobs:
             echo "::error::version drift: the CLI would report $cargo_v while npm publishes $pkg_v"
             exit 1
           }
+          # `vite-plugin` is published off the same tag as the compiler, and it
+          # sat at 0.9.0 while the root moved to 0.12.0 — a plugin asking for a
+          # compiler three releases older than the one it ships next to. Only
+          # this one is checked: `runtime` and `editors/vscode` have their own
+          # release cycle and are not published with this tag.
+          v=$(node -p "require('./vite-plugin/package.json').version")
+          echo "vite-plugin=$v"
+          [ "$v" = "$pkg_v" ] || {
+            echo "::error::version drift: vite-plugin is $v but the package is $pkg_v"
+            exit 1
+          }
       - name: Install repo dependencies
         run: npm ci --no-audit --no-fund
       # `npm ci` does not expose a global binary, and the dts test looks for

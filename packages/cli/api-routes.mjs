@@ -20,11 +20,20 @@
  * CommonJS module in `.hydra/`, because node cannot load a `.hys` and the dev
  * server must not carry a second compiler.
  *
- * Deliberately absent: nested folders (`src/api/admin/users.hys`), route
- * parameters, and per-method files. Each of those is a second naming rule with
- * a second matcher, and none of them is needed to answer "GET and POST over
- * HTTP". A subdirectory is REPORTED rather than ignored in silence, which is
- * the rule this repository keeps for every dropped thing.
+ * Naming follows the page router exactly: a folder is a URL segment, `[id]` is
+ * a parameter (`req.params.id`), `[...path]` is a catch-all, and `index` is the
+ * folder's own URL. One naming language in a project, not two.
+ *
+ * `src/api/users/index.hys`     -> /api/users
+ * `src/api/users/[id].hys`      -> /api/users/:id
+ * `src/api/files/[...path].hys` -> /api/files/*
+ *
+ * Deliberately absent: per-method files (`get.hys` inside a folder). That one
+ * IS a second naming rule with a second matcher, and the method is already
+ * spelled as an export name (`export function get(req)`), so a second spelling
+ * would buy nothing. Folders and parameters are supported — the scanner below
+ * walks subdirectories and parses `[param]`; do not take this paragraph's word
+ * for what the code does, read `walk()` and `parseApiSegment()`.
  */
 
 import fs from 'node:fs';

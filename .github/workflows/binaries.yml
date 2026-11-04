@@ -43,33 +43,41 @@ jobs:
             os: ubuntu-22.04
             rust: x86_64-unknown-linux-gnu
             libc: gnu
+            supports_addon: true
           - target: linux-arm64
             os: ubuntu-22.04-arm
             rust: aarch64-unknown-linux-gnu
             libc: gnu
+            supports_addon: true
           # musl: Alpine and the static-image world. Built inside Alpine so the
           # toolchain is musl throughout rather than a cross-link that only
-          # looks portable.
+          # looks portable. No addon: cargo refuses a cdylib for this target
+          # ("does not support these crate types"), so the package ships the CLI.
           - target: linux-x64-musl
             os: ubuntu-22.04
             rust: x86_64-unknown-linux-musl
             libc: musl
+            supports_addon: false
           - target: linux-arm64-musl
             os: ubuntu-22.04-arm
             rust: aarch64-unknown-linux-musl
             libc: musl
+            supports_addon: false
           - target: darwin-x64
             os: macos-13
             rust: x86_64-apple-darwin
             libc: ''
+            supports_addon: true
           - target: darwin-arm64
             os: macos-14
             rust: aarch64-apple-darwin
             libc: ''
+            supports_addon: true
           - target: win32-x64
             os: windows-2022
             rust: x86_64-pc-windows-msvc
             libc: ''
+            supports_addon: true
 
     steps:
       - uses: actions/checkout@v4
@@ -83,21 +91,50 @@ jobs:
         working-directory: compiler-rs
         run: |
           set -euo pipefail
-          cargo build --release --locked --target ${{ matrix.rust }}
+          # Two builds, not one. The CLI is `[[bin]]` and must NOT contain the
+          # Node-API imports: Linux leaves them undefined in a cdylib and the
+          # loader fills them in, but the macOS and Windows linkers refuse to
+          # produce a binary with an undefined symbol — every darwin and win32
+          # job died at `Undefined symbols: _napi_create_function` for that
+          # reason. The addon is a `cdylib` build with `node-addon` on.
+          cargo build --release --locked --target ${{ matrix.rust }} --bin hydra
           OUT="target/${{ matrix.rust }}/release"
           mkdir -p ../pkg/bin
+
+          # The addon cannot be produced for musl: cargo says the target "does
+          # not support these crate types". A musl package therefore ships the
+          # CLI alone and `bin/hydra.js` falls back to spawning it — which is the
+          # documented path, not a degraded one.
+          BUILD_ADDON="${{ matrix.supports_addon }}"
+          if [ "$BUILD_ADDON" = "true" ]; then
+            cargo rustc --release --locked --target ${{ matrix.rust }} --lib \
+              --features node-addon --crate-type cdylib
+          fi
+
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp "$OUT/hydra.exe" ../pkg/bin/hydra.exe
-            cp "$OUT/hydra.dll" ../pkg/bin/hydra.node
+            [ "$BUILD_ADDON" = "true" ] && cp "$OUT/hydra.dll" ../pkg/bin/hydra.node || true
           else
             cp "$OUT/hydra" ../pkg/bin/hydra
-            # The addon is the same library under the name node loads.
-            if [ "${{ runner.os }}" = "macOS" ]; then
-              cp "$OUT/libhydra.dylib" ../pkg/bin/hydra.node
-            else
-              cp "$OUT/libhydra.so" ../pkg/bin/hydra.node
+            if [ "$BUILD_ADDON" = "true" ]; then
+              if [ "${{ runner.os }}" = "macOS" ]; then
+                cp "$OUT/libhydra.dylib" ../pkg/bin/hydra.node
+              else
+                cp "$OUT/libhydra.so" ../pkg/bin/hydra.node
+              fi
             fi
             chmod +x ../pkg/bin/hydra
+          fi
+
+          # The binary must not carry Node-API imports: nothing in the CLI
+          # resolves them, and their presence is exactly what broke the
+          # cross-platform link. Checked here so a regression fails the build
+          # that introduced it rather than a platform job three weeks later.
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            if nm -D ../pkg/bin/hydra 2>/dev/null | grep -q ' napi_'; then
+              echo "::error::the CLI binary imports Node-API symbols; it must not"
+              exit 1
+            fi
           fi
 
       # The binary must START on the machine that built it. A build that

@@ -39,7 +39,7 @@ function get(port, urlPath = '/') {
     const req = http.get({ host: '127.0.0.1', port, path: urlPath }, (res) => {
       let body = '';
       res.on('data', (c) => (body += c));
-      res.on('end', () => resolve({ status: res.statusCode, body }));
+      res.on('end', () => resolve({ status: res.statusCode, body, headers: res.headers }));
     });
     req.on('error', reject);
   });
@@ -144,5 +144,47 @@ test('a port fallback that runs out still rejects instead of hanging', async () 
     );
   } finally {
     for (const s of blockers) await new Promise((resolve) => s.close(resolve));
+  }
+});
+
+test('every answer carries the conservative security headers', async () => {
+  const dir = makeDir();
+  const { server, port } = await serveDirectory(dir, 5351, '127.0.0.1', { version: '0.3.0' });
+  try {
+    for (const urlPath of ['/', '/__hydra/version']) {
+      const res = await get(port, urlPath);
+      assert.equal(res.headers['x-content-type-options'], 'nosniff', `${urlPath} is sniffable`);
+      assert.equal(res.headers['referrer-policy'], 'strict-origin-when-cross-origin');
+      assert.equal(res.headers['x-frame-options'], 'SAMEORIGIN', `${urlPath} is framable`);
+      // A policy that names a feature accurately; the empty allow-list is the
+      // point, not an accident of formatting.
+      assert.match(res.headers['permissions-policy'], /camera=\(\)/);
+    }
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('HSTS is opt-in, and off on a plain-HTTP server', async () => {
+  const dir = makeDir();
+  const { server, port } = await serveDirectory(dir, 5352, '127.0.0.1', { version: '0.3.0' });
+  try {
+    // Off by default: pinning `localhost` to https in the operator's own browser
+    // is not something a dev server gets to do on its behalf.
+    const res = await get(port, '/');
+    assert.equal(res.headers['strict-transport-security'], undefined);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+
+  process.env.HYDRA_HTTPS = '1';
+  const dir2 = makeDir();
+  const second = await serveDirectory(dir2, 5353, '127.0.0.1', { version: '0.3.0' });
+  try {
+    const res = await get(second.port, '/');
+    assert.match(res.headers['strict-transport-security'] || '', /max-age=\d+/);
+  } finally {
+    delete process.env.HYDRA_HTTPS;
+    await new Promise((resolve) => second.server.close(resolve));
   }
 });

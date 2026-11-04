@@ -16,7 +16,7 @@ HydraScript mengompilasi berkas `.hyx` berbasis indentasi menjadi React TSX, dan
 berkas `.hys` menjadi JavaScript biasa. Compiler-nya biner Rust; runner Node
 kecil membungkus esbuild, PostCSS dan Tailwind untuk menghasilkan situs.
 
-**Status: 0.12.0, pra-1.0.** Compiler, file-based router, prerender, server
+**Status: 0.12.1, pra-1.0.** Compiler, file-based router, prerender, server
 rendering, language server, dan test runner sudah jadi dan ditutup 408 tes Rust
 (271 unit + 137 integrasi) serta 156 tes Node di 22 suite. Sintaks bahasanya
 dibekukan (lihat di bawah); yang dirilis sampai 1.0 adalah perkakas, bukan
@@ -739,10 +739,15 @@ memanggil biner `hydra` untuk diagnostik; tidak ada language server terpisah.
 ## Pengujian
 
 ```bash
-cd compiler-rs && cargo test          # 377 tes: 266 unit + 111 integrasi
+cd compiler-rs && cargo test          # 408 tes: 271 unit + 137 integrasi
+node --test packages/cli/*.test.mjs   # 156 tes CLI/runtime, sebagian terhadap browser nyata
 node benchmarks/measure.mjs           # angka yang dikutip di atas
 bash scripts/hx-examples-check.sh     # build semua proyek examples/
 ```
+
+`cargo test --release` tidak jalan dan memang bukan jalurnya: profil release
+memakai `panic = "abort"` untuk biner yang dikirim, sementara test harness butuh
+`unwind`. Untuk tes teroptimasi, pakai `cargo test --profile testrelease`.
 
 Contoh-contohnya adalah suite end-to-end. `examples/ecosystem` sengaja
 bergantung pada 14 paket React nyata (radix, tanstack query, zustand, zod,

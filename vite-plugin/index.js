@@ -3,11 +3,13 @@
  * vite-plugin-hydrascript — compile HydraScript to React TSX.
  *
  * The compiler is a native Rust binary: one process spawn per file, cached.
- * Cold compile is ~1ms, so the spawn cost dominates — see `compilerPath` to
- * point at a prebuilt binary, and `--json` mode which returns code + map in
- * one round trip. When the prebuilt N-API addon (`bin/hydra.node`) is present
- * it is used in-process instead, which matters in `vite dev`, where a save
- * recompiles and a spawn per save is the whole cost.
+ * The compiler itself is fast — measured on this box, 0.025 ms/file in-process
+ * and ~7 ms/file when each file is a fresh process — so the spawn cost is the
+ * whole bill, not the compile. That is what makes the addon worth loading in
+ * `vite dev`, where a save recompiles. See `compilerPath` to point at a prebuilt
+ * binary, and `--json` mode which returns code + map in one round trip. When the
+ * prebuilt N-API addon (`bin/hydra.node`) is present it is used in-process
+ * instead, which is the difference between those two numbers.
  *
  * All four HydraScript extensions are handled. `.hyx` / `.hsx` compile to
  * React TSX (JSX stripped by esbuild before Vite sees it, because Vite decides

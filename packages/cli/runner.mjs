@@ -2352,6 +2352,13 @@ function baseHeaders() {
     'Referrer-Policy': 'strict-origin-when-cross-origin',
     'X-Frame-Options': 'SAMEORIGIN',
     'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+    // `strict-origin-when-cross-origin` still sends the origin over http://, and
+    // HSTS is what stops the first request from taking that trip at all. Only for
+    // a server that is actually answering TLS: sending it on plain HTTP is
+    // ignored by browsers at best, and on a localhost dev server it would pin
+    // `localhost` to https in the operator's own browser, which is a support
+    // ticket nobody can debug from the server side.
+    ...(process.env.HYDRA_HTTPS === '1' ? { 'Strict-Transport-Security': 'max-age=31536000' } : {}),
   };
 }
 
@@ -2682,6 +2689,13 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
   let actualPort = port;
 
   const server = http.createServer(async (req, res) => {
+    // Set once, here, rather than at each of the eight `writeHead` sites below.
+    // Only the file-serving path used to carry these, so every error, API,
+    // action and data answer shipped without them — and those are the answers
+    // most likely to echo something a caller supplied. `writeHead` merges with
+    // what is already set, so a path that wants a different value still can.
+    for (const [name, value] of Object.entries(baseHeaders())) res.setHeader(name, value);
+
     const rawUrl = req.url || '/';
     const queryAt = rawUrl.indexOf('?');
     const rawPath = queryAt === -1 ? rawUrl : rawUrl.slice(0, queryAt);
@@ -2758,7 +2772,13 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
         opts.metadata === true
           ? { ...base, version: opts.version || null, sha: opts.sha || null, port: actualPort, host }
           : base;
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.writeHead(200, {
+        ...baseHeaders(),
+        'Content-Type': 'application/json; charset=utf-8',
+        // A health check is read by a monitor, and a cached "ok" answers for a
+        // server that is down.
+        'Cache-Control': 'no-store',
+      });
       res.end(JSON.stringify(detail));
       return;
     }

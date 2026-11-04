@@ -19,6 +19,19 @@ pub mod fmt;
 pub mod fstr;
 pub mod hx_target;
 pub mod lexer;
+// The Node-API binding is an ADDON, not part of the CLI.
+//
+// Its symbols are `extern "C"` imports that the host process resolves when Node
+// loads the shared library. A Linux `cdylib` tolerates them being undefined; the
+// macOS and Windows linkers do not, which is why `binaries.yml` built linux-x64
+// and died on every darwin and win32 job with
+// `Undefined symbols: _napi_create_function`.
+//
+// `hydra_node` names the addon build. Cargo has no "this is a cdylib target"
+// cfg, so it is set explicitly (see the `[features]` note in Cargo.toml) and
+// the platform workflow builds the addon with it. The CLI never calls into this
+// module, so leaving it out of the binary is the correct shape, not a workaround.
+#[cfg(feature = "node-addon")]
 pub mod napi;
 pub mod parser;
 pub mod scaffold;

@@ -12,6 +12,61 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## 0.12.1 — 2026-11-04
+
+A second pass over the same code, this time verifying the review's claims against
+the source instead of trusting the review. Three of the changes below are bugs
+the 0.12.0 review missed; two are its own findings that turned out to be wrong.
+
+## Fixed
+
+- **The macOS and Windows compiler could not be built at all.** `src/napi.rs`
+  declares `extern "C"` imports of `napi_*` functions. Linux tolerates them
+  undefined in a `cdylib` and the loader fills them in at `require()` time;
+  the macOS and Windows linkers refuse to emit a binary with an undefined
+  symbol, so every `darwin-*` and `win32-x64` job in `binaries.yml` died with
+  `Undefined symbols: _napi_create_function`. The binding is now behind a
+  `node-addon` feature, off by default, and the addon is a separate `cdylib`
+  build. The CLI binary is checked for `napi_` imports on every platform so a
+  regression fails the build that caused it.
+- **`cargo test --release` could not compile.** The release profile sets
+  `panic = "abort"` for the shipped binary and a test harness needs `unwind`.
+  `cargo test --profile testrelease` is that run under a name that works; the
+  shipped profile is unchanged.
+- **Two of the security headers were only on file responses.** `nosniff` and
+  friends were set inside the file-serving branch, so `/__hydra/version`,
+  every API route, every action reply and every error page answered without
+  them — the answers most likely to echo caller-supplied text. They are set
+  once on the response now.
+- **`/__hydra/version` was cacheable.** A monitor reading a cached `ok` learns
+  nothing about a server that is down. It is `no-store` now.
+- **`npm install -g npm` in `release.yml`.** The same step that failed every
+  darwin job in `binaries.yml` with `EACCES: mkdir /usr/local/share/man/man5`.
+  The version is checked there now, not installed.
+- **`vite-plugin/package.json` said 0.9.0** while the package it ships next to
+  was 0.12.0. CI checks the two agree.
+- **The `0.9.0`-era comment in `api-routes.mjs` still claimed nested folders and
+  route parameters were absent.** Both have been supported since 0.10.0 — the
+  scanner walks subdirectories and parses `[param]`, and the test suite covers
+  it. Two reviewers read the comment and reported the feature as missing, which
+  is the cost of a comment that contradicts its own code.
+- **README claimed 394 Rust tests and 115 Node tests.** The real counts are 408
+  and 158.
+- **`vite-plugin/index.js` claimed a ~1 ms cold compile.** Measured: 0.025 ms/file
+  in-process, ~7 ms/file through a process spawn. The conclusion (the spawn is
+  the cost) was right; the number was not.
+
+## Added
+
+- `Strict-Transport-Security`, opt-in via `HYDRA_HTTPS=1`. Off by default on
+  purpose: HSTS on a localhost dev server pins `localhost` to https in the
+  operator's own browser, which is not a server's decision to make.
+
+## Changed
+
+- `build:compiler` builds the addon with its feature instead of copying a
+  library that no longer contains the binding.
+
 ## 0.12.0 — 2026-11-03
 
 Everything in this release came from an audit that ran the framework the way a

@@ -1,7 +1,7 @@
 # [xihanzu-NR]
 [package]
 name = "hydra"
-version = "0.12.0"
+version = "0.12.1"
 edition = "2021"
 description = "HydraScript compiler: Pythonic syntax for React (.hyx) and Node (.hys)"
 license = "MIT"
@@ -10,6 +10,13 @@ license = "MIT"
 name = "hydra"
 crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
+
+[features]
+# The Node-API addon (`bin/hydra.node`) is a separate build of this crate. Its
+# `extern "C"` imports are only resolvable by a process that has Node loaded:
+# Linux tolerates them undefined in a cdylib, macOS and Windows refuse to link
+# at all. `default = []` keeps them out of the CLI; `build:addon` turns it on.
+node-addon = []
 
 [[bin]]
 name = "hydra"
@@ -21,6 +28,17 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# `[profile.test]` is not what `cargo test --release` builds with: that run uses
+# the `release` profile, and a test harness needs `unwind` while the shipped
+# release profile asks for `abort` — so the command died with "the crate `hydra`
+# requires panic strategy `abort` which is incompatible with this crate's
+# strategy of `unwind`", which reads like a broken test suite rather than a
+# profile mismatch. A separate profile keeps the shipped binary on `abort` and
+# gives release-mode tests a name to ask for.
+[profile.testrelease]
+inherits = "release"
+panic = "unwind"
 
 [profile.test]
 opt-level = 1

@@ -71,13 +71,24 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
-      # Trusted publishing needs npm CLI 11.5.1+. Pinned to 11 rather than
-      # `latest`, because npm 12 requires Node ^22.22.2 and the workflow pins
-      # Node 22: a floating npm would one day need a Node the job does not use.
+      # Trusted publishing needs npm CLI 11.5.1+, and the Node 22 image already
+      # ships one. It is CHECKED rather than installed: `npm install -g` writes
+      # to the system prefix, and that is how every darwin job in `binaries.yml`
+      # died with `EACCES: mkdir '/usr/local/share/man/man5'` — a publish step
+      # that fails on permissions says nothing about the package.
       - name: Ensure a recent npm
         run: |
-          npm install -g 'npm@^11.5.1'
-          npm --version
+          node -e '
+            const { execFileSync } = require("child_process");
+            const v = execFileSync("npm", ["--version"], { encoding: "utf8" }).trim();
+            const [maj, min, patch] = v.split(".").map(Number);
+            const ok = maj > 11 || (maj === 11 && (min > 5 || (min === 5 && patch >= 1)));
+            if (!ok) {
+              console.error(`npm ${v} is too old for trusted publishing (needs >= 11.5.1)`);
+              process.exit(1);
+            }
+            console.log(`npm ${v} supports trusted publishing`);
+          '
 
       - uses: dtolnay/rust-toolchain@stable
 
