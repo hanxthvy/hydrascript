@@ -86,6 +86,21 @@ jobs:
         with:
           targets: ${{ matrix.rust }}
 
+      # Windows cannot leave a symbol unresolved: an addon links against the
+      # import library Node publishes for exactly this purpose, and node-gyp
+      # downloads the same file. Without it `link.exe` fails with LNK1120 on
+      # every `napi_*` call.
+      - name: Fetch node.lib (Windows addon link)
+        if: ${{ runner.os == 'Windows' && matrix.supports_addon }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          NODE_V=$(node -p "process.versions.node.split('.')[0]")
+          mkdir -p compiler-rs/node-lib
+          curl -fsSL "https://nodejs.org/dist/v${NODE_V}/win-x64/node.lib" \
+            -o compiler-rs/node-lib/node.lib
+          ls -la compiler-rs/node-lib/
+
       - name: Build the compiler and its addon
         shell: bash
         working-directory: compiler-rs
@@ -107,8 +122,22 @@ jobs:
           # documented path, not a degraded one.
           BUILD_ADDON="${{ matrix.supports_addon }}"
           if [ "$BUILD_ADDON" = "true" ]; then
+            # An addon leaves its `napi_*` imports unresolved on purpose: Node
+            # supplies them when it loads the library. Linux accepts that in a
+            # shared object and macOS needs to be told to accept it
+            # (`-undefined dynamic_lookup`); Windows has no such concept and
+            # needs the import library to link against, which Node ships.
+            ADDON_LINK=''
+            if [ "${{ runner.os }}" = "macOS" ]; then
+              ADDON_LINK='-C link-arg=-undefined -C link-arg=dynamic_lookup'
+            elif [ "${{ runner.os }}" = "Windows" ]; then
+              # The import library fetched above; absolute so the linker is not
+              # asked to search relative to the crate directory.
+              ADDON_LINK="-C link-arg=$(pwd -W 2>/dev/null || pwd)/node-lib/node.lib"
+            fi
+            # shellcheck disable=SC2086
             cargo rustc --release --locked --target ${{ matrix.rust }} --lib \
-              --features node-addon --crate-type cdylib
+              --features node-addon --crate-type cdylib -- $ADDON_LINK
           fi
 
           if [ "${{ runner.os }}" = "Windows" ]; then
