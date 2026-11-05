@@ -31,10 +31,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "autoprefixer": "^10.4.20",
-    "esbuild": "^0.25.0",
-    "postcss": "^8.4.49",
-    "tailwindcss": "^3.4.16"
+    "esbuild": "^0.25.0"
   },
   "scripts": {
     "build:compiler": "cd compiler-rs && cargo build --release && cp target/release/hydra ../bin/hydra && cargo rustc --release --lib --features node-addon --crate-type cdylib && cp target/release/libhydra.so ../bin/hydra.node",
@@ -74,5 +71,26 @@
   "bugs": {
     "url": "https://github.com/hanxthvy/hydrascript/issues"
   },
-  "optionalDependencies": {}
+  "optionalDependencies": {},
+  "peerDependenciesMeta": {
+    "postcss": {
+      "optional": true
+    },
+    "tailwindcss": {
+      "optional": true
+    },
+    "autoprefixer": {
+      "optional": true
+    }
+  },
+  "peerDependencies": {
+    "postcss": "^8",
+    "tailwindcss": ">=3",
+    "autoprefixer": "^10"
+  },
+  "devDependencies": {
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.16",
+    "autoprefixer": "^10.4.20"
+  }
 }

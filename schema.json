@@ -57,7 +57,7 @@
     },
     "tailwind": {
       "type": "object",
-      "description": "Merged into the Tailwind configuration. `content` is extended with index.html and src/**, not replaced."
+      "description": "Turns ON Tailwind for this project and merges into its config. `content` is extended with index.html and src/**/*. Tailwind is not a dependency of the framework; a project that sets this key must install `tailwindcss` (and normally `postcss`, `autoprefixer`) itself."
     },
     "server": {
       "type": "object",
@@ -167,8 +167,29 @@
     },
     "styling": {
       "type": "object",
-      "description": "NOT USED YET. Accepted and validated, but this key is never read; Tailwind is configured through the top-level `tailwind` key.",
-      "additionalProperties": true
+      "description": "Which CSS pipeline this project uses. An array of PostCSS plugin names (or a relative path to one): `\"styling\": [\"autoprefixer\"]`. Ignored when a `postcss.config.*` file exists, because that config is the project speaking. When neither is present, a top-level `tailwind` key or a tailwind.config turns on Tailwind + autoprefixer; otherwise the stylesheet runs through plain PostCSS (autoprefixer only if installed).",
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "PostCSS plugin names or relative paths."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "plugins": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false,
+          "description": "Same, wrapped in an object."
+        }
+      ]
     },
     "ssr": {
       "type": "boolean",

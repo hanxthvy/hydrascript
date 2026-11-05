@@ -107,29 +107,87 @@ let devEsbuildContext = null;
 let devEsbuildDefineKey = null;
 
 
+/**
+ * esbuild is required; everything else is the project's choice.
+ *
+ * esbuild is the bundler — there is no build without it, so a missing copy is a
+ * real error. PostCSS, Tailwind and Autoprefixer are a CSS PIPELINE, and which
+ * pipeline a project wants is not the framework's decision:
+ *
+ *   - no `src/index.css`                     -> plain CSS esbuild already handled
+ *   - `postcss.config.*` present             -> that config decides, whatever it
+ *                                               names (Tailwind, autoprefixer,
+ *                                               sass, nesting, nothing)
+ *   - `styling: ["unicorn", ...]` in config  -> those plugins, and only those
+ *   - `tailwind` key, or a tailwind.config   -> Tailwind + autoprefixer only
+ *   - none of the above, but index.css exists -> plain PostCSS: vendor prefixes
+ *                                               via autoprefixer if installed,
+ *                                               otherwise passthrough
+ *
+ * Missing optional packages are `null`, not a crash. A project using plain CSS
+ * must not be forced to install Tailwind to get a build.
+ */
 async function loadBundlerDeps(cwd) {
   const esbuildPath = resolvePkg('esbuild', cwd);
-  const postcssPath = resolvePkg('postcss', cwd);
-  const twPath = resolvePkg('tailwindcss', cwd);
-  const apPath = resolvePkg('autoprefixer', cwd);
+
+  /**
+   * A CSS dependency belongs to the PROJECT, so it is resolved from there only.
+   *
+   * `resolvePkg` deliberately falls back to the framework's own node_modules —
+   * right for esbuild, which the framework ships, and wrong for these three: a
+   * project that never installed Tailwind would silently get the framework's
+   * copy, which is exactly the "the framework chose your CSS system" problem in
+   * a different disguise. Resolving from `cwd` alone means "you asked for it and
+   * installed it", or nothing.
+   */
+  const optional = (name) => {
+    try {
+      return createRequire(path.join(cwd, 'package.json')).resolve(name);
+    } catch {
+      return null;
+    }
+  };
+  const postcssPath = optional('postcss');
+  const twPath = optional('tailwindcss');
+  const apPath = optional('autoprefixer');
 
   const key = [esbuildPath, postcssPath, twPath, apPath].join('\u0000');
   const cached = bundlerDepsCache.get(key);
   if (cached) return cached;
 
-  // Four independent dynamic imports, started together. Awaiting them one at a
-  // time serialised module resolution and cost ~300 ms it did not have to.
-  const [esbuild, postcssMod, twMod, apMod] = await Promise.all([
-    import(esbuildPath),
-    import(postcssPath),
-    import(twPath),
-    import(apPath),
+  // Independent dynamic imports, started together. Awaiting them one at a time
+  // serialised module resolution and cost ~300 ms it did not have to.
+  const load = async (p) => {
+    if (!p) return null;
+    const m = await import(p);
+    return m.default || m;
+  };
+  const [esbuild, postcss, twMod, apMod] = await Promise.all([
+    load(esbuildPath),
+    load(postcssPath),
+    load(twPath),
+    load(apPath),
   ]);
-  const postcss = postcssMod.default || postcssMod;
-  const tailwindcss = twMod.default || twMod;
-  const autoprefixer = apMod.default || apMod;
 
-  const deps = { esbuild, postcss, tailwindcss, autoprefixer };
+  const deps = {
+    esbuild,
+    postcss,
+    // `tailwindcss` v3 exports the plugin factory directly, with a BOOLEAN
+    // `.postcss` marker on it (true = "this is a PostCSS plugin"). v4 moved the
+    // factory to `.postcss`, which is a FUNCTION there. Taking `.postcss`
+    // blindly hands back `true` on v3 and the build dies with
+    // "deps.tailwindcss is not a function". So: prefer a callable `.postcss`,
+    // else the module itself if it is callable.
+    tailwindcss: twMod
+      ? typeof twMod.postcss === 'function'
+        ? twMod.postcss
+        : typeof twMod === 'function'
+          ? twMod
+          : null
+      : null,
+    autoprefixer: apMod,
+    paths: { postcss: postcssPath, tailwind: twPath, autoprefixer: apPath },
+  };
   bundlerDepsCache.set(key, deps);
   return deps;
 }
@@ -864,32 +922,156 @@ function escapeRegExp(s) {
 }
 
 /**
- * `src/index.css` through Tailwind + Autoprefixer, returned as text.
+ * Which CSS pipeline this project asked for.
+ *
+ * The order is deliberate: an explicit PostCSS config is the project speaking,
+ * and nothing should override it. The `tailwind` key is the next most explicit.
+ * The fallback is plain PostCSS — a stylesheet still gets processed, but no
+ * framework is assumed.
+ *
+ * Returning a name rather than a plugin list keeps the decision observable in
+ * the build log, which is how a person finds out why their CSS came out wrong.
+ */
+function cssPipelineFor(cwd, config) {
+  const postcssConfig = [
+    'postcss.config.js',
+    'postcss.config.mjs',
+    'postcss.config.cjs',
+    'postcss.config.ts',
+    '.postcssrc',
+    '.postcssrc.json',
+    '.postcssrc.js',
+    '.postcssrc.yml',
+  ].find((f) => fs.existsSync(path.join(cwd, f)));
+  if (postcssConfig) return { kind: 'postcss-config', source: postcssConfig };
+
+  const styling = config.styling;
+  if (styling && Array.isArray(styling) && styling.length > 0) {
+    return { kind: 'styling-list', plugins: styling };
+  }
+  if (styling && typeof styling === 'object' && Array.isArray(styling.plugins) && styling.plugins.length > 0) {
+    return { kind: 'styling-list', plugins: styling.plugins };
+  }
+
+  const tailwindConfig = ['tailwind.config.js', 'tailwind.config.ts', 'tailwind.config.cjs', 'tailwind.config.mjs'].find(
+    (f) => fs.existsSync(path.join(cwd, f)),
+  );
+  if (config.tailwind || tailwindConfig) {
+    return { kind: 'tailwind', source: tailwindConfig || 'hydraconfig.tailwind' };
+  }
+  return { kind: 'plain' };
+}
+
+/** Load a plugin named in `styling`, by package name or relative path. */
+async function loadCssPlugin(cwd, name) {
+  const spec = name.startsWith('.') || name.startsWith('/') ? path.resolve(cwd, name) : name;
+  const resolved = spec.startsWith('/') ? spec : resolvePkg(spec, cwd);
+  const m = await import(pathToFileURL(resolved).href);
+  return m.default || m;
+}
+
+/**
+ * `src/index.css` through the project's own CSS pipeline, returned as text.
  *
  * The result is merged with the CSS esbuild extracted from the module graph
  * rather than written straight out, so the page still loads one stylesheet.
+ *
+ * Why this is not "the Tailwind step" any more: Tailwind used to be applied
+ * unconditionally, which meant every project was forced onto it and paid for
+ * `tailwindcss`, `postcss` and `autoprefixer` whether they wanted them or not.
+ * A framework choosing a project's CSS system is the kind of decision that looks
+ * helpful and is really a tax. Now the project chooses:
+ *
+ *   postcss.config.*   -> the project's own config runs, plugins and all
+ *   styling: [...]     -> exactly the plugins listed
+ *   tailwind key       -> Tailwind + autoprefixer
+ *   nothing            -> plain PostCSS (autoprefixer only if installed)
  */
-async function compileTailwind(cwd, config, postcss, tailwindcss, autoprefixer) {
+async function compileCss(cwd, config, deps) {
   const cssInPath = path.join(cwd, 'src/index.css');
   if (!fs.existsSync(cssInPath)) return null;
-
   const rawCss = fs.readFileSync(cssInPath, 'utf8');
-  const userTailwind = config.tailwind || {};
-  const twConfig = {
-    ...userTailwind,
-    content: Array.from(new Set([
-      path.join(cwd, 'index.html'),
-      path.join(cwd, 'src/**/*.{hyx,hys,hsx,hs,tsx,ts,jsx,js,mjs,html,css}'),
-      ...(userTailwind.content || []),
-    ])),
-    theme: userTailwind.theme || { extend: {} },
-    plugins: userTailwind.plugins || [],
-  };
+  const pipeline = cssPipelineFor(cwd, config);
 
-  const cssResult = await postcss([tailwindcss(twConfig), autoprefixer()]).process(rawCss, {
-    from: cssInPath,
-  });
-  return cssResult.css;
+  // No PostCSS installed: the stylesheet still has to ship. Hand it back as-is
+  // and say so, because a silently unprocessed file looks identical to one whose
+  // plugin did nothing.
+  if (!deps.postcss) {
+    if (pipeline.kind !== 'plain') {
+      console.warn(
+        `[hydra] styling: ${pipeline.kind} was requested but postcss is not installed in this project; ` +
+          'src/index.css is copied unprocessed. Run: npm i -D postcss',
+      );
+    }
+    return { css: rawCss, pipeline: { kind: 'none' } };
+  }
+
+  let plugins = [];
+  if (pipeline.kind === 'postcss-config') {
+    // `postcss-load-config` is not a dependency of this framework, so the file is
+    // imported directly. PostCSS configs export either an object with `plugins`
+    // or a function returning one; both are handled.
+    const file = path.join(cwd, pipeline.source);
+    let loaded;
+    try {
+      const m = await import(pathToFileURL(file).href);
+      loaded = m.default || m;
+      if (typeof loaded === 'function') loaded = await loaded({ cwd, env: process.env.NODE_ENV || 'production' });
+    } catch (err) {
+      throw new Error(
+        `styling: could not read ${pipeline.source}: ${err.message}. ` +
+          'PostCSS configs written for CommonJS need a .cjs extension when the project is type: module.',
+      );
+    }
+    const named = (loaded && loaded.plugins) || [];
+    if (Array.isArray(named)) {
+      // An array is either plugin instances already, or names to load.
+      for (const p of named) {
+        plugins.push(typeof p === 'string' ? await loadCssPlugin(cwd, p) : p);
+      }
+    } else if (named && typeof named === 'object') {
+      for (const [name, opts] of Object.entries(named)) {
+        if (opts === false) continue;
+        const fn = await loadCssPlugin(cwd, name);
+        plugins.push(fn(opts === true ? undefined : opts));
+      }
+    }
+  } else if (pipeline.kind === 'styling-list') {
+    for (const name of pipeline.plugins) {
+      const fn = await loadCssPlugin(cwd, name);
+      plugins.push(fn());
+    }
+  } else if (pipeline.kind === 'tailwind') {
+    if (!deps.tailwindcss) {
+      throw new Error(
+        'styling: the `tailwind` key or a tailwind.config was found but tailwindcss is not installed. ' +
+          'Run: npm i -D tailwindcss, or remove the key to use plain CSS.',
+      );
+    }
+    const userTailwind = config.tailwind || {};
+    const twConfig = {
+      ...userTailwind,
+      content: Array.from(
+        new Set([
+          path.join(cwd, 'index.html'),
+          path.join(cwd, 'src/**/*.{hyx,hys,hsx,hs,tsx,ts,jsx,js,mjs,html,css}'),
+          ...(userTailwind.content || []),
+        ]),
+      ),
+      theme: userTailwind.theme || { extend: {} },
+      plugins: userTailwind.plugins || [],
+    };
+    plugins.push(deps.tailwindcss(twConfig));
+    if (deps.autoprefixer) plugins.push(deps.autoprefixer());
+  } else {
+    // Plain: no framework. Autoprefixer only if the project installed it.
+    if (deps.autoprefixer) plugins.push(deps.autoprefixer());
+  }
+
+  if (plugins.length === 0) return { css: rawCss, pipeline };
+
+  const cssResult = await deps.postcss(plugins).process(rawCss, { from: cssInPath });
+  return { css: cssResult.css, pipeline };
 }
 
 function setupSSRGlobals() {
@@ -1616,8 +1798,10 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   // Step 5 below still merges Tailwind's CSS with whatever esbuild collected;
   // only the waiting moved, not the order of the output.
   _p = phaseStart();
-  const tailwindPromise = compileTailwind(cwd, config, postcss, tailwindcss, autoprefixer)
-    .then((css) => ({ css }))
+  // Named for what it does now: the project's CSS pipeline, whichever one it
+  // chose. Started here and awaited in step 3 so it overlaps the client bundle.
+  const cssPromise = compileCss(cwd, config, { postcss, tailwindcss, autoprefixer })
+    .then((out) => ({ out }))
     .catch((err) => ({ err }));
 
   const clientBuildOptions = {
@@ -1823,14 +2007,28 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   // the import order decided the order), and the libraries follow.
   const cssParts = [];
   _p = phaseStart();
-  const tailwindOutcome = await tailwindPromise;
-  // A Tailwind failure used to propagate and kill the build. It still does —
-  // but only here, after the bundle is on disk, and with the same error.
-  if (tailwindOutcome.err) throw tailwindOutcome.err;
-  const tailwindCss = tailwindOutcome.css;
-  phase('3. tailwind (overlapped)', _p);
+  const cssOutcome = await cssPromise;
+  // A stylesheet that fails to process kills the build — but only here, after
+  // the bundle is on disk, and with the same error it would have had earlier.
+  if (cssOutcome.err) throw cssOutcome.err;
+  const pipelineCss = cssOutcome.out ? cssOutcome.out.css : null;
+  if (cssOutcome.out && cssOutcome.out.pipeline) {
+    const p = cssOutcome.out.pipeline;
+    const label =
+      p.kind === 'tailwind'
+        ? `tailwind (${p.source})`
+        : p.kind === 'postcss-config'
+          ? `postcss (${p.source})`
+          : p.kind === 'styling-list'
+            ? `plugins (${p.plugins.join(', ')})`
+            : p.kind === 'plain'
+              ? 'plain postcss'
+              : 'copied unprocessed';
+    console.log(`[hydra] styling: ${label}`);
+  }
+  phase('3. css pipeline (overlapped)', _p);
   _p = phaseStart();
-  if (tailwindCss !== null) cssParts.push(tailwindCss);
+  if (pipelineCss !== null) cssParts.push(pipelineCss);
 
   const cssKeys = Object.keys(metafile.outputs).filter((k) => k.endsWith('.css'));
   const entryCssKey = metafile.outputs[entryOutKey].cssBundle;

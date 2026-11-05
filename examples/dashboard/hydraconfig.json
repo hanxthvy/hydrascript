@@ -20,5 +20,6 @@
   },
   "styling": {
     "tailwind": true
-  }
+  },
+  "tailwind": {}
 }
