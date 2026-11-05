@@ -12,6 +12,38 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## 0.13.2 — unreleased
+
+## Breaking changes
+
+- **Tailwind is no longer installed or applied by the framework.** `tailwindcss`,
+  `postcss` and `autoprefixer` moved out of `dependencies` into optional peers,
+  and Tailwind only runs when the project asks for it. A project that relied on
+  the framework's copy must now install the packages itself and set the
+  `tailwind` key (or add a `tailwind.config.*`). See
+  [Styling](README.md#styling) and [MIGRATING.md](MIGRATING.md).
+
+## Added
+
+- **A CSS pipeline the project chooses.** `src/index.css` runs through, in order
+  of precedence: a `postcss.config.*` in the project; the plugins named in
+  `"styling": [...]`; Tailwind + Autoprefixer when a `tailwind` key or a
+  `tailwind.config.*` exists; otherwise plain PostCSS, with Autoprefixer only if
+  it is installed. The build logs which one ran.
+
+## Fixed
+
+- **`tailwindcss` v3 was rejected as "not a function".** v3 exports the plugin
+  factory directly with a BOOLEAN `.postcss` marker on it, while v4 moved the
+  factory to `.postcss`. Reading `.postcss` unconditionally produced `true` and
+  killed the build. The check is now on callability.
+- **`styling` in `schema.json` said "NOT USED YET".** It is read now, as the
+  plugin list it always claimed to be.
+- **CSS packages resolved from the framework's `node_modules`.** `resolvePkg`
+  falls back to the framework root, which is right for esbuild and wrong for a
+  package the project is supposed to choose: a project without Tailwind would
+  silently get the framework's copy. Those three resolve from the project only.
+
 ## 0.13.1 — 2026-11-04
 
 ## Fixed

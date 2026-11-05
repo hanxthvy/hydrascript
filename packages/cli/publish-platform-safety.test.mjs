@@ -23,6 +23,10 @@ import { makeArtifacts } from './fixtures/fake-binary.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '../..');
 const SCRIPT = path.join(REPO, 'scripts', 'publish-platform-packages.mjs');
+// The version under test is the repo's, not a literal: pinning it makes
+// every bump fail these tests, and a real regression then hides among them.
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const VERSION = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')).version;
 
 /** A fake registry: `npm view <name>@<version> version` answers from a file. */
 function stubRegistry(state) {
@@ -72,14 +76,15 @@ test('a version already on the registry is SKIPPED, not re-published', () => {
   // only the second.
   const dir = artifacts(['linux-x64', 'linux-arm64']);
   const log = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'log-')), 'publish.log');
-  const stub = stubRegistry({ '@hydrascript/linux-x64': '0.13.1' });
+  const stub = stubRegistry({ '@hydrascript/linux-x64': VERSION });
   const res = run(['--dir', dir, '--only', 'linux-x64,linux-arm64'], {
     PATH: `${stub}:${process.env.PATH}`,
     PUBLISH_LOG: log,
   });
   assert.equal(res.status, 0, res.stdout + res.stderr);
-  assert.match(res.stdout, /ALREADY 0\.13\.1\s+linux-x64/, res.stdout);
-  assert.match(res.stdout, /SENT 0\.13\.1\s+linux-arm64/, res.stdout);
+  const v = escapeRe(VERSION);
+  assert.match(res.stdout, new RegExp(`ALREADY ${v}`), res.stdout);
+  assert.match(res.stdout, new RegExp(`SENT ${v}\\s+linux-arm64`), res.stdout);
   const sent = fs.readFileSync(log, 'utf8').trim().split('\n');
   assert.equal(sent.length, 1, 'exactly one publish attempt, for the missing package');
   assert.match(sent[0], /linux-arm64/);
@@ -88,8 +93,8 @@ test('a version already on the registry is SKIPPED, not re-published', () => {
 test('the summary reports already-published and failed separately', () => {
   const dir = artifacts(['linux-x64', 'linux-arm64', 'linux-x64-musl']);
   const stub = stubRegistry({
-    '@hydrascript/linux-x64': '0.13.1',
-    '@hydrascript/linux-arm64': '0.13.1',
+    '@hydrascript/linux-x64': VERSION,
+    '@hydrascript/linux-arm64': VERSION,
   });
   const res = run(['--dir', dir, '--only', 'linux-x64,linux-arm64'], {
     PATH: `${stub}:${process.env.PATH}`,

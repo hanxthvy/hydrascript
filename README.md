@@ -16,7 +16,7 @@ HydraScript compiles indentation-based `.hyx` files to React TSX and `.hys` file
 to plain JavaScript. The compiler is a Rust binary; a small Node runner wraps
 esbuild, PostCSS and Tailwind to produce a site.
 
-**Status: 0.13.1, pre-1.0.** The compiler, file-based router, prerendering,
+**Status: 0.13.2, pre-1.0.** The compiler, file-based router, prerendering,
 server rendering, language server and test runner are implemented and covered by
 413 Rust tests (276 unit + 137 integration) and 197 Node tests across 26 suites.
 The language syntax is frozen (see below); what ships between now and 1.0 is
@@ -57,6 +57,7 @@ stop daring to upgrade, not because of missing features.
 - [Configuration](#configuration)
 - [CLI reference](#cli-reference)
 - [Installation](#installation)
+- [Styling](#styling)
 - [Editor support](#editor-support)
 - [When something fails](#when-something-fails)
 - [Testing](#testing)
@@ -392,9 +393,9 @@ success for output no JS engine would accept.
 
 ## Meta-framework
 
-**`hydra dev`, `build` and `preview` use esbuild, not Vite.** PostCSS,
-Autoprefixer and Tailwind are driven programmatically, so a project needs no
-`vite.config.ts`, `tailwind.config.ts` or `postcss.config.js`.
+**`hydra dev`, `build` and `preview` use esbuild, not Vite.** No `vite.config.ts`
+is needed. The CSS pipeline is the project's choice, and every form it can take
+is described under [Styling](#styling).
 
 | Command | Does |
 |---|---|
@@ -905,7 +906,6 @@ A single optional `hydraconfig.json` in the project root:
     "strict": true
   },
   "rendering": { "ssg": true },
-  "styling": { "tailwind": true },
   "tailwind": {
     "theme": {
       "extend": {
@@ -1055,8 +1055,69 @@ cp target/release/libhydra.so ../bin/hydra.node
 
 Requirements: Node 22+ (`engines` enforces it; the runner uses the global
 `WebSocket`), Rust 1.75+ (edition 2021) to build the compiler.
-`npm install` brings esbuild, PostCSS, Tailwind and Autoprefixer, which the
-runner loads from the project's own `node_modules`.
+`npm install` brings esbuild, which is the one thing a build cannot do without.
+PostCSS, Tailwind and Autoprefixer are **not** installed by the framework: a
+project that wants them installs them, exactly like any other tool. See
+[Styling](#styling).
+
+---
+
+## Styling
+
+The CSS pipeline belongs to the project. There is no framework-imposed default,
+and `tailwindcss` is not a dependency of `hydrascript` — install it only if you
+want it.
+
+`src/index.css` is processed by whichever of these matches first, most explicit
+winning:
+
+| Your project has | What runs |
+|---|---|
+| `postcss.config.{js,mjs,cjs,ts}` or `.postcssrc*` | that config, plugins and all |
+| `"styling": ["autoprefixer", "./my-plugin.mjs"]` in `hydraconfig.json` | exactly those plugins |
+| a top-level `tailwind` key, or a `tailwind.config.*` file | Tailwind + Autoprefixer |
+| none of the above | plain PostCSS; Autoprefixer only if installed |
+
+The build prints which one ran, so a stylesheet that comes out wrong has an
+answer in the log:
+
+```
+[hydra] styling: tailwind (tailwind.config.js)
+[hydra] styling: plain postcss
+[hydra] styling: plugins (autoprefixer)
+```
+
+**Tailwind, if you want it:**
+
+```bash
+npm i -D tailwindcss postcss autoprefixer
+```
+
+```json
+// hydraconfig.json
+{ "tailwind": { "theme": { "extend": {} } } }
+```
+
+```css
+/* src/index.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+```
+
+**Something else — Sass, CSS modules, a custom transform:** put a
+`postcss.config.mjs` in the project and it is used as-is. Writing it as `.cjs`
+matters when the project is `"type": "module"`, because PostCSS configs written
+for CommonJS cannot be imported as ESM.
+
+**Plain CSS, nothing extra:** write `src/index.css` and build. Without PostCSS
+installed the file is copied unprocessed rather than dropped, and the build says
+so.
+
+The three CSS packages are optional peers, resolved from **your** `node_modules`
+only. The framework will not silently use its own copy — a project that never
+installed Tailwind gets a message naming the install command, not a stylesheet
+that quietly came out of a framework dependency.
 
 ---
 

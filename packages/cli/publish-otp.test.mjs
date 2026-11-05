@@ -26,6 +26,10 @@ import { makeArtifacts } from './fixtures/fake-binary.mjs';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '../..');
 const SCRIPT = path.join(REPO, 'scripts', 'publish-platform-packages.mjs');
+// The version under test is the repo's, not a literal: pinning it makes
+// every bump fail these tests, and a real regression then hides among them.
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const VERSION = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')).version;
 
 /**
  * A fake npm whose `view` answer is scripted per name, so "timeout", "401" and
@@ -161,11 +165,11 @@ test('a partial retry publishes ONLY the missing packages', () => {
   // scenario after a half-finished run: some published, the rest not.
   const dir = artifacts(['linux-x64', 'linux-arm64']);
   const log = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'l-')), 'npm.log');
-  const stub = stubNpm({ '@hydrascript/linux-x64': 'present:0.13.1' });
+  const stub = stubNpm({ '@hydrascript/linux-x64': `present:${VERSION}` });
   const res = run(['--dir', dir, '--only', 'linux-x64,linux-arm64'], { stub, log });
   assert.equal(res.status, 0, res.stdout + res.stderr);
-  assert.match(res.stdout, /ALREADY 0\.13\.1\s+linux-x64/);
-  assert.match(res.stdout, /SENT 0\.13\.1\s+linux-arm64/);
+  assert.match(res.stdout, new RegExp(`ALREADY ${escapeRe(VERSION)}`));
+  assert.match(res.stdout, new RegExp(`SENT ${escapeRe(VERSION)}\\s+linux-arm64`));
   const publishes = readLog(log).filter((c) => c.cmd === 'publish');
   assert.equal(publishes.length, 1, 'the already-published package must not be sent again');
 });

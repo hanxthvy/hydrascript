@@ -20,6 +20,50 @@ written to avoid.
 
 ---
 
+## 0.13.1 -> 0.13.2
+
+### 1. Tailwind is yours to install
+
+`hydrascript` no longer depends on `tailwindcss`, `postcss` or `autoprefixer`, and
+it no longer applies Tailwind to every build. If your project used the
+framework's copy, it now gets plain CSS — and a stylesheet that still says
+`@tailwind base;` will ship those directives to the browser, where they mean
+nothing.
+
+The fix, once:
+
+```bash
+npm i -D tailwindcss postcss autoprefixer
+```
+
+```json
+// hydraconfig.json
+{ "tailwind": {} }
+```
+
+If you already have a `tailwind.config.js`, that alone is enough — the key is
+only needed when the config is expressed in `hydraconfig.json`.
+
+Nothing else changes: same `@tailwind` directives in `src/index.css`, same
+emitted stylesheet.
+
+### 2. Using something other than Tailwind
+
+This release adds the paths that did not exist before, so nothing breaks here —
+it is listed because the old documentation said a project "needs no
+`postcss.config.js`", which was true and is now false.
+
+- `postcss.config.{js,mjs,cjs,ts}` — used as-is, plugins and all
+- `"styling": ["autoprefixer", "./my-plugin.mjs"]` — exactly those plugins
+- nothing — plain PostCSS, Autoprefixer only if installed
+
+### 3. `styling` is read now
+
+`"styling": { "tailwind": true }` never did anything (the schema said so). It now
+means "run a PostCSS plugin named `tailwind`", which is not a package — so a
+project carrying that dead key will fail with a resolve error naming it. Replace
+it with the top-level `"tailwind"` key.
+
 ## 0.11.x -> 0.12.0
 
 Five behaviours changed, and each has a line you can edit. Nothing here needs a
