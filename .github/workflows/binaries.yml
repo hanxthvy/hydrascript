@@ -102,6 +102,24 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
+      # `setup-node` writes an .npmrc that expects `NODE_AUTH_TOKEN`, and with no
+      # secret configured it fills that variable with the literal placeholder
+      # `XXXXX-XXXXX-XXXXX-XXXXX`. npm then tries to authenticate with a fake
+      # token and the registry answers `404 Not Found - PUT`, which reads like a
+      # permissions problem on the package and is really a garbage credential.
+      #
+      # Trusted publishing wants NO token: npm mints one from the OIDC identity
+      # the `id-token: write` permission provides. Clearing the variable is the
+      # documented way to make that happen when `.npmrc` is already written.
+      - name: Clear the placeholder token so npm uses trusted publishing
+        run: |
+          set -euo pipefail
+          echo "NODE_AUTH_TOKEN=" >> "$GITHUB_ENV"
+          echo "NPM_TOKEN=" >> "$GITHUB_ENV"
+          # Prove it: the .npmrc must still name the registry, and no token may
+          # survive into the publish step.
+          grep -c "registry.npmjs.org" "$NPM_CONFIG_USERCONFIG" || true
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust }}
