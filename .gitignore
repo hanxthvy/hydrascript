@@ -61,3 +61,8 @@ editors/**/out/
 # what CI, the release and the install check use, so npm is the one kept.
 bun.lock
 watch-out/
+
+# A zero-byte `hydra` appeared at the repo root: some test or shell redirect
+# wrote it there, and it was committed by accident. The real binaries live in
+# bin/.
+/hydra
