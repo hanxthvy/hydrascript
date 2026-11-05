@@ -86,6 +86,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Trusted publishing needs TWO things, and this job only had one.
+      #
+      # `permissions: id-token: write` lets the job MINT an OIDC token, but npm
+      # only ASKS for it when `.npmrc` says to — and that file is what
+      # `setup-node` writes when given `registry-url`. Without this step the
+      # publish reached the registry, found no credential, and died with
+      # `ENEEDAUTH: You need to authorize this machine` — after npm 11 was
+      # already running, which made it look like a version problem.
+      #
+      # `release.yml` had this step from the beginning, which is why the root
+      # package published and the platform packages never did.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust }}
