@@ -229,28 +229,35 @@ jobs:
           # writable on every runner, no sudo, and `npm` is genuinely npm 11 from
           # then on. The check below proves it, and names the path it found.
           #
-          # `GITHUB_PATH`, not `export PATH`: an export only lives for this
-          # shell, so the moment the publish moves into its own step — which is
-          # where it belongs, and where `release.yml` already puts it — the
-          # override silently disappears and the old npm comes back. Writing to
-          # GITHUB_PATH makes the install visible to EVERY later step in the job,
-          # which is the only version of this that cannot rot.
+          # `GITHUB_PATH` is written for LATER steps, not this one — GitHub reads
+          # the file between steps. The install and the publish used to share a
+          # step, so writing GITHUB_PATH and then calling bare `npm` published
+          # with the image's 10.9.9 and failed with "too old for trusted
+          # publishing" seven times. Two things are needed, and both are here:
+          #
+          #   1. GITHUB_PATH, so any later step inherits npm 11 (the split this
+          #      file will eventually want);
+          #   2. an explicit NPM_BIN used by this step, because GITHUB_PATH does
+          #      not apply to the shell that wrote it.
           npm install --prefix "$RUNNER_TEMP/npm11" --no-audit --no-fund npm@^11.5.1
+          NPM_BIN="$RUNNER_TEMP/npm11/node_modules/.bin/npm"
+          export NPM_BIN
           echo "$RUNNER_TEMP/npm11/node_modules/.bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/npm11/node_modules/.bin/npm" --version
+          "$NPM_BIN" --version
           node -e '
             const { execFileSync } = require("child_process");
-            const v = execFileSync("npm", ["--version"], { encoding: "utf8" }).trim();
+            const bin = process.env.NPM_BIN;
+            const v = execFileSync(bin, ["--version"], { encoding: "utf8" }).trim();
             const [maj, min, patch] = v.split(".").map(Number);
             const ok = maj > 11 || (maj === 11 && (min > 5 || (min === 5 && patch >= 1)));
             if (!ok) {
               console.error(`npm ${v} is too old for trusted publishing (needs >= 11.5.1)`);
-              console.error(`resolved from: ${execFileSync("which", ["npm"], { encoding: "utf8" }).trim()}`);
+              console.error(`resolved from: ${bin}`);
               process.exit(1);
             }
             console.log(`npm ${v} supports trusted publishing`);
           '
-          npm publish --provenance --access public
+          "$NPM_BIN" publish --provenance --access public
 
       - uses: actions/upload-artifact@v4
         # Always: a failed publish still leaves a binary somebody can download
