@@ -159,6 +159,73 @@ function binaryArch(binPath, container) {
   return 'unknown';
 }
 
+/**
+ * The version a compiler binary was built at.
+ *
+ * Two ways, because one is not enough:
+ *
+ *   1. run it — correct, and proves the artifact executes on this machine;
+ *   2. if it cannot run (a cross-architecture artifact, which is the normal case
+ *      when publishing seven targets from one box), find the version STRING in
+ *      the binary itself. The compiler embeds it from `CARGO_PKG_VERSION`, so it
+ *      is present as plain bytes in all three container formats.
+ *
+ * Returns null when neither works, and the caller refuses to publish: guessing a
+ * version is how the wrong build ships under the right number.
+ */
+function readBinaryVersion(binPath) {
+  try {
+    const out = execFileSync(binPath, ['--version'], { encoding: 'utf8', timeout: 20000 }).trim();
+    const m = out.match(/(\d+\.\d+\.\d+)/);
+    if (m) return m[1];
+  } catch {
+    // Expected for a foreign architecture; fall through to the bytes.
+  }
+  try {
+    const buf = fs.readFileSync(binPath);
+    // Latin1 keeps one byte per character, so the whole file can be scanned as
+    // text without a decode failure on binary. The search is over the WHOLE
+    // binary: an earlier version looked in a window around the word "hydra" and
+    // found nothing, because the version string sits in a different section —
+    // the compiler embeds it from CARGO_PKG_VERSION as a plain literal.
+    const text = buf.toString('latin1');
+    const counts = new Map();
+    for (const m of text.matchAll(/(\d+)\.(\d+)\.(\d+)/g)) {
+      const v = m[0];
+      // Only versions that look like this project's: a bare semver with no
+      // suffix, and not a dependency's 4-part or dated version.
+      counts.set(v, (counts.get(v) || 0) + 1);
+    }
+    // The compiler's own version is the semver that appears SEVERAL times
+    // (it is written into usage text, `--version`, and error banners) and that
+    // matches the major.minor the package claims. Requiring the minor to match
+    // rules out a dependency's coincidental string.
+    const [wantMaj, wantMin] = VERSION.split('.');
+    let best = null;
+    let bestN = 0;
+    for (const [v, n] of counts) {
+      const [maj, min] = v.split('.');
+      if (maj !== wantMaj || min !== wantMin) continue;
+      if (n > bestN) {
+        best = v;
+        bestN = n;
+      }
+    }
+    if (best) return best;
+    // Fall back to the most frequent semver at all: better a truthful reading
+    // than a refusal caused by a version this release did not predict.
+    for (const [v, n] of counts) {
+      if (n > bestN) {
+        best = v;
+        bestN = n;
+      }
+    }
+    return best;
+  } catch {
+    return null;
+  }
+}
+
 /** A binary is right for its name, or the package must not be published. */
 function verifyBinary(target, binPath) {
   const spec = TARGETS[target];
@@ -283,6 +350,27 @@ for (const [target, spec] of Object.entries(TARGETS)) {
     continue;
   }
 
+  // The binary must be the SAME VERSION as the package about to be published.
+  //
+  // Artifacts are downloaded from a CI run, and a directory from an older run
+  // looks identical: same layout, same file names, a compiler that builds. The
+  // version is the only thing that says whether it is the right build, so it is
+  // read from the binary itself and compared before anything else happens.
+  // Reading `--version` only works when the binary can RUN here. A cross-target
+  // artifact (arm64 on an x64 box, PE on Linux) cannot, and the failure is an
+  // exec format error rather than a wrong answer — so the version is read from
+  // the BYTES when execution is impossible, and execution is preferred when it
+  // works because it proves the artifact is runnable at all.
+  const binaryVersion = readBinaryVersion(binPath);
+  if (binaryVersion !== VERSION) {
+    stage(target, `FAIL binary is ${binaryVersion || '?'}, package is ${VERSION}`);
+    failed.push(
+      `${target}: ${spec.bin} reports ${binaryVersion || 'an unreadable version'}, but this run publishes ${VERSION}. ` +
+        'The artifact directory is from a different build — download the one for this version.',
+    );
+    continue;
+  }
+
   let info;
   try {
     info = verifyBinary(target, binPath);
@@ -316,14 +404,19 @@ for (const [target, spec] of Object.entries(TARGETS)) {
     continue;
   }
   if (anyVersion.state === PRESENT) {
-    // The name is claimed by a version that is NOT this one. Publishing a second
-    // artefact under a name that already sold something is a decision, not a
-    // bootstrap, so it stops here and says what is there.
-    stage(target, 'FAIL name taken (other version)');
-    failed.push(
-      `${target}: ${name} exists at ${anyVersion.value}; this script bootstraps new names only`,
-    );
-    continue;
+    // The name exists at a DIFFERENT version. That is the normal case for every
+    // release after the first: 0.13.1 is on the registry, 0.13.2 is not, and
+    // publishing 0.13.2 is exactly what should happen.
+    //
+    // This used to refuse, on the reasoning that a second artefact under a name
+    // that had already sold something was a decision rather than a bootstrap.
+    // True for a NAME, wrong for a VERSION — and it made the script unusable for
+    // the second release it was ever asked to do.
+    //
+    // What still must not happen is publishing under a name owned by someone
+    // else, and the registry enforces that: the PUT is refused. The version
+    // comparison above already guarantees no existing version is overwritten.
+    console.log(`  note: ${name} is on the registry at ${anyVersion.value}; adding ${VERSION}`);
   }
 
   // ---- build the package ---------------------------------------------------

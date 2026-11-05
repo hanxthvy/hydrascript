@@ -112,6 +112,13 @@ jobs:
       # the `id-token: write` permission provides. Clearing the variable is the
       # documented way to make that happen when `.npmrc` is already written.
       - name: Clear the placeholder token so npm uses trusted publishing
+        # `shell: bash` is not optional here. The default shell on a Windows
+        # runner is PowerShell, where `set -euo pipefail` is a cmdlet call and
+        # fails with "A parameter cannot be found that matches parameter name
+        # 'euo'". That killed the win32 job before it built anything, which is
+        # why win32-x64 was the one artifact missing from the run — and why the
+        # bootstrap audit said 6 ready, 1 failed.
+        shell: bash
         run: |
           set -euo pipefail
           echo "NODE_AUTH_TOKEN=" >> "$GITHUB_ENV"
