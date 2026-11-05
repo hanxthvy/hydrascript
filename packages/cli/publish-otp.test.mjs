@@ -49,6 +49,9 @@ function stubNpm(behaviour) {
       `const behaviour = ${JSON.stringify(behaviour)};`,
       'const a = process.argv.slice(2);',
       'const cmd = a[0];',
+      // The publisher asks `npm whoami` before anything else. A stub without it
+      // makes every test fail on the preflight instead of on its own subject.
+      'if (cmd === "whoami") { console.log("stub-user"); process.exit(0); }',
       // Record every invocation so a test can prove the OTP was forwarded and
       // that nothing was published twice. The OTP VALUE is recorded, never
       // printed, so the test can assert on it without leaking to the console.
@@ -74,7 +77,7 @@ function stubNpm(behaviour) {
 
 // Fixtures, not /tmp/plat: a test that needs an artifact from one CI run on one
 // machine fails on a clean checkout, which is exactly what CI is.
-const artifacts = (targets) => makeArtifacts(targets);
+const artifacts = (targets) => makeArtifacts(targets, { version: VERSION });
 
 function run(args, { stub, log } = {}) {
   const env = { ...process.env };

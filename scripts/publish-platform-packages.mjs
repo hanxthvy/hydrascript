@@ -175,7 +175,16 @@ function binaryArch(binPath, container) {
  */
 function readBinaryVersion(binPath) {
   try {
-    const out = execFileSync(binPath, ['--version'], { encoding: 'utf8', timeout: 20000 }).trim();
+    // `stdio: 'ignore'` on stderr is not tidiness. Running an arm64 ELF on x64
+    // makes the SHELL print "ELF\x02\x01... not found" and "Syntax error: word
+    // unexpected" — noise that appears above the real output, and text that a
+    // version scraper could mistake for a finding. The attempt is expected to
+    // fail for six of the seven targets when publishing from one box.
+    const out = execFileSync(binPath, ['--version'], {
+      encoding: 'utf8',
+      timeout: 20000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
     const m = out.match(/(\d+\.\d+\.\d+)/);
     if (m) return m[1];
   } catch {
@@ -183,44 +192,21 @@ function readBinaryVersion(binPath) {
   }
   try {
     const buf = fs.readFileSync(binPath);
-    // Latin1 keeps one byte per character, so the whole file can be scanned as
-    // text without a decode failure on binary. The search is over the WHOLE
-    // binary: an earlier version looked in a window around the word "hydra" and
-    // found nothing, because the version string sits in a different section —
-    // the compiler embeds it from CARGO_PKG_VERSION as a plain literal.
+    // Latin1 keeps one byte per character, so the whole file scans as text
+    // without a decode failure on binary.
+    //
+    // The question is narrow on purpose: does this file contain the EXACT version
+    // about to be published? Not "what version is this" — a compiled artifact is
+    // full of semver strings from its dependencies (a real binary here contains
+    // 0.1.0 five times, 19.1.0 four, 0.32.3 three), and picking the most frequent
+    // one is how an earlier version of this function reported a dependency's
+    // version as the compiler's.
+    //
+    // An exact match is the only answer that is both safe and useful: if the
+    // bytes say 0.13.2, this is a 0.13.2 build; if they do not, it is not.
     const text = buf.toString('latin1');
-    const counts = new Map();
-    for (const m of text.matchAll(/(\d+)\.(\d+)\.(\d+)/g)) {
-      const v = m[0];
-      // Only versions that look like this project's: a bare semver with no
-      // suffix, and not a dependency's 4-part or dated version.
-      counts.set(v, (counts.get(v) || 0) + 1);
-    }
-    // The compiler's own version is the semver that appears SEVERAL times
-    // (it is written into usage text, `--version`, and error banners) and that
-    // matches the major.minor the package claims. Requiring the minor to match
-    // rules out a dependency's coincidental string.
-    const [wantMaj, wantMin] = VERSION.split('.');
-    let best = null;
-    let bestN = 0;
-    for (const [v, n] of counts) {
-      const [maj, min] = v.split('.');
-      if (maj !== wantMaj || min !== wantMin) continue;
-      if (n > bestN) {
-        best = v;
-        bestN = n;
-      }
-    }
-    if (best) return best;
-    // Fall back to the most frequent semver at all: better a truthful reading
-    // than a refusal caused by a version this release did not predict.
-    for (const [v, n] of counts) {
-      if (n > bestN) {
-        best = v;
-        bestN = n;
-      }
-    }
-    return best;
+    const wanted = VERSION.split('.').join('\\.');
+    return new RegExp(`(?:^|[^0-9.])${wanted}(?![0-9.])`).test(text) ? VERSION : null;
   } catch {
     return null;
   }
@@ -322,12 +308,52 @@ function npmPublish(cwd, { timeoutMs = 300000 } = {}) {
   });
 }
 
+/**
+ * Is there an authenticated npm session?
+ *
+ * Checked BEFORE the first publish attempt. Without it the registry answers an
+ * anonymous PUT with `404 Not Found` rather than 401 — deliberately, so it does
+ * not reveal that a name exists — and the failure reads as "this package cannot
+ * be published", which sends the reader looking at trusted publishers and
+ * package ownership instead of at `npm login`.
+ *
+ * `npm whoami` is the cheapest question that distinguishes those two worlds.
+ */
+function requireNpmSession() {
+  try {
+    const who = execFileSync('npm', ['whoami'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 30000,
+    }).trim();
+    if (!who) throw new Error('empty');
+    return who;
+  } catch {
+    console.error('');
+    console.error('  npm is not logged in, so publishing cannot work.');
+    console.error('');
+    console.error('  The registry answers an anonymous PUT with 404, not 401, which is');
+    console.error('  why the error above looked like a permissions problem on the package.');
+    console.error('');
+    console.error('    npm login          # then run this again');
+    console.error('');
+    process.exit(2);
+  }
+}
+
 const results = [];
 const failed = [];
 
 function stage(target, note) {
   results.push({ target, note });
   console.log(`  ${note.padEnd(34)} ${target}`);
+}
+
+// Audit and dry-run must keep working with no session at all — they are what a
+// person runs to CHECK the artifacts before logging in.
+if (!AUDIT && !DRY) {
+  const who = requireNpmSession();
+  console.log(`  npm session: ${who}`);
 }
 
 for (const [target, spec] of Object.entries(TARGETS)) {

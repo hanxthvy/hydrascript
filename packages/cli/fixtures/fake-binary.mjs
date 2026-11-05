@@ -36,7 +36,7 @@ const MACHO_CPU = { x64: 0x01000007, arm64: 0x0100000c };
 const PE_MACHINE = { x64: 0x8664, arm64: 0xaa64 };
 
 /** A buffer whose first bytes are the real header for `container` + `cpu`. */
-export function fakeBinary(container, cpu, size = SIZE) {
+export function fakeBinary(container, cpu, size = SIZE, version = null) {
   const buf = Buffer.alloc(size, 0);
   if (container === 'elf') {
     // 0x7f 'E' 'L' 'F', then e_machine (LE) at offset 18.
@@ -58,6 +58,13 @@ export function fakeBinary(container, cpu, size = SIZE) {
   } else {
     throw new Error(`unknown container ${container}`);
   }
+  if (version) {
+    // A real compiler embeds its own version from CARGO_PKG_VERSION, and the
+    // publisher reads it back out of the bytes to prove the artifact matches
+    // the release. A fixture without it would pass tests that the real binary
+    // cannot, so this mirrors reality rather than simplifying it.
+    Buffer.from(`\0hydra ${version}\0`, 'latin1').copy(buf, 256);
+  }
   return buf;
 }
 
@@ -74,7 +81,7 @@ function containerFor(target) {
  * `overrides` lets a test put a WRONG binary somewhere on purpose — that is how
  * the architecture check is tested without a real cross-build.
  */
-export function makeArtifacts(targets, { overrides = {} } = {}) {
+export function makeArtifacts(targets, { overrides = {}, version = null } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plat-fixture-'));
   for (const t of targets) {
     const spec = TARGETS[t];
@@ -86,11 +93,11 @@ export function makeArtifacts(targets, { overrides = {} } = {}) {
     const container = ov.container || containerFor(t);
     const cpu = ov.cpu || spec.cpu[0];
     const binPath = path.join(binDir, spec.bin);
-    fs.writeFileSync(binPath, fakeBinary(container, cpu, ov.size));
+    fs.writeFileSync(binPath, fakeBinary(container, cpu, ov.size, version));
     fs.chmodSync(binPath, 0o755);
 
     if (spec.addon && ov.addon !== false) {
-      fs.writeFileSync(path.join(binDir, spec.addon), fakeBinary(container, cpu));
+      fs.writeFileSync(path.join(binDir, spec.addon), fakeBinary(container, cpu, undefined, version));
     }
   }
   return dir;

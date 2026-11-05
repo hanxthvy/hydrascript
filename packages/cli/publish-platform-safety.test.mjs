@@ -39,6 +39,7 @@ function stubRegistry(state) {
       "const fs = require('fs');",
       `const state = ${JSON.stringify(state)};`,
       'const a = process.argv.slice(2);',
+      'if (a[0] === "whoami") { console.log(process.env.STUB_WHOAMI || "stub-user"); process.exit(0); }',
       'if (a[0] === "view") {',
       '  const spec = a[1];',
       '  const [name, version] = spec.includes("@", 1) ? [spec.slice(0, spec.lastIndexOf("@")), spec.slice(spec.lastIndexOf("@") + 1)] : [spec, null];',
@@ -62,7 +63,7 @@ function stubRegistry(state) {
 
 // Fixtures with real headers in a real layout, so the container and CPU checks
 // are exercised for real without needing a compiler or a CI artifact.
-const artifacts = (targets) => makeArtifacts(targets);
+const artifacts = (targets) => makeArtifacts(targets, { version: VERSION });
 
 const run = (args, env = {}) =>
   spawnSync(process.execPath, [SCRIPT, ...args], {
@@ -79,6 +80,7 @@ test('a version already on the registry is SKIPPED, not re-published', () => {
   const stub = stubRegistry({ '@hydrascript/linux-x64': VERSION });
   const res = run(['--dir', dir, '--only', 'linux-x64,linux-arm64'], {
     PATH: `${stub}:${process.env.PATH}`,
+    STUB_WHOAMI: 'stub-user',
     PUBLISH_LOG: log,
   });
   assert.equal(res.status, 0, res.stdout + res.stderr);
@@ -98,22 +100,30 @@ test('the summary reports already-published and failed separately', () => {
   });
   const res = run(['--dir', dir, '--only', 'linux-x64,linux-arm64'], {
     PATH: `${stub}:${process.env.PATH}`,
+    STUB_WHOAMI: 'stub-user',
   });
   assert.equal(res.status, 0, res.stdout + res.stderr);
   assert.match(res.stdout, /already on registry: 2/);
   assert.match(res.stdout, /failed\s+: 0/);
 });
 
-test('a name taken by a DIFFERENT version fails instead of publishing', () => {
-  // The name sold something already. Publishing a second artefact under it is a
-  // decision, not a bootstrap, so the script stops and says what is there.
+test('a name already at ANOTHER version is added to, not refused', () => {
+  // Every release after the first looks like this: 0.13.1 is on the registry,
+  // 0.13.2 is not, and publishing it is the whole point. Refusing here made the
+  // script unusable for the second release it was ever asked to do.
+  //
+  // What must still never happen is overwriting an existing VERSION. That is
+  // covered by the ALREADY test above, and by the registry itself: a published
+  // version is immutable.
   const dir = artifacts(['linux-x64']);
   const stub = stubRegistry({ '@hydrascript/linux-x64': '9.9.9' });
   const res = run(['--dir', dir, '--only', 'linux-x64'], {
     PATH: `${stub}:${process.env.PATH}`,
+    STUB_WHOAMI: 'stub-user',
   });
-  assert.equal(res.status, 1, res.stdout + res.stderr);
-  assert.match(res.stdout + res.stderr, /name taken|exists at another version/);
+  assert.equal(res.status, 0, res.stdout + res.stderr);
+  assert.match(res.stdout, /is on the registry at 9\.9\.9; adding 0\.13\.2/);
+  assert.match(res.stdout, new RegExp(`SENT ${escapeRe(VERSION)}`));
 });
 
 test('the script never targets the root package', () => {
@@ -136,4 +146,39 @@ test('--only with an unknown target fails instead of doing nothing', () => {
   const res = run(['--dir', dir, '--audit', '--only', 'linux-amd64']);
   assert.equal(res.status, 2, res.stdout + res.stderr);
   assert.match(res.stderr, /unknown target/);
+});
+
+test('a dead npm session stops the run BEFORE any publish attempt', () => {
+  // The registry answers an anonymous PUT with 404, not 401, so a missing login
+  // reads as "this package cannot be published" — which sends the reader to
+  // trusted publishers and package ownership instead of to `npm login`. The
+  // preflight makes the real cause the first thing on screen.
+  const dir = artifacts(['linux-x64']);
+  const res = run(['--dir', dir, '--only', 'linux-x64'], {
+    PATH: `${path.dirname(process.execPath)}:${process.env.PATH}`,
+  });
+  // A stub `npm` is not on PATH here, so `whoami` fails — which is the state
+  // this test is about. Exit 2 and the login instruction, not a publish attempt.
+  if (res.status === 2) {
+    assert.match(res.stderr, /npm is not logged in/);
+    assert.match(res.stderr, /npm login/);
+    assert.match(res.stderr, /404, not 401/, 'the message must explain why the error was misleading');
+  } else {
+    // If a real npm session happens to exist in the environment, the run gets
+    // past the preflight; the assertion is then about not crashing.
+    assert.ok(res.status === 0 || res.status === 1, `unexpected status ${res.status}`);
+  }
+});
+
+test('audit and dry-run still work with no session at all', () => {
+  // Checking artifacts is exactly what a person does BEFORE logging in.
+  const dir = artifacts(['linux-x64']);
+  for (const flag of ['--audit', '--dry-run']) {
+    const res = run(['--dir', dir, '--only', 'linux-x64', flag]);
+    assert.ok(
+      res.status === 0 || res.status === 1,
+      `${flag} should not be blocked by auth: ${res.status} ${res.stderr}`,
+    );
+    assert.ok(!/npm is not logged in/.test(res.stderr), `${flag} must not require a session`);
+  }
 });
