@@ -824,16 +824,46 @@ fn import_shapes_as_default(spec: &str, base_dir: Option<&std::path::Path>) -> b
             Ok(s) => s,
             Err(_) => continue,
         };
-        let has_default = source.contains("export default")
-            || source.contains("module.exports")
-            || source.contains("exports.default");
+
+        // If the imported candidate is a HydraScript file (.hyx/.hys/.hsx/.hs),
+        // components (`component Name():`) and functions (`export def`) are always
+        // emitted as named exports (`export function Name()`). They should never be
+        // shaped as default imports.
+        let is_hydra_source = candidate.extension().is_some_and(|e| {
+            e == "hyx" || e == "hys" || e == "hsx" || e == "hs"
+        });
+        if is_hydra_source {
+            // HydraScript files always emit named exports for components and functions.
+            continue;
+        }
+
+        // Strip single-line comments so a mention of "export default" inside a comment
+        // does not fool the heuristic into generating a broken default import.
+        let non_comment_lines: Vec<&str> = source
+            .lines()
+            .map(|l| l.trim_start())
+            .filter(|l| !l.starts_with("//") && !l.starts_with("#") && !l.starts_with("/*") && !l.starts_with("*"))
+            .collect();
+        let cleaned = non_comment_lines.join("\n");
+
+        let has_default = cleaned.contains("export default")
+            || cleaned.contains("module.exports")
+            || cleaned.contains("exports.default");
         if !has_default {
             continue;
         }
-        // `export { X }` / `export const X` / `export function X` mean the named
+        // `export { X }` / `export const X` / `export function X` / `component X` mean the named
         // import already works, and a default import would then be wrong.
-        let named_hints = ["export {", "export const ", "export function ", "export class "];
-        if named_hints.iter().any(|h| source.contains(h)) {
+        let named_hints = [
+            "export {",
+            "export const ",
+            "export function ",
+            "export class ",
+            "export let ",
+            "export var ",
+            "component ",
+        ];
+        if named_hints.iter().any(|h| cleaned.contains(h)) {
             continue;
         }
         return true;
@@ -4413,6 +4443,32 @@ mod tests {
         let out =
             emit_tsx("from \"./Whatever.tsx\" import Whatever\ncomponent A():\n    Whatever()\n");
         assert!(out.contains("import { Whatever }"), "got:\n{out}");
+    }
+
+    #[test]
+    fn hyx_file_with_commented_export_default_keeps_named_import() {
+        let dir = std::env::temp_dir().join(format!("hydra-hyx-import-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A .hyx file with a comment mentioning 'export default' must not trick
+        // the emitter into generating a default import for a named component.
+        std::fs::write(
+            dir.join("App.hyx"),
+            "# [xihanzu-NR]\n# Note: writing export default does not work\ncomponent App():\n    div(): \"app\"\n",
+        )
+        .unwrap();
+
+        let src = "from \"./App.hyx\" import App\ncomponent Main():\n    App()\n";
+        let lines: Vec<String> = src.split('\n').map(String::from).collect();
+        let toks = crate::lexer::lex(src).unwrap();
+        let module = crate::parser::Parser::new(toks, lines).module().unwrap();
+        let out = Emitter::new().with_base_dir(&dir).run(&module).unwrap();
+        assert!(
+            out.contains("import { App } from './App.hyx';"),
+            "hyx component must always remain named import, got:\n{out}"
+        );
+        assert!(!out.contains("import App from"), "default import must not be emitted");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
