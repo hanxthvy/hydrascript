@@ -73,7 +73,7 @@ jobs:
             libc: ''
             supports_addon: true
           - target: darwin-arm64
-            os: macos-15
+            os: macos-latest
             rust: aarch64-apple-darwin
             libc: ''
             supports_addon: true
