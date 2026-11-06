@@ -16,9 +16,9 @@ HydraScript compiles indentation-based `.hyx` files to React TSX and `.hys` file
 to plain JavaScript. The compiler is a Rust binary; a small Node runner wraps
 esbuild, PostCSS and Tailwind to produce a site.
 
-**Status: 0.13.2, pre-1.0.** The compiler, file-based router, prerendering,
+**Status: 0.13.3, pre-1.0.** The compiler, file-based router, prerendering,
 server rendering, language server and test runner are implemented and covered by
-413 Rust tests (276 unit + 137 integration) and 197 Node tests across 26 suites.
+414 Rust tests (277 unit + 137 integration) and 208 Node tests across 26 suites.
 The language syntax is frozen (see below); what ships between now and 1.0 is
 tooling, not new constructs.
 
@@ -1312,6 +1312,7 @@ dates; the version numbers are targets and the order is the honest part.
 | 0.13.1 | Compiler error recovery: every broken line reported in one run | shipped |
 | 0.13.1 | Prebuilt binaries for seven targets, via `optionalDependencies` | shipped |
 | 0.13.2 | CSS pipeline is the project's choice: PostCSS config, plugin list, Tailwind, or plain | shipped |
+| 0.13.3 | Built-in per-IP rate limiting, SSG for single-page apps, and community standards | shipped |
 | next | Fast Refresh: the edited markup swaps into the live tree | open |
 
 ### Streaming, precisely

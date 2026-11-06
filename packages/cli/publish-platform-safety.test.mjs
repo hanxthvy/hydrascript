@@ -122,7 +122,10 @@ test('a name already at ANOTHER version is added to, not refused', () => {
     STUB_WHOAMI: 'stub-user',
   });
   assert.equal(res.status, 0, res.stdout + res.stderr);
-  assert.match(res.stdout, /is on the registry at 9\.9\.9; adding 0\.13\.2/);
+  assert.match(
+    res.stdout,
+    new RegExp(`is on the registry at 9\\.9\\.9; adding ${escapeRe(VERSION)}`)
+  );
   assert.match(res.stdout, new RegExp(`SENT ${escapeRe(VERSION)}`));
 });
 

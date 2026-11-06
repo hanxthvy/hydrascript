@@ -12,6 +12,38 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## 0.13.3 — 2026-11-06
+
+## Added
+
+- **Configurable per-IP rate limiting.** HydraScript dev and preview/serve servers
+  now support `server.rateLimit` in `hydraconfig.json` (boolean `true` or an
+  object `{ windowMs, max }`, defaulting to 120 requests per 60s window).
+  Exceeded limits respond with `429 Too Many Requests` and a `Retry-After` header;
+  stale IP states are automatically pruned.
+- **Open-source community standards.** Added repository `SECURITY.md` (vulnerability
+  reporting procedure and support lifecycle), `CONTRIBUTING.md` (environment setup,
+  test suite requirements, coding rules), and `CODE_OF_CONDUCT.md` (Contributor
+  Covenant v2.1).
+
+## Fixed
+
+- **SSG pre-rendering on single-page applications.** Previously, `ssg: true`
+  quietly skipped generating pre-rendered HTML on projects without a `src/pages`
+  directory (e.g. single-page landing pages and portfolios), outputting an empty
+  `<div id="root"></div>`. SSG now properly treats the root entry as a static
+  route when `routesTable` is absent, injecting the full pre-rendered HTML.
+- **Compiler import inference on commented .hyx files.** Comments in `.hyx` source
+  containing phrases like `# export default ...` previously tricked the compiler's
+  heuristic module analyzer into emitting a broken default import (`import X from './X.hyx'`).
+  The emitter now strips comments prior to keyword detection and guarantees `.hyx`/`.hys`
+  modules maintain named exports.
+- **Documentation and specification drift.** Aligned `SPEC.md` §6 and §7 with runtime
+  reality to officially document runtime helpers (`getattr`, `hasattr`, `setattr`,
+  `repr`, `any`, `all`) and cleaned stale comments in example projects.
+
+---
+
 ## 0.13.2 — 2026-11-05
 
 ## Breaking changes
