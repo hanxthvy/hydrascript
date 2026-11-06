@@ -1747,12 +1747,25 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   //   `"rendering": { "ssg": false }`  — the project
   //   `rendering = "csr"` in a page    — that route only
   //   HYDRA_NO_SSG=1                   — this build
+  //
+  // SSG does NOT require file-based routing.
+  //
+  // This used to be `projectWantsSsg && (routesHaveSsg || Boolean(routesTable))`,
+  // and with no `src/pages` there is no route table — so a one-page project got
+  // no pre-render at all, while `"ssg": true` sat in its config promising one.
+  // The build succeeded, the runtime gate passed, and `dist/index.html` shipped
+  // `<div id="root"></div>`: a blank page for every crawler, with no message.
+  //
+  // A project without a route table still has exactly one page — its entry —
+  // and that is the most common shape there is (a landing page, a portfolio).
+  // The render path for it already existed further down (`if (!routesTable)`);
+  // only the gate above stopped it from ever running.
   const projectWantsSsg = config.rendering?.ssg !== false;
   const routesHaveSsg = routesTable
     ? routesTable.routes.some((r) => r.rendering !== 'csr')
-    : false;
+    : true; // no table means the entry itself is the single static page
   const ssgWanted =
-    projectWantsSsg && (routesHaveSsg || Boolean(routesTable)) && !opts.dev && process.env.HYDRA_NO_SSG !== '1';
+    projectWantsSsg && routesHaveSsg && !opts.dev && process.env.HYDRA_NO_SSG !== '1';
   // Runtime gate: on by default for a production build, never during `dev`
   // (a browser per rebuild would make the loop unusable), and skippable.
   const gateWanted = !opts.dev && process.env.HYDRA_NO_GATE !== '1';
@@ -2329,9 +2342,10 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
          */
         const expandedRoutes = [];
         const dynamicWithoutParams = [];
-        if (routesTable && typeof ssgMod.staticParamsFor === 'function') {
+        if (routesTable) {
           for (const route of preRenderable) expandedRoutes.push({ ...route, params: {} });
-          for (const route of dynamicRoutes) {
+          if (typeof ssgMod.staticParamsFor === 'function') {
+            for (const route of dynamicRoutes) {
             if (route.rendering === 'ssr' || route.rendering === 'csr') continue;
             let list;
             try {
@@ -2360,6 +2374,7 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
             }
           }
         }
+      }
 
         let renderedCount = 0;
         if (sourceHtml && routesTable && expandedRoutes.length > 0 && typeof ssgMod.renderFor === 'function') {

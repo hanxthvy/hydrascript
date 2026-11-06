@@ -310,3 +310,48 @@ test('a metadata function that returns an unknown key fails loudly', async () =>
   // to find out why.
   assert.match(err, /titel/);
 });
+
+test('a single-page app without src/pages pre-renders index.html when ssg is on', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hydra-ssg-single-'));
+  fs.writeFileSync(
+    path.join(dir, 'hydraconfig.json'),
+    JSON.stringify({
+      name: 'single-page',
+      version: '0.0.1',
+      root: './src',
+      outputDir: './dist',
+      entries: { app: './src/main.hyx' },
+      compiler: { target: 'react-18' },
+      rendering: { ssg: true },
+    }),
+  );
+  fs.writeFileSync(
+    path.join(dir, 'index.html'),
+    '<!DOCTYPE html><html><head><title>s</title></head><body><div id="root"></div>' +
+      '<script type="module" src="/src/main.hyx"></script></body></html>',
+  );
+  fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'src', 'main.hyx'),
+    'from hydra import mount\nfrom "./App.hyx" import App\nmount(App())\n',
+  );
+  fs.writeFileSync(
+    path.join(dir, 'src', 'App.hyx'),
+    'component App():\n    div(cls="landing"):\n        h1(): "Welcome to the landing page"\n',
+  );
+  fs.symlinkSync(REACT, path.join(dir, 'node_modules'), 'dir');
+
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    await runBuild(dir, {});
+  } finally {
+    process.chdir(cwd);
+  }
+
+  const html = fs.readFileSync(path.join(dir, 'dist', 'index.html'), 'utf8');
+  assert.ok(
+    html.includes('Welcome to the landing page'),
+    `dist/index.html root was empty — single-page SSG did not run: ${html}`,
+  );
+});
