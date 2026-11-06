@@ -1311,6 +1311,7 @@ dates; the version numbers are targets and the order is the honest part.
 | 0.13 | `metadata(event)`: per-slug title, canonical, `og:`/`twitter:` | shipped |
 | 0.13.1 | Compiler error recovery: every broken line reported in one run | shipped |
 | 0.13.1 | Prebuilt binaries for seven targets, via `optionalDependencies` | shipped |
+| 0.13.2 | CSS pipeline is the project's choice: PostCSS config, plugin list, Tailwind, or plain | shipped |
 | next | Fast Refresh: the edited markup swaps into the live tree | open |
 
 ### Streaming, precisely

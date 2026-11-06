@@ -858,6 +858,7 @@ versinya target, dan urutannya bagian yang jujur.
 | 0.13 | `metadata(event)`: title per-slug, canonical, `og:`/`twitter:` | rilis |
 | 0.13.1 | Pemulihan error compiler: semua baris rusak dilaporkan sekali jalan | rilis |
 | 0.13.1 | Biner prabangun tujuh target, lewat `optionalDependencies` | rilis |
+| 0.13.2 | Pipeline CSS jadi pilihan proyek: config PostCSS, daftar plugin, Tailwind, atau polos | rilis |
 | berikutnya | Fast Refresh: markup hasil edit ikut berganti di pohon yang hidup | terbuka |
 
 ### Streaming, tepatnya

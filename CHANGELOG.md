@@ -12,7 +12,7 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
-## 0.13.2 — unreleased
+## 0.13.2 — 2026-11-05
 
 ## Breaking changes
 
