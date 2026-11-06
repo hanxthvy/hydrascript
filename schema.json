@@ -88,6 +88,30 @@
           "minimum": 1024,
           "description": "Largest request body an API route or action will read, in bytes. Default 1048576 (1 MiB). A bigger body is answered with 413 and `Connection: close`, never a dropped socket."
         },
+        "rateLimit": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "windowMs": {
+                  "type": "integer",
+                  "minimum": 1000,
+                  "default": 60000
+                },
+                "max": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "default": 120
+                }
+              },
+              "additionalProperties": false
+            }
+          ],
+          "description": "Per-IP rate limiting for the built-in server (dev/preview/serve). When enabled, requests exceeding `max` within `windowMs` receive 429 Too Many Requests with a `Retry-After` header."
+        },
         "headers": {
           "type": "object",
           "description": "Extra response headers, added to every answer. The framework sets nosniff, Referrer-Policy, X-Frame-Options and Permissions-Policy itself; this is where a project adds its own, most usefully Content-Security-Policy.",

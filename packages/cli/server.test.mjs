@@ -188,3 +188,67 @@ test('HSTS is opt-in, and off on a plain-HTTP server', async () => {
     await new Promise((resolve) => second.server.close(resolve));
   }
 });
+
+test('rate limiting blocks requests exceeding max with 429 and Retry-After', async () => {
+  const dir = makeDir();
+  const { server, port } = await serveDirectory(dir, 5354, '127.0.0.1', {
+    version: '0.3.0',
+    rateLimit: { windowMs: 10000, max: 3 },
+  });
+  try {
+    const res1 = await get(port, '/');
+    const res2 = await get(port, '/');
+    const res3 = await get(port, '/');
+    assert.equal(res1.status, 200);
+    assert.equal(res2.status, 200);
+    assert.equal(res3.status, 200);
+
+    const res4 = await get(port, '/');
+    assert.equal(res4.status, 429);
+    assert.equal(res4.body, 'Too Many Requests');
+    assert.ok(Number(res4.headers['retry-after']) >= 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('rate limiting separates buckets by client IP', async () => {
+  const dir = makeDir();
+  const { server, port } = await serveDirectory(dir, 5355, '127.0.0.1', {
+    version: '0.3.0',
+    rateLimit: { windowMs: 10000, max: 2 },
+  });
+
+  function getWithIp(urlPath, ip) {
+    return new Promise((resolve, reject) => {
+      const req = http.get(
+        {
+          host: '127.0.0.1',
+          port,
+          path: urlPath,
+          headers: { 'X-Forwarded-For': ip },
+        },
+        (res) => {
+          let body = '';
+          res.on('data', (c) => (body += c));
+          res.on('end', () => resolve({ status: res.statusCode, body, headers: res.headers }));
+        },
+      );
+      req.on('error', reject);
+    });
+  }
+
+  try {
+    // IP 1 uses all its quota
+    assert.equal((await getWithIp('/', '10.0.0.1')).status, 200);
+    assert.equal((await getWithIp('/', '10.0.0.1')).status, 200);
+    assert.equal((await getWithIp('/', '10.0.0.1')).status, 429);
+
+    // IP 2 still has full quota
+    assert.equal((await getWithIp('/', '10.0.0.2')).status, 200);
+    assert.equal((await getWithIp('/', '10.0.0.2')).status, 200);
+    assert.equal((await getWithIp('/', '10.0.0.2')).status, 429);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

@@ -2903,6 +2903,7 @@ export async function runServe(cwd = process.cwd(), opts = {}) {
     ssr: renderer,
     api: readApiBundle(cwd),
     bodyLimit: config.server?.bodyLimit,
+    rateLimit: config.server?.rateLimit,
     headers: config.server?.headers,
     version: opts.version,
     sha: opts.sha,
@@ -3019,6 +3020,22 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
   const startedAt = Date.now();
   let actualPort = port;
 
+  // Per-IP rate limiting:
+  // Enabled via `server.rateLimit: true` or `server.rateLimit: { windowMs, max }`.
+  const rateLimitCfg = (() => {
+    const raw = opts.rateLimit;
+    if (!raw) return null;
+    if (raw === true) return { windowMs: 60000, max: 120 };
+    if (typeof raw === 'object') {
+      const windowMs = Number.isInteger(raw.windowMs) && raw.windowMs >= 1000 ? raw.windowMs : 60000;
+      const max = Number.isInteger(raw.max) && raw.max >= 1 ? raw.max : 120;
+      return { windowMs, max };
+    }
+    return null;
+  })();
+
+  const rateLimitState = rateLimitCfg ? new Map() : null;
+
   const server = http.createServer(async (req, res) => {
     // Set once, here, rather than at each of the eight `writeHead` sites below.
     // Only the file-serving path used to carry these, so every error, API,
@@ -3026,6 +3043,29 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
     // most likely to echo something a caller supplied. `writeHead` merges with
     // what is already set, so a path that wants a different value still can.
     for (const [name, value] of Object.entries(baseHeaders())) res.setHeader(name, value);
+
+    if (rateLimitCfg && rateLimitState) {
+      const clientIp =
+        (req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
+        req.socket?.remoteAddress ||
+        '127.0.0.1';
+      const now = Date.now();
+      let record = rateLimitState.get(clientIp);
+      if (!record || now >= record.resetAt) {
+        record = { count: 0, resetAt: now + rateLimitCfg.windowMs };
+        rateLimitState.set(clientIp, record);
+      }
+      record.count += 1;
+      if (record.count > rateLimitCfg.max) {
+        const retryAfter = Math.max(1, Math.ceil((record.resetAt - now) / 1000));
+        res.writeHead(429, {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Retry-After': String(retryAfter),
+        });
+        res.end('Too Many Requests');
+        return;
+      }
+    }
 
     const rawUrl = req.url || '/';
     const queryAt = rawUrl.indexOf('?');
@@ -3384,6 +3424,16 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
   return new Promise((resolve, reject) => {
     let tries = 0;
 
+    if (rateLimitState) {
+      const pruneTimer = setInterval(() => {
+        const now = Date.now();
+        for (const [ip, record] of rateLimitState) {
+          if (now >= record.resetAt) rateLimitState.delete(ip);
+        }
+      }, Math.max(5000, rateLimitCfg.windowMs)).unref();
+      server.on('close', () => clearInterval(pruneTimer));
+    }
+
     const onError = (err) => {
       if (err.code === 'EADDRINUSE' && tries + 1 < portTries) {
         tries += 1;
@@ -3479,6 +3529,7 @@ export async function runPreview(cwd = process.cwd(), opts = {}) {
     ssr: renderer.available ? renderer : null,
     api: apiForPreview,
     bodyLimit: config.server?.bodyLimit,
+    rateLimit: config.server?.rateLimit,
     version: opts.version,
     sha: opts.sha,
     configPath: path.join(cwd, 'hydraconfig.json'),
@@ -3528,6 +3579,7 @@ export async function runDev(cwd = process.cwd(), opts = {}) {
     api: readApiBundle(cwd),
     ssr: renderer.available ? renderer : null,
     bodyLimit: config.server?.bodyLimit,
+    rateLimit: config.server?.rateLimit,
     // The dev server injects the HMR client into every HTML response, because
     // the build wrote the file and the page has to reach the browser with it.
     injectHtml: (html) => injectHmrClient(html),
