@@ -126,12 +126,13 @@ is, not as it might become.
 - **Guaranteed.** A bare use of a Python builtin is only legal when the compiler
   honours it, which means one of: it is lowered to JavaScript (`len`, `print`,
   `abs`, `int`, `float`, `str`, `sum`, `min`, `max`, `pow`, `round`, `sorted`,
-  `reversed`, `list`, `bool`, `isinstance`), or it is imported for you from the
-  `hydra` runtime (`enumerate`, `range`, `zip`). **Every other Python builtin is
-  emitted verbatim and throws `ReferenceError` at runtime** — `getattr`, `set`,
-  `dict`, `tuple`, `filter`, `map`, `next`, `repr`, `super(...)` as a value, and
-  the rest. The checker reports those as unbound names; that is the intended
-  behaviour, not a false positive.
+  `reversed`, `list`, `bool`, `isinstance`, `type`, `ord`, `chr`, `divmod`), or
+  it is imported for you from the `hydra` runtime (`enumerate`, `range`, `zip`,
+  `getattr`, `hasattr`, `setattr`, `repr`, `any`, `all`). **Every other Python builtin is
+  emitted verbatim and throws `ReferenceError` at runtime** — `set`, `dict`,
+  `tuple`, `next`, `super(...)` as a value, and the rest. The checker reports
+  unbound names not on the honoured list; that is the intended behaviour, not a
+  false positive.
 - **Not guaranteed.** Emitted helper selection. `len(xs)` may become a property
   read or a runtime call depending on context; both are correct, and neither is
   promised.
@@ -149,10 +150,9 @@ as bugs.
   A plain `xs[i]` past the end of a list is still `undefined`: the compiler
   cannot tell a list from a dict at a subscript, and a bounds check on every
   one of them would break dict access.
-- `getattr`, and every other builtin not listed in section 6, is not
-  implemented. Unlike multiple inheritance it is not rejected by the parser: it
-  emits verbatim and fails at runtime. This is the known sharp edge of the
-  language; see section 8 for the warning that catches it.
+- Builtins not listed in section 6 are not implemented. Unlike multiple
+  inheritance they are not rejected by the parser: they emit verbatim and fail
+  at runtime. See section 8 for the diagnostic warnings that catch unbound names.
 - Multiple inheritance and `super().method()` with keyword arguments are compile
   errors, so they cannot reach runtime.
 - Keyword arguments work for a function defined in the same file, and for one

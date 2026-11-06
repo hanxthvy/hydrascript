@@ -1,9 +1,9 @@
 # [xihanzu-NR]
 # Todos — global state via zustand + localStorage persistence.
 #
-# The store lives in this same file rather than a `store.hyx` module because
-# the compiler silently DROPS `export const`, so a store defined in another
-# file could not be imported. See the ecosystem report.
+# The store lives in this same file because `export const` is not a language
+# construct in HydraScript; values shared across files are exported as functions
+# or components.
 
 from "hydra" import state, effect, computed, cx
 
@@ -22,11 +22,6 @@ SEED = [
 
 def read_stored():
     # Hydrate from localStorage; fall back to the seed list.
-    #
-    # Deliberately no try/except: the compiler silently drops the `try` block
-    # AND every statement after it inside a `def`, which truncated this
-    # function so badly that it returned undefined. A length check is enough
-    # because we are the only writer of this key.
     if typeof(localStorage) == "undefined":
         return SEED
     raw = localStorage.getItem(STORAGE_KEY)

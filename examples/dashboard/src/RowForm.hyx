@@ -5,18 +5,10 @@
 # only appear once a field is touched (or after Create is pressed), and a
 # submit handler that refuses to call back while any error stands.
 
-from "hydra" import state, computed, cx
+from "hydra" import state, computed, cx, dict_get
 
-# NOTE: the runtime's own `dict_get` cannot be imported. runtime/hydra.ts
-# declares it twice (lines ~216 and ~333), so esbuild fails the whole bundle
-# with "Multiple exports with the same name 'dict_get'". This local helper is
-# the workaround; see the ecosystem report.
 def safe_get(o: dict, key: str, fallback):
-    if o == None:
-        return fallback
-    if key in o:
-        return o[key]
-    return fallback
+    return dict_get(o, key, fallback)
 
 # Validator regex source. Written as a plain string literal with .test()
 # because the compiler does not support the `r"..."` raw-string prefix
