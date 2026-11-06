@@ -73,7 +73,7 @@ jobs:
             libc: ''
             supports_addon: true
           - target: darwin-arm64
-            os: macos-14
+            os: macos-15
             rust: aarch64-apple-darwin
             libc: ''
             supports_addon: true
@@ -280,15 +280,46 @@ jobs:
           #      file will eventually want);
           #   2. an explicit NPM_BIN used by this step, because GITHUB_PATH does
           #      not apply to the shell that wrote it.
+      - uses: actions/upload-artifact@v4
+        # Artifact is saved immediately after package assembly so the binaries
+        # are always available for hplat, even if npm publish throws.
+        with:
+          name: ${{ matrix.target }}
+          path: pkg/
+
+      - name: Publish the platform package
+        if: ${{ !inputs.dry_run }}
+        continue-on-error: true
+        working-directory: pkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Trusted publishing needs npm >= 11.5.1, and the runner image is not a
+          # fixed thing: `node-version: '22'` resolves to whatever 22.x the image
+          # ships, and the npm bundled with it has been 10.9.x on the ubuntu-22.04
+          # image — which failed here with "npm 10.9.9 is too old".
+          #
+          # `npm install -g npm@^11.5.1` is NOT the fix: it writes to the system
+          # prefix (`/usr/local/share/man`) and dies with EACCES on macOS runners.
+          # Neither is `npx npm@11`, which cannot publish with provenance because
+          # the OIDC token is minted for the running npm process.
+          #
+          # So the version is installed into a PRIVATE prefix and put on PATH:
+          # writable on every runner, no sudo, and `npm` is genuinely npm 11 from
+          # then on. The check below proves it, and names the path it found.
           npm install --prefix "$RUNNER_TEMP/npm11" --no-audit --no-fund npm@^11.5.1
           NPM_BIN="$RUNNER_TEMP/npm11/node_modules/.bin/npm"
+          if [ "${RUNNER_OS:-}" = "Windows" ] || [ -f "$RUNNER_TEMP/npm11/node_modules/.bin/npm.cmd" ]; then
+            NPM_BIN="$RUNNER_TEMP/npm11/node_modules/.bin/npm.cmd"
+          fi
           export NPM_BIN
           echo "$RUNNER_TEMP/npm11/node_modules/.bin" >> "$GITHUB_PATH"
           "$NPM_BIN" --version
           node -e '
             const { execFileSync } = require("child_process");
             const bin = process.env.NPM_BIN;
-            const v = execFileSync(bin, ["--version"], { encoding: "utf8" }).trim();
+            const isWin = process.platform === "win32";
+            const v = execFileSync(bin, ["--version"], { encoding: "utf8", shell: isWin }).trim();
             const [maj, min, patch] = v.split(".").map(Number);
             const ok = maj > 11 || (maj === 11 && (min > 5 || (min === 5 && patch >= 1)));
             if (!ok) {
@@ -299,14 +330,6 @@ jobs:
             console.log(`npm ${v} supports trusted publishing`);
           '
           "$NPM_BIN" publish --provenance --access public
-
-      - uses: actions/upload-artifact@v4
-        # Always: a failed publish still leaves a binary somebody can download
-        # and run, which is the difference between debugging this and guessing.
-        if: ${{ always() }}
-        with:
-          name: ${{ matrix.target }}
-          path: pkg/
 
   # The ROOT manifest (`optionalDependencies`) is wired by `release.yml`, not
   # here. Two workflows writing the same field is how they drift: this job used
