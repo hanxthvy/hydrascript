@@ -14,7 +14,6 @@ const selfRequire = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 import { writeActionBundle, bundleActions, loadActions, readBody, requestFor } from './actions.mjs';
-import { resolveOptions as resolveSplashOptions, injectSplash } from './splash.mjs';
 import { httpIntent, sendHttpIntent, sendError } from './http.mjs';
 import { loadProjectEnv, publicEnvValues, clientEnvViolations, describeClientEnvViolation } from './env.mjs';
 import {
@@ -528,46 +527,6 @@ function appComponentPath(cwd, entryPoint) {
  * parsed anyway. `</script>` inside the JSON is escaped so a loader returning
  * HTML cannot close the tag early.
  */
-/**
- * Turn an absolute path into a module specifier esbuild can resolve.
- *
- * On Windows a drive letter looks like a URL scheme to the resolver, so the path
- * is prefixed with a slash and turned into a file URL only where that applies.
- */
-/**
- * Find the component a splash module exports.
- *
- * Static imports must name an export that exists, so guessing means a build that
- * fails for a reason the author cannot see ('no matching export in
- * src/splash.hyx'). The name is read from the file instead. `default` is checked
- * as a Rust-style `export default` or a bare `component Name` declaration.
- */
-function detectSplashExport(absPath) {
-  let src = '';
-  try {
-    src = fs.readFileSync(absPath, 'utf8');
-  } catch (e) {
-    return 'Splash';
-  }
-  const prefer = ['Splash', 'SplashScreen', 'Default', 'App'];
-  for (const name of prefer) {
-    const re = new RegExp(`(?:^|\\n)\\s*(?:export\\s+)?(?:component|def)\\s+${name}\\s*\\(`);
-    if (re.test(src)) return name;
-  }
-  // Any component, in declaration order.
-  const any = /(?:^|\n)\s*(?:export\s+)?component\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(src);
-  if (any) return any[1];
-  // A re-export (`export { Foo } from ...`) or a hand-written default.
-  const named = /export\s*\{[^}]*?([A-Za-z_][A-Za-z0-9_]*)[^}]*\}/.exec(src);
-  if (named) return named[1];
-  return 'Splash';
-}
-
-function splashToSpecifier(absPath) {
-  if (/^[a-zA-Z]:[\\/]/.test(absPath)) return 'file:///' + absPath.replace(/\\/g, '/');
-  return absPath;
-}
-
 function injectLoaderData(html, pattern, data, url = pattern) {
   // `url`, not only `pattern`, and it is load-bearing.
   //
@@ -1627,23 +1586,6 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   // `ENTRY_CANDIDATES` is exported so the "not found" error, the docs and any
   // other consumer read ONE list. A second copy of these four names is how the
   // scaffold and the runner drift apart.
-  // Splash: `splash: "./src/splash.hys"` di hydraconfig.json. Null kalau tidak
-  // dipakai, dan seluruh langkah splash dilewati.
-  //
-  // Kesalahan konfigurasi dibiarkan MELEMPAR di sini, bukan ditelan: splash yang
-  // diam-diam tidak muncul lebih membingungkan daripada build yang berhenti dan
-  // menyebut kuncinya.
-  const splashOptions = resolveSplashOptions(config.splash);
-  if (splashOptions) {
-    const splashAbs = path.resolve(cwd, splashOptions.src);
-    if (!fs.existsSync(splashAbs)) {
-      throw new Error(
-        `[hydra] splash.src points at ${splashOptions.src}, which does not exist. ` +
-          'Create the file, or remove the "splash" key from hydraconfig.json.',
-      );
-    }
-  }
-
   const entryCandidates = ENTRY_CANDIDATES.map((f) => path.join(cwd, f));
   const entryPoint = entryCandidates.find((f) => fs.existsSync(f));
   if (!entryPoint) {
@@ -1875,49 +1817,8 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     .then((out) => ({ out }))
     .catch((err) => ({ err }));
 
-  // Entry splash: berkas sementara yang mengimpor modul pengguna lalu me-mount
-  // animasinya. Dipisah dari entry utama supaya proyek tanpa splash tidak
-  // membayar sepeser pun, dan supaya modul splash boleh tidak ada.
-  let splashEntryPath = null;
-  if (splashOptions) {
-    const runtimeDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'runtime');
-    const template = fs.readFileSync(path.join(runtimeDir, 'splash-entry.hyx'), 'utf8');
-    // Entry ditulis DI DALAM proyek dan mengimpor modul splash lewat path
-    // RELATIF. Itu bukan kerapian: compiler hanya bisa mencocokkan nama
-    // parameter kalau ia punya signature komponennya, dan ia hanya punya
-    // signature untuk impor relatif. Dengan impor absolut, `done=...` ditolak
-    // dan satu-satunya jalan adalah argumen posisional -- yang lalu memaksa
-    // penulis animasi menebak nama parameter. Path relatif menghilangkan
-    // seluruh masalah itu.
-    splashEntryPath = path.join(cwd, `.hydra-splash-entry-${process.pid}.hyx`);
-    const splashAbs = path
-      .relative(cwd, path.resolve(cwd, splashOptions.src))
-      .split(path.sep)
-      .join('/');
-    const spec = splashAbs.startsWith('.') ? splashAbs : './' + splashAbs;
-
-    // Nama ekspor dibaca dari berkasnya. Impor statis wajib menyebut nama yang
-    // benar-benar ada, jadi menebak berarti proyek gagal build hanya karena
-    // memilih nama komponen yang lain. Yang dicari: `Splash`, `default`,
-    // `SplashScreen`, lalu komponen pertama yang ditemukan.
-    const splashExport = detectSplashExport(path.resolve(cwd, splashOptions.src));
-    fs.writeFileSync(
-      splashEntryPath,
-      template
-        .replaceAll('__HYDRA_SPLASH_MODULE__', spec)
-        .replaceAll('__HYDRA_SPLASH_EXPORT__', splashExport),
-      'utf8',
-    );
-    // Berkas sementara ini harus hilang apa pun yang terjadi. Kalau build gagal
-    // di tengah, file dengan nama ber-PID akan menumpuk di root proyek sampai
-    // `ls` tidak lagi menjawab apa yang sebenarnya ada.
-    process.once('exit', () => {
-      try { fs.rmSync(splashEntryPath, { force: true }); } catch (e) {}
-    });
-  }
-
   const clientBuildOptions = {
-    entryPoints: splashEntryPath ? [entryPoint, splashEntryPath] : [entryPoint],
+    entryPoints: [entryPoint],
     // Metafile keys then come back relative to the project, which is what
     // `dist/.hydra-build.json` should contain and what the emitted entry name
     // is read from below.
@@ -2097,42 +1998,12 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   const chunkCandidates = Object.keys(metafile.outputs).filter(
     (k) => metafile.outputs[k].entryPoint && k.endsWith('.js'),
   );
-  // With a splash entry there are TWO entry points on purpose, and picking
-  // "whichever comes first" would sometimes wire index.html to the splash module
-  // -- a page that loads, renders the splash, and never renders the app. The app
-  // entry is identified by its input path, not by key order.
-  const entryOutKey = (() => {
-    if (splashEntryPath) {
-      const appRel = path.relative(cwd, entryPoint).split(path.sep).join('/');
-      const byInput = chunkCandidates.find((k) => {
-        const inp = metafile.outputs[k].entryPoint || '';
-        return inp.split(path.sep).join('/').endsWith(appRel);
-      });
-      if (byInput) return byInput;
-    }
-    return chunkCandidates.find((k) => k.includes(assetsDir + path.sep))
-      ?? chunkCandidates
-        .slice()
-        .sort((a, b) => a.split(path.sep).length - b.split(path.sep).length || a.localeCompare(b))[0];
-  })();
+  const entryOutKey = chunkCandidates.find((k) => k.includes(assetsDir + path.sep))
+    ?? chunkCandidates
+      .slice()
+      .sort((a, b) => a.split(path.sep).length - b.split(path.sep).length || a.localeCompare(b))[0];
   if (!entryOutKey) {
     throw new Error('[hydra] The client build produced no JavaScript entry chunk');
-  }
-
-  // Chunk animasi splash. Entry-nya dibangun terpisah, jadi ia TIDAK dimuat
-  // halaman secara otomatis -- tanpa ini splash hanya menampilkan shell kosong
-  // dan animasi pengguna tidak pernah terpasang.
-  if (splashOptions && splashEntryPath) {
-    const splashRel = path.relative(cwd, splashEntryPath).split(path.sep).join('/');
-    const splashKey = chunkCandidates.find((k) => {
-      const inp = (metafile.outputs[k].entryPoint || '').split(path.sep).join('/');
-      return inp.endsWith(splashRel);
-    });
-    if (splashKey) {
-      splashOptions.chunk = outputUrl(cwd, outDir, base, splashKey);
-    } else {
-      console.warn('[hydra] splash: no chunk found for the splash entry; the shell will show but the animation will not run');
-    }
   }
   if (chunkCandidates.length > 1) {
     const others = chunkCandidates.filter((k) => k !== entryOutKey);
@@ -2259,17 +2130,6 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     if (cssUrl && !/assets\/index-[^"']*\.css/.test(html)) {
       html = html.replace('</head>', `  <link rel="stylesheet" crossorigin href="${cssUrl}">\n  </head>`);
     }
-
-    // Splash, kalau proyek memintanya. Disuntikkan ke SHELL, bukan dirender
-    // sebagai komponen: komponen baru hidup setelah bundle dimuat, dan splash
-    // yang muncul belakangan akan memperlihatkan isi halaman lebih dulu.
-    if (splashOptions) {
-      console.log('[hydra] splash: injecting shell');
-      html = injectSplash(html, splashOptions);
-    } else {
-      console.log('[hydra] splash: not configured');
-    }
-
     fs.writeFileSync(htmlOutPath, html, 'utf8');
   }
 
@@ -2405,14 +2265,7 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
         // an EMPTY root with correct data inlined beside it. Re-reading the
         // project's own `index.html` is what makes every route start from the
         // same blank template.
-        // Splash disuntikkan ke template SUMBER, sekali, sebelum route mana pun
-        // dirender. Kalau tidak, setiap halaman hasil SSG dibangun ulang dari
-        // template asli dan splash yang sudah ada di `dist/index.html` hilang --
-        // halaman pertama punya splash, sisanya tidak.
-        const sourceHtmlRaw = fs.existsSync(htmlInPath) ? fs.readFileSync(htmlInPath, 'utf8') : null;
-        const sourceHtml = sourceHtmlRaw && splashOptions
-          ? injectSplash(sourceHtmlRaw, splashOptions)
-          : sourceHtmlRaw;
+        const sourceHtml = fs.existsSync(htmlInPath) ? fs.readFileSync(htmlInPath, 'utf8') : null;
         // The bundle tag the client build computed, so the pre-rendered pages
         // point at the same entry as `dist/index.html` does.
         const entryTag = (() => {
