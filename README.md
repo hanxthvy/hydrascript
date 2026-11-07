@@ -944,7 +944,7 @@ hydra doctor                 report toolchain and project health
 hydra routes [--json]        print the file-based route table
 hydra test [path]            run *.test.hys (component, route, snapshot)
 hydra lsp                    run the language server on stdio
-hydra init [dir]             scaffold a project
+hydra init [dir]             scaffold a project (asks what to generate)
 hydra add <pkg> [--dev]      install a dependency
 hydra remove <pkg>           remove a dependency
 hydra list                   declared vs installed
@@ -955,6 +955,58 @@ hydra serve | start          serve a built project (the deployment command)
 ```
 
 `hydra build` takes `--target node|static`; see "`hydra build --target`" above.
+
+### `hydra init`: what to generate
+
+Run it in a terminal and it asks; run it in a pipe or CI and it takes the
+defaults, so existing scripts keep working.
+
+```
+$ hydra init my-app
+
+  Template
+  ❯ 1. App — routing by file, several pages (recommended)
+    2. Blank — one page, one component, no router
+
+  Styling
+  ❯ 1. Tailwind — utility classes, configured in hydraconfig.json
+    2. PostCSS — your own plugin list, no Tailwind
+    3. Plain CSS — no transform step at all
+
+  Layout
+  ❯ 1. Pages — one file per URL under src/pages (recommended)
+    2. Single — one page, no file-based router
+
+  Pre-render pages at build time (SSG)? [Y/n]:
+  Generate TypeScript declarations (.d.ts)? [Y/n]:
+```
+
+Enter accepts the default, so the whole thing is four keystrokes. Every answer
+can also be given as a flag, which is what CI wants:
+
+```bash
+hydra init my-app --template=blank --styling=plain --ssg=false --types=false
+hydra init my-app --yes                      # defaults, no prompts
+```
+
+| Flag | Values | Default |
+| --- | --- | --- |
+| `--template=` | `app`, `blank` | `app` |
+| `--styling=` (alias `--css=`) | `tailwind`, `postcss`, `plain` | `tailwind` |
+| `--layout=` | `pages`, `single` | `pages` |
+| `--ssg=` | `true`, `false` | `true` |
+| `--types=` | `true`, `false` | `true` |
+| `--yes`, `-y` | — | prompts only when a terminal is attached |
+
+The answer changes what is written, not just a comment: `--styling=plain` omits
+`tailwind.config.js`, leaves `tailwindcss`/`postcss`/`autoprefixer` out of
+`package.json`, and writes `src/index.css` with the classes the generated page
+actually uses. `--template=blank` writes a single `src/App.hyx` and no
+`src/pages` folder.
+
+An unknown value is an error (`--styling=twind` exits 2 and writes nothing)
+rather than being ignored, because scaffolding Tailwind after someone asked for
+something else is the failure that wastes the most time.
 
 Run `hydra doctor` first when a build misbehaves — it reports node, npm, bun,
 config discovery and source counts. `hydra watch` writes to `watch-out/`,

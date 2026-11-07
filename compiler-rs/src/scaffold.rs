@@ -19,14 +19,24 @@ const INIT_USAGE: &str = "\
 hydra init — scaffold a new HydraScript project
 
 USAGE:
-  hydra init [dir] [--force]
+  hydra init [dir] [options]
 
 ARGS:
   dir        target directory (default: current directory)
 
 OPTIONS:
-  --force    overwrite an existing hydraconfig.json
-  -h, --help show this message
+  --template=app|blank    app: routing + example pages. blank: one page.
+  --styling=tailwind|postcss|plain
+                          how src/index.css is processed (also: --css=)
+  --layout=pages|single   file-based router, or one page (app only)
+  --ssg=true|false        pre-render pages at build time
+  --types=true|false      emit TypeScript declarations (.d.ts)
+  --yes, -y               take the defaults, ask nothing
+  --force                 overwrite an existing hydraconfig.json
+  -h, --help              show this message
+
+  With no flags and a terminal attached, init asks what to generate.
+  Piped or in CI it takes the defaults, so scripts keep working unchanged.
 
 CREATES:
   hydraconfig.json        project config (name, outputDir, port 5173, ssg)
@@ -708,6 +718,572 @@ fn render(template: &str, name: &str) -> String {
     template.replace("__NAME__", &json_escape(name))
 }
 
+// ---------------------------------------------------------------------------
+// `hydra init` — the choices it can make on the user's behalf
+// ---------------------------------------------------------------------------
+
+/// Which starter the project gets.
+///
+/// The scaffold used to have exactly one shape: a project with `src/pages`,
+/// Tailwind, and SSG. That is a fine default and a bad only option — a user who
+/// wanted a single-page app with plain CSS had to delete four generated folders
+/// and hunt for the right keys in `hydraconfig.json` to stop Tailwind running.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Template {
+    /// `src/pages/**` file-based router, several example pages.
+    App,
+    /// One entry, one root component. No router, no pages folder.
+    Blank,
+}
+
+impl Template {
+    fn slug(self) -> &'static str {
+        match self {
+            Template::App => "app",
+            Template::Blank => "blank",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Template::App => "App — routing by file, several pages (recommended)",
+            Template::Blank => "Blank — one page, one component, no router",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "app" => Some(Template::App),
+            "blank" => Some(Template::Blank),
+            _ => None,
+        }
+    }
+}
+
+/// How stylesheets are processed.
+///
+/// This mirrors what the runner actually supports (see `styling` in
+/// `schema.json`): Tailwind, a PostCSS plugin list, or nothing but plain CSS.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Styling {
+    Tailwind,
+    Postcss,
+    Plain,
+}
+
+impl Styling {
+    fn slug(self) -> &'static str {
+        match self {
+            Styling::Tailwind => "tailwind",
+            Styling::Postcss => "postcss",
+            Styling::Plain => "plain",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Styling::Tailwind => "Tailwind — utility classes, configured in hydraconfig.json",
+            Styling::Postcss => "PostCSS — your own plugin list, no Tailwind",
+            Styling::Plain => "Plain CSS — no transform step at all",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "tailwind" => Some(Styling::Tailwind),
+            "postcss" => Some(Styling::Postcss),
+            "plain" => Some(Styling::Plain),
+            _ => None,
+        }
+    }
+}
+
+/// What the project gets instead of `src/pages`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Layout {
+    /// File-based router under `src/pages`.
+    Pages,
+    /// Single page mounted from `src/main.hyx`.
+    Single,
+}
+
+impl Layout {
+    fn slug(self) -> &'static str {
+        match self {
+            Layout::Pages => "pages",
+            Layout::Single => "single",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Layout::Pages => "Pages — one file per URL under src/pages (recommended)",
+            Layout::Single => "Single — one page, no file-based router",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "pages" => Some(Layout::Pages),
+            "single" => Some(Layout::Single),
+            _ => None,
+        }
+    }
+}
+
+/// Everything `init` needs. Built from flags, from the prompts, or both.
+#[derive(Clone, Debug)]
+pub(crate) struct InitOptions {
+    pub template: Template,
+    pub styling: Styling,
+    pub layout: Layout,
+    pub ssg: bool,
+    /// TypeScript `.d.ts` generation for `.hyx` modules.
+    pub types: bool,
+    /// Server-side rendering instead of a client shell.
+    pub ssr: bool,
+}
+
+impl Default for InitOptions {
+    fn default() -> Self {
+        InitOptions {
+            template: Template::App,
+            styling: Styling::Tailwind,
+            layout: Layout::Pages,
+            ssg: true,
+            types: true,
+            ssr: false,
+        }
+    }
+}
+
+impl InitOptions {
+    /// Apply a `--template=` style flag. Returns Err with the accepted values so
+    /// the caller can print a message that lists what would have worked.
+    fn apply_flag(&mut self, key: &str, value: &str) -> Result<(), String> {
+        match key {
+            "template" => {
+                self.template =
+                    Template::parse(value).ok_or_else(|| "app, blank".to_string())?;
+                // A blank template has no pages folder by construction; don't
+                // let a flag pair produce a project that contradicts itself.
+                if self.template == Template::Blank {
+                    self.layout = Layout::Single;
+                }
+            }
+            "styling" | "css" => {
+                self.styling = Styling::parse(value)
+                    .ok_or_else(|| "tailwind, postcss, plain".to_string())?
+            }
+            "layout" => {
+                self.layout = Layout::parse(value)
+                    .ok_or_else(|| "pages, single".to_string())?
+            }
+            "ssg" => self.ssg = parse_bool(value).ok_or_else(|| "true, false".to_string())?,
+            "types" => self.types = parse_bool(value).ok_or_else(|| "true, false".to_string())?,
+            "ssr" => {
+                self.ssr = parse_bool(value).ok_or_else(|| "true, false".to_string())?;
+                // SSR and a static export are not mutually exclusive here — the
+                // runner can pre-render AND serve. Keep ssg as given.
+            }
+            _ => return Err(String::new()),
+        }
+        Ok(())
+    }
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value {
+        "true" | "yes" | "y" | "1" => Some(true),
+        "false" | "no" | "n" | "0" => Some(false),
+        _ => None,
+    }
+}
+
+/// Read one line from stdin, trimmed. `None` on EOF so a piped-in script that
+/// runs out of answers cannot spin forever.
+fn read_line() -> Option<String> {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let mut buf = String::new();
+    match std::io::stdin().read_line(&mut buf) {
+        Ok(0) => None,
+        Ok(_) => Some(buf.trim().to_string()),
+        Err(_) => None,
+    }
+}
+
+/// Ask a numbered question. `default` is what Enter selects.
+///
+/// Deliberately not a TUI: no arrow keys, no raw mode, no termios. A prompt that
+/// works over SSH, in CI, and in a pipe is worth more here than one that looks
+/// modern. Enter accepts the default, so the fast path is four keystrokes.
+fn ask(question: &str, options: &[(&str, &str)], default: usize) -> Option<usize> {
+    println!();
+    println!("{}", question);
+    for (i, (_, label)) in options.iter().enumerate() {
+        let marker = if i == default { "❯" } else { " " };
+        println!("  {} {}. {}", marker, i + 1, label);
+    }
+    print!("  choice [{}]: ", default + 1);
+
+    let answer = read_line()?;
+    if answer.is_empty() {
+        return Some(default);
+    }
+    match answer.parse::<usize>() {
+        Ok(n) if n >= 1 && n <= options.len() => Some(n - 1),
+        _ => {
+            eprintln!("  '{}' is not one of 1-{}; using {}", answer, options.len(), default + 1);
+            Some(default)
+        }
+    }
+}
+
+fn ask_yes_no(question: &str, default: bool) -> Option<bool> {
+    let hint = if default { "Y/n" } else { "y/N" };
+    print!("{} [{}]: ", question, hint);
+    let answer = read_line()?;
+    if answer.is_empty() {
+        return Some(default);
+    }
+    parse_bool(&answer.to_lowercase()).or(Some(default))
+}
+
+/// Ask the questions that were not answered by a flag.
+///
+/// `interactive` is false when stdin is not a TTY or `--yes` was passed: in that
+/// case the defaults stand and nothing is printed, so `hydra init` in a script
+/// behaves exactly as it did before the prompts existed.
+fn collect_options(
+    mut opts: InitOptions,
+    interactive: bool,
+) -> Option<InitOptions> {
+    if !interactive {
+        return Some(opts);
+    }
+
+    println!();
+    println!("  hydra init — a few questions, Enter accepts the default.");
+    println!("  (pass --yes to skip these and take the defaults)");
+
+    let template_choices = [
+        (Template::App.slug(), Template::App.label()),
+        (Template::Blank.slug(), Template::Blank.label()),
+    ];
+    let t_default = if opts.template == Template::App { 0 } else { 1 };
+    let t = ask("Template", &template_choices, t_default)?;
+    opts.template = if t == 0 { Template::App } else { Template::Blank };
+    if opts.template == Template::Blank {
+        opts.layout = Layout::Single;
+    }
+
+    let style_choices = [
+        (Styling::Tailwind.slug(), Styling::Tailwind.label()),
+        (Styling::Postcss.slug(), Styling::Postcss.label()),
+        (Styling::Plain.slug(), Styling::Plain.label()),
+    ];
+    let s_default = match opts.styling {
+        Styling::Tailwind => 0,
+        Styling::Postcss => 1,
+        Styling::Plain => 2,
+    };
+    let s = ask("Styling", &style_choices, s_default)?;
+    opts.styling = match s {
+        0 => Styling::Tailwind,
+        1 => Styling::Postcss,
+        _ => Styling::Plain,
+    };
+
+    // A blank template has no pages folder, so asking would be noise.
+    if opts.template == Template::App {
+        let layout_choices = [
+            (Layout::Pages.slug(), Layout::Pages.label()),
+            (Layout::Single.slug(), Layout::Single.label()),
+        ];
+        let l_default = if opts.layout == Layout::Pages { 0 } else { 1 };
+        let l = ask("Layout", &layout_choices, l_default)?;
+        opts.layout = if l == 0 { Layout::Pages } else { Layout::Single };
+    }
+
+    opts.ssg = ask_yes_no("Pre-render pages at build time (SSG)?", opts.ssg)?;
+    opts.types = ask_yes_no("Generate TypeScript declarations (.d.ts)?", opts.types)?;
+
+    println!();
+    println!("  template : {}", opts.template.slug());
+    println!("  styling  : {}", opts.styling.slug());
+    println!("  layout   : {}", opts.layout.slug());
+    println!("  ssg      : {}", opts.ssg);
+    println!("  types    : {}", opts.types);
+    println!();
+
+    Some(opts)
+}
+
+
+/// `hydraconfig.json`, written to match the chosen options.
+///
+/// Written as text rather than by parsing and re-serialising a JSON value: the
+/// output is what a person reads and edits first, so the key order and the
+/// comments the user is most likely to want to change stay put.
+fn render_config(name: &str, opts: &InitOptions) -> String {
+    let name = json_escape(name);
+
+    let entries = match opts.layout {
+        Layout::Pages => "",
+        Layout::Single => "",
+    };
+
+    let styling = match opts.styling {
+        Styling::Tailwind => ",\n  \"styling\": { \"tailwind\": true }",
+        Styling::Postcss => ",\n  \"styling\": [\"autoprefixer\"]",
+        Styling::Plain => "",
+    };
+
+    let rendering = match (opts.ssg, opts.ssr) {
+        (true, true) => "{\n    \"ssg\": true,\n    \"ssr\": true\n  }",
+        (true, false) => "{\n    \"ssg\": true\n  }",
+        (false, true) => "{\n    \"ssr\": true\n  }",
+        (false, false) => "{}",
+    };
+
+    let types = if opts.types {
+        ",\n  \"types\": { \"emit\": true }"
+    } else {
+        ""
+    };
+
+    format!(
+        r#"{{
+  "$schema": "https://raw.githubusercontent.com/hanxthvy/hydrascript/main/schema.json",
+  "name": "{name}",
+  "version": "0.1.0",
+  "root": "./src",
+  "outputDir": "./dist",
+  "base": "/",
+  "entries": {{
+    "app": "./src/main.hyx"
+  }},
+  "server": {{
+    "port": 5173,
+    "host": "127.0.0.1"
+  }},
+  "compiler": {{
+    "target": "react-19",
+    "strict": true
+  }},
+  "rendering": {rendering}{styling}{types}{entries}
+}}
+"#
+    )
+}
+
+/// `package.json` with only the dependencies the chosen pipeline needs.
+///
+/// Shipping `tailwindcss`, `postcss` and `autoprefixer` to a project that asked
+/// for plain CSS is dead weight the user then has to notice and remove.
+fn render_package_json(name: &str, opts: &InitOptions) -> String {
+    let name = json_escape(name);
+
+    let mut dev = vec![
+        "\"@types/react\": \"^19.1.0\"".to_string(),
+        "\"@types/react-dom\": \"^19.1.0\"".to_string(),
+        "\"esbuild\": \"^0.25.0\"".to_string(),
+    ];
+    match opts.styling {
+        Styling::Tailwind => {
+            dev.push("\"autoprefixer\": \"^10.4.20\"".to_string());
+            dev.push("\"postcss\": \"^8.4.49\"".to_string());
+            dev.push("\"tailwindcss\": \"^3.4.16\"".to_string());
+        }
+        Styling::Postcss => {
+            dev.push("\"autoprefixer\": \"^10.4.20\"".to_string());
+            dev.push("\"postcss\": \"^8.4.49\"".to_string());
+        }
+        Styling::Plain => {}
+    }
+    dev.sort();
+
+    format!(
+        r#"{{
+  "name": "{name}",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {{
+    "dev": "hydra dev",
+    "build": "hydra build",
+    "preview": "hydra preview",
+    "check": "hydra check",
+    "clean": "hydra clean"
+  }},
+  "dependencies": {{
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  }},
+  "devDependencies": {{
+    {}
+  }}
+}}
+"#,
+        dev.join(",\n    ")
+    )
+}
+
+/// `src/index.css`, matching the chosen pipeline.
+fn render_index_css(opts: &InitOptions) -> String {
+    match opts.styling {
+        Styling::Tailwind => r#"/* [xihanzu-NR] */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+"#
+        .to_string(),
+        Styling::Postcss => r#"/* [xihanzu-NR] */
+/* Processed by the plugins named in hydraconfig.json ("styling").
+   No Tailwind here: write the CSS you want. */
+:root {
+  color-scheme: light;
+  --accent: #4f46e5;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+.page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+.title {
+  margin: 0;
+  font-size: 2.25rem;
+  letter-spacing: -0.02em;
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--accent);
+}
+"#
+        .to_string(),
+        Styling::Plain => r#"/* [xihanzu-NR] */
+/* Copied as-is. No PostCSS, no Tailwind: this file is the final stylesheet. */
+:root {
+  color-scheme: light;
+  --accent: #4f46e5;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+.page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+.title {
+  margin: 0;
+  font-size: 2.25rem;
+  letter-spacing: -0.02em;
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--accent);
+}
+"#
+        .to_string(),
+    }
+}
+
+/// `README.md` for the generated project, describing what was chosen.
+fn render_readme(name: &str, opts: &InitOptions) -> String {
+    let name = json_escape(name);
+    let styling = match opts.styling {
+        Styling::Tailwind => "Tailwind, enabled by the `styling.tailwind` key in `hydraconfig.json`",
+        Styling::Postcss => {
+            "PostCSS with the plugin list in `styling` (no Tailwind). Add plugins to that array."
+        }
+        Styling::Plain => "plain CSS — `src/index.css` is copied through with no transform step",
+    };
+    let layout = match opts.layout {
+        Layout::Pages => "one file per URL under `src/pages`",
+        Layout::Single => "one page, mounted from `src/main.hyx`",
+    };
+
+    format!(
+        r#"# {name}
+
+A HydraScript app. `.hyx` files compile to React; `.hys` files compile to plain
+JavaScript.
+
+## Layout
+
+{layout}
+
+## Styling
+
+{styling}
+
+## Commands
+
+```bash
+npm install
+npx hydra dev       # dev server with live reload
+npx hydra build     # production build into dist/
+npx hydra preview   # serve the build
+npx hydra check     # parse every source, write nothing
+```
+"#
+    )
+}
+
+/// A single-page `App.hyx` whose markup matches the chosen styling pipeline.
+///
+/// Class names are Tailwind's in the Tailwind case; otherwise this uses semantic
+/// class names that `src/index.css` actually defines. A blank project that ships
+/// `className="p-6"` and no Tailwind is a project that looks broken on first run.
+fn render_single_page_app(name: &str, opts: &InitOptions) -> String {
+    let name = json_escape(name);
+
+    if opts.styling == Styling::Tailwind {
+        return format!(
+            r#"# [xihanzu-NR]
+component App():
+    div(className="min-h-screen flex flex-col items-center justify-center gap-4 bg-slate-50 text-slate-900"):
+        h1(className="text-4xl font-semibold tracking-tight"): "{name}"
+        p(className="text-slate-500"): "Edit src/App.hyx and save."
+"#
+        );
+    }
+
+    format!(
+        r#"# [xihanzu-NR]
+component App():
+    div(className="page"):
+        h1(className="title"): "{name}"
+        p(className="subtitle"): "Edit src/App.hyx and save."
+"#
+    )
+}
+
 /// Project name derived from the target directory's final path component.
 fn project_name(root: &Path) -> String {
     root.file_name()
@@ -724,6 +1300,7 @@ pub fn init(args: &[String]) -> ExitCode {
     }
 
     let force = args.iter().any(|a| a == "--force");
+    let assume_yes = args.iter().any(|a| a == "--yes" || a == "-y");
     let root = positional(args).map_or_else(|| PathBuf::from("."), PathBuf::from);
 
     if root.exists() && !root.is_dir() {
@@ -737,9 +1314,58 @@ pub fn init(args: &[String]) -> ExitCode {
         return ExitCode::from(1);
     }
 
+    // Flags first, so `--template=blank` also changes what gets ASKED, not just
+    // what gets written. An unknown `--key=value` is an error rather than being
+    // ignored: silently dropping `--style=twind` would scaffold Tailwind and
+    // leave the user thinking their typo took effect.
+    let mut opts = InitOptions::default();
+    for arg in args {
+        if let Some(rest) = arg.strip_prefix("--") {
+            if rest == "force" || rest == "yes" || rest == "help" || rest == "dry-run" {
+                continue;
+            }
+            let (key, value) = match rest.split_once('=') {
+                Some(kv) => kv,
+                None => {
+                    eprintln!("hydra: --{} needs a value, e.g. --{}=...", rest, rest);
+                    return ExitCode::from(2);
+                }
+            };
+            if let Err(accepted) = opts.apply_flag(key, value) {
+                if accepted.is_empty() {
+                    eprintln!(
+                        "hydra: unknown option --{}\n  try: --template= --styling= --layout= --ssg= --types=",
+                        key
+                    );
+                } else {
+                    eprintln!("hydra: --{}={:?} is not valid (accepted: {})", key, value, accepted);
+                }
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    // A terminal gets the questions; a pipe, CI, or `--yes` gets the defaults.
+    // `isatty` is the distinction that matters: CI runners have stdin open, so
+    // checking for EOF would hang forever waiting for an answer nobody types.
+    let interactive = !assume_yes && std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let opts = match collect_options(opts, interactive) {
+        Some(o) => o,
+        // EOF mid-prompt (Ctrl-D): stop cleanly instead of scaffolding half a
+        // project from answers the user never finished giving.
+        None => {
+            eprintln!("\nhydra: no answer (end of input); nothing was written.");
+            return ExitCode::from(2);
+        }
+    };
+
     let name = project_name(&root);
 
-    for dir in ["src", "src/components", "src/lib", "src/pages"] {
+    let mut dirs = vec!["src", "src/components", "src/lib"];
+    if opts.layout == Layout::Pages {
+        dirs.push("src/pages");
+    }
+    for dir in dirs {
         if let Err(e) = fs::create_dir_all(root.join(dir)) {
             eprintln!("hydra: cannot create {}: {}", root.join(dir).display(), e);
             return ExitCode::from(1);
@@ -748,63 +1374,82 @@ pub fn init(args: &[String]) -> ExitCode {
 
     // Every entry starts with the watermark for its own language: `#` for the
     // Pythonic sources, `<!-- -->` for HTML, `//` for JS.
-    let files: Vec<(PathBuf, String)> = vec![
+    let mut files: Vec<(PathBuf, String)> = vec![
         (
             root.join("hydraconfig.json"),
-            render(HYDRACONFIG_TEMPLATE, &name),
+            render_config(&name, &opts),
         ),
         (
             root.join("package.json"),
-            render(PACKAGE_JSON_TEMPLATE, &name),
+            render_package_json(&name, &opts),
         ),
-        (root.join("tailwind.config.js"), TAILWIND_CONFIG_TEMPLATE.to_string()),
         (root.join("index.html"), render(INDEX_HTML_TEMPLATE, &name)),
-        (root.join("README.md"), render(README_TEMPLATE, &name)),
+        (root.join("README.md"), render_readme(&name, &opts)),
         (
             root.join("src").join("main.hyx"),
-            MAIN_HYX_TEMPLATE.to_string(),
-        ),
-        (
-            root.join("src").join("App.hyx"),
-            APP_HYX_TEMPLATE.to_string(),
+            render(MAIN_HYX_TEMPLATE, &name),
         ),
         (
             root.join("src").join("index.css"),
-            INDEX_CSS_TEMPLATE.to_string(),
-        ),
-        (
-            root.join("src").join("components").join("Header.hyx"),
-            HEADER_HYX_TEMPLATE.to_string(),
-        ),
-        (
-            root.join("src").join("components").join("Card.hyx"),
-            CARD_HYX_TEMPLATE.to_string(),
-        ),
-        (
-            root.join("src").join("components").join("Button.hyx"),
-            BUTTON_HYX_TEMPLATE.to_string(),
-        ),
-        (
-            root.join("src").join("lib").join("stats.hys"),
-            STATS_HYS_TEMPLATE.to_string(),
-        ),
-        (
-            root.join("src").join("pages").join("index.hyx"),
-            HOME_HYX_TEMPLATE.to_string(),
-        ),
-        (
-            root.join("src").join("pages").join("about.hyx"),
-            ABOUT_HYX_TEMPLATE.to_string(),
-        ),
-        (
-            root.join("src").join("pages").join("_404.hyx"),
-            NOTFOUND_HYX_TEMPLATE.to_string(),
-        ),
-        (
-            root.join("src").join("pages").join("about.server.hys"),
-            ABOUT_SERVER_HYS_TEMPLATE.to_string(),
+            render_index_css(&opts),
         ),
     ];
+
+    if opts.styling == Styling::Tailwind {
+        files.push((
+            root.join("tailwind.config.js"),
+            TAILWIND_CONFIG_TEMPLATE.to_string(),
+        ));
+    }
+
+    if opts.layout == Layout::Pages {
+        // The App template ships the full example: components, helpers, pages,
+        // and a loader, because that is what shows the framework's shape.
+        files.push((
+            root.join("src").join("App.hyx"),
+            APP_HYX_TEMPLATE.to_string(),
+        ));
+        files.push((
+            root.join("src").join("components").join("Header.hyx"),
+            HEADER_HYX_TEMPLATE.to_string(),
+        ));
+        files.push((
+            root.join("src").join("components").join("Card.hyx"),
+            CARD_HYX_TEMPLATE.to_string(),
+        ));
+        files.push((
+            root.join("src").join("components").join("Button.hyx"),
+            BUTTON_HYX_TEMPLATE.to_string(),
+        ));
+        files.push((
+            root.join("src").join("lib").join("stats.hys"),
+            STATS_HYS_TEMPLATE.to_string(),
+        ));
+        files.push((
+            root.join("src").join("pages").join("index.hyx"),
+            render(HOME_HYX_TEMPLATE, &name),
+        ));
+        files.push((
+            root.join("src").join("pages").join("about.hyx"),
+            ABOUT_HYX_TEMPLATE.to_string(),
+        ));
+        files.push((
+            root.join("src").join("pages").join("_404.hyx"),
+            NOTFOUND_HYX_TEMPLATE.to_string(),
+        ));
+        files.push((
+            root.join("src").join("pages").join("about.server.hys"),
+            ABOUT_SERVER_HYS_TEMPLATE.to_string(),
+        ));
+    } else {
+        // Single page: one component, no router, no pages folder. The styles in
+        // this file are written against the chosen pipeline, so a plain-CSS
+        // project does not ship class names nothing defines.
+        files.push((
+            root.join("src").join("App.hyx"),
+            render_single_page_app(&name, &opts),
+        ));
+    }
 
     let mut written: Vec<PathBuf> = Vec::with_capacity(files.len());
     for (path, content) in files {
@@ -1611,5 +2256,131 @@ export component Badge(label: str):
         assert_eq!(init(&help), ExitCode::SUCCESS);
         assert_eq!(doctor(&help), ExitCode::SUCCESS);
         assert_eq!(stats(&help), ExitCode::SUCCESS);
+    }
+
+    /// A blank project must not ship Tailwind's config, its dependencies, or a
+    /// `tailwind` key — and its CSS must define the class names App.hyx uses.
+    #[test]
+    fn init_blank_plain_ships_no_tailwind_anywhere() {
+        let tree = TempTree::new("init-blank-plain");
+        let target = tree.root.join("plainapp");
+        let target_str = target.to_string_lossy().to_string();
+
+        assert_eq!(
+            init(&[
+                target_str,
+                "--template=blank".to_string(),
+                "--styling=plain".to_string(),
+            ]),
+            ExitCode::SUCCESS
+        );
+
+        assert!(
+            !target.join("tailwind.config.js").exists(),
+            "a plain-CSS project must not get a Tailwind config"
+        );
+        assert!(
+            !target.join("src/pages").exists(),
+            "a blank project must not get a pages folder"
+        );
+
+        let config = fs::read_to_string(target.join("hydraconfig.json")).unwrap();
+        assert!(!config.contains("tailwind"), "config still mentions tailwind: {}", config);
+        assert!(config.contains("\"ssg\": true"));
+
+        let pkg = fs::read_to_string(target.join("package.json")).unwrap();
+        for banned in ["tailwindcss", "postcss", "autoprefixer"] {
+            assert!(
+                !pkg.contains(banned),
+                "plain-CSS project must not depend on {}",
+                banned
+            );
+        }
+
+        // Class names in the page must exist in the stylesheet, or the project
+        // looks broken on first run.
+        let app = fs::read_to_string(target.join("src/App.hyx")).unwrap();
+        let css = fs::read_to_string(target.join("src/index.css")).unwrap();
+        for class in ["page", "title", "subtitle"] {
+            assert!(app.contains(&format!("className=\"{}\"", class)), "App.hyx missing {}", class);
+            assert!(css.contains(&format!(".{}", class)), "index.css missing .{}", class);
+        }
+    }
+
+    /// PostCSS without Tailwind keeps the plugin array and drops Tailwind only.
+    #[test]
+    fn init_postcss_keeps_postcss_and_drops_tailwind() {
+        let tree = TempTree::new("init-postcss");
+        let target = tree.root.join("pcss");
+        let target_str = target.to_string_lossy().to_string();
+
+        assert_eq!(
+            init(&[target_str, "--styling=postcss".to_string()]),
+            ExitCode::SUCCESS
+        );
+
+        let config = fs::read_to_string(target.join("hydraconfig.json")).unwrap();
+        assert!(config.contains("\"styling\": [\"autoprefixer\"]"), "got {}", config);
+        assert!(!config.contains("tailwind"));
+
+        let pkg = fs::read_to_string(target.join("package.json")).unwrap();
+        assert!(pkg.contains("postcss"));
+        assert!(pkg.contains("autoprefixer"));
+        assert!(!pkg.contains("tailwindcss"));
+        assert!(!target.join("tailwind.config.js").exists());
+
+        let css = fs::read_to_string(target.join("src/index.css")).unwrap();
+        assert!(!css.contains("@tailwind"), "plain PostCSS must not use Tailwind directives");
+    }
+
+    /// `--ssg=false --types=false` must actually reach the config.
+    #[test]
+    fn init_flags_reach_the_rendering_block() {
+        let tree = TempTree::new("init-flags");
+        let target = tree.root.join("flags");
+        let target_str = target.to_string_lossy().to_string();
+
+        assert_eq!(
+            init(&[
+                target_str,
+                "--ssg=false".to_string(),
+                "--types=false".to_string(),
+            ]),
+            ExitCode::SUCCESS
+        );
+
+        let config = fs::read_to_string(target.join("hydraconfig.json")).unwrap();
+        assert!(!config.contains("\"ssg\": true"), "ssg should be off: {}", config);
+        assert!(!config.contains("\"types\""), "types should be off: {}", config);
+        // The result must still be valid JSON, or the runner cannot read it.
+        assert!(
+            crate::tools::Json::parse(&config).is_ok(),
+            "generated hydraconfig.json is not valid JSON: {}",
+            config
+        );
+    }
+
+    /// An unknown value is an error, not a silently ignored typo: scaffolding
+    /// Tailwind after someone asked for `--styling=twind` is the failure mode.
+    #[test]
+    fn init_rejects_unknown_flag_values_and_writes_nothing() {
+        let tree = TempTree::new("init-bad-flag");
+        let target = tree.root.join("typo");
+        let target_str = target.to_string_lossy().to_string();
+
+        assert_eq!(
+            init(&[target_str.clone(), "--styling=twind".to_string()]),
+            ExitCode::from(2)
+        );
+        assert!(!target.exists(), "nothing should be written on a rejected flag");
+
+        assert_eq!(
+            init(&[target_str.clone(), "--nonsense=1".to_string()]),
+            ExitCode::from(2)
+        );
+        assert_eq!(
+            init(&[target_str, "--ssg".to_string()]),
+            ExitCode::from(2)
+        );
     }
 }

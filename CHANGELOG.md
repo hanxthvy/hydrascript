@@ -12,6 +12,31 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## Unreleased
+
+## Added
+
+- **`hydra init` asks what to generate.** Run in a terminal, it prompts for
+  template (`app` / `blank`), styling (`tailwind` / `postcss` / `plain`), layout
+  (`pages` / `single`), SSG, and TypeScript declarations, with Enter accepting
+  the default. Every answer is also a flag (`--template=`, `--styling=`,
+  `--layout=`, `--ssg=`, `--types=`), and `--yes` skips the prompts.
+  Run in a pipe, CI, or with `--yes`, the behaviour is unchanged from before:
+  same files, same defaults.
+
+  The answer actually changes the output rather than only a comment.
+  `--styling=plain` omits `tailwind.config.js`, leaves `tailwindcss`/`postcss`/
+  `autoprefixer` out of `package.json`, and writes `src/index.css` with the class
+  names the generated page uses — a scaffold whose page references classes no
+  stylesheet defines looks broken on first run. `--template=blank` writes one
+  `src/App.hyx` and no `src/pages` folder.
+
+  An unknown value exits 2 and writes nothing. Silently ignoring a typo like
+  `--styling=twind` would scaffold Tailwind and leave the user believing their
+  choice took effect.
+
+---
+
 ## 0.13.3 — 2026-11-06
 
 ## Added

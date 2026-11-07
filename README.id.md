@@ -643,7 +643,7 @@ hydra fmt [--check] [files]  format sumber (idempoten)
 hydra stats [dir]            hitung berkas/baris/definisi
 hydra doctor                 laporkan kesehatan toolchain dan proyek
 hydra routes [--json]        cetak tabel route berbasis berkas
-hydra init [dir]             scaffold proyek
+hydra init [dir]             scaffold proyek (menanyakan apa yang dibuat)
 hydra add <pkg> [--dev]      pasang dependensi
 hydra remove <pkg>           hapus dependensi
 hydra list                   terdeklarasi vs terpasang
