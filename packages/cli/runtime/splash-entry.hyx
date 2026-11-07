@@ -1,0 +1,90 @@
+# [xihanzu-NR]
+from "react" import useEffect
+from hydra import mount
+from "__HYDRA_SPLASH_MODULE__" import __HYDRA_SPLASH_EXPORT__ as UserSplash
+
+# Entry untuk splash yang ditulis pengguna.
+#
+# Yang dipasang di sini hanya animasinya. Shell, penutup layar, dan jaring
+# pengaman sudah ada di HTML sejak byte pertama -- modul ini baru hidup setelah
+# bundle dimuat, jadi ia TIDAK boleh jadi yang menutupi layar.
+#
+# Nama ekspor dibaca dari berkas oleh runner, jadi penulis bebas menamainya
+# apa pun. Modul pengguna masuk lewat impor STATIS, jadi chunk-nya pasti dimuat
+# bersama skrip ini.
+
+
+def release():
+    try:
+        if window.hydra and window.hydra.splash and window.hydra.splash.release:
+            window.hydra.splash.release()
+            return
+    except:
+        pass
+    el = document.getElementById("boot-splash-mount")
+    if el:
+        el.classList.add("is-ready")
+
+
+def mount_splash():
+    el = document.getElementById("boot-splash-mount")
+    if not el:
+        return
+
+    if not UserSplash:
+        release()
+        return
+
+    # `done` diberikan lewat GLOBAL, bukan argumen komponen.
+    #
+    # Alasannya bukan kemalasan: `mount()` dari runtime memanggil
+    # `React.createElement(component)` tanpa props, dan kwargs pada komponen
+    # hasil impor dinamis ditolak compiler. Setiap jalan untuk mengoper satu
+    # argumen berakhir dengan salah satu dari dua itu. Sebuah global sederhana
+    # tidak punya masalah tersebut, dan penulis animasi tetap menulis satu
+    # baris: `window.hydra.splash.done()`.
+    # JANGAN membuat objek baru di sini.
+    #
+    # Shell sudah membuat `window.hydra.splash` dengan `release` yang menutup
+    # elemen splash-nya. Menugaskan objek baru di sini menimpa objek itu, jadi
+    # `done()` memanggil fungsi yang tidak pernah menyentuh elemennya -- dan
+    # splash hanya lepas lewat plafon, tanpa error apa pun. Yang benar: tambah
+    # properti ke objek yang SUDAH ADA.
+    try:
+        api = window.hydra.splash
+        api["done"] = release
+    except:
+        pass
+
+    try:
+        mount(_Root, el)
+    except:
+        release()
+
+
+component _Root():
+    return UserSplash()
+
+
+component SplashBoot():
+    def boot():
+        # Satu frame: `mount` baru menaruh pohonnya di DOM setelah ini.
+        raf = window.requestAnimationFrame
+
+        def go(_=None):
+            mount_splash()
+        if raf:
+            raf(go)
+        else:
+            window.setTimeout(mount_splash, 0)
+
+    useEffect(boot, [])
+    return None
+
+
+host = document.getElementById("boot-splash-host")
+if host:
+    try:
+        mount(SplashBoot, host)
+    except:
+        release()
