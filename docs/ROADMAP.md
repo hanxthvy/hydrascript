@@ -370,16 +370,87 @@ Semua di dokumen ini adalah rencana, bukan klaim sudah jalan. Yang belum diukur:
 waktu build + gate untuk 50+ route hasil SSG, dan apakah runtime gate masih
 lulus kalau HTML sudah ter-hydrate penuh alih-alih cangkang kosong.
 
-## Status akhir
+## Fase 5 — Ekosistem, stabilitas, dan keamanan (0.13.1 — 0.14.0)
 
-Tiga belas dari tiga belas item di dokumen ini selesai, masing-masing diverifikasi
-dengan menjalankannya: `hydra routes` mencetak tabel, layout membungkus route,
-`_404` masuk tabel, `meta` muncul di `<title>` tiap halaman, `hydra doctor`
-menggagalkan tabrakan param dengan menyebut kedua berkasnya, `.env` dengan
-`PUBLIC_` menolak build yang membocorkan rahasia, API route menjawab GET 200 dan
-POST 201, middleware memblokir satu path dan meneruskan sisanya, dan
-`--target node|static` melaporkan apa yang dibuang alih-alih membuangnya diam-diam.
+Fase ini merapikan apa yang sudah ada sebelum melangkah ke 1.0. Tidak ada
+sintaks baru; fokusnya distribusi biner, pipeline styling yang tidak memaksakan
+kehendak, audit keamanan, dan scaffold yang bisa diajak bicara.
 
-Yang tersisa di luar daftar ini adalah paruh kedua Fast Refresh: state komponen
-bertahan saat diedit, tetapi markup hasil editnya belum masuk ke pohon yang sudah
-ter-mount. Itu dicatat di README sebagai `open`, bukan sebagai selesai.
+### F15. Biner prabangun tujuh platform `SELESAI` (0.13.1)
+
+Sebelumnya pengguna harus punya `cargo` di mesin untuk membangun compiler.
+Sekarang biner prabangun didistribusikan lewat `optionalDependencies` npm
+untuk tujuh target: `linux-x64-gnu`, `linux-x64-musl`, `linux-arm64-gnu`,
+`linux-arm64-musl`, `darwin-x64`, `darwin-arm64`, `win32-x64-msvc`.
+
+Fallback bertahap: package biner platform -> biner lokal -> build dari sumber
+kalau `cargo` ada. Diuji di CI pada Linux glibc/musl, macOS x86/ARM, dan Windows.
+
+### F16. Pemulihan error compiler `SELESAI` (0.13.1)
+
+Compiler tidak lagi berhenti di error baris pertama. Semua baris yang rusak
+dilaporkan dalam satu kali jalan, dengan nomor baris dan kolom yang tepat.
+
+### F17. Pipeline CSS independen `SELESAI` (0.13.2)
+
+Tailwind bukan lagi dependensi keras yang dipaksakan. Proyek bebas memilih:
+PostCSS sendiri, daftar plugin kustom, Tailwind, atau CSS polos tanpa prosesor.
+Konfigurasi dibaca dari `hydraconfig.json` atau berkas konfigurasi proyek.
+
+### F18. Rate limiting bawaan dan SSG aplikasi satu halaman `SELESAI` (0.13.3)
+
+- Rate limiting per-IP berbasis sliding-window bawaan di runner Node, tanpa
+  butuh dependensi luar. Mendukung header `X-Forwarded-For` dari trusted proxy.
+- SSG untuk aplikasi halaman tunggal (`src/App.hyx` tanpa `src/pages/`): tetap
+  menghasilkan HTML awal yang berisi markup asli, bukan cangkang kosong.
+- Berkas standar komunitas: `SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`.
+
+### F19. Rilis keamanan 0.14.0 `SELESAI` (0.14.0)
+
+Menutup lima temuan dari audit eksternal:
+
+- **HYS-002**: properti `server` di `schema.json` diperluas.
+- **HYS-003**: pemeriksaan origin pada semua endpoint API (`Origin: null` dan
+  lintas-origin ditolak kecuali diizinkan).
+- **HYS-004**: pesan error 5xx disamarkan di produksi; detail hanya tampil di dev.
+- **HYS-005**: pemeriksaan dotfile per segmen path pada static serving, bukan
+  hanya pada basename (mencegah akses ke berkas tersembunyi di subfolder).
+- **HYS-006**: scanner leksikal untuk `rewriteDynamicImports`, menggantikan
+  regex file-wide yang rentan terhadap bypass lewat string dan komentar.
+
+### F20. `hydra init` interaktif `SELESAI` (Unreleased)
+
+Scaffold tidak lagi menghasilkan satu bentuk kaku:
+
+- Dijalankan di terminal interaktif: menanyakan template (`app` / `blank`),
+  styling (`tailwind` / `postcss` / `plain`), layout (`pages` / `single`),
+  SSG, dan deklarasi TypeScript.
+- Setiap pilihan punya flag padanan (`--template=`, `--styling=`, dll.) dan
+  `--yes` mempertahankan perilaku default lama untuk skrip dan CI.
+- Pilihan benar-benar mengubah keluaran: `--styling=plain` tidak menyertakan
+  Tailwind di `package.json` dan menghasilkan CSS dengan class yang benar-benar
+  dipakai halaman contoh.
+
+---
+
+## Yang berikutnya (menuju 1.0)
+
+### 1. Fast Refresh: markup baru masuk ke pohon hidup `TERBUKA`
+
+State komponen sudah bertahan lintas edit sejak 0.11, tetapi pohon DOM yang
+sudah ter-mount belum menerima markup baru tanpa reload penuh. Ini pekerjaan
+terbesar yang tersisa di sisi DX sebelum 1.0.
+
+### 2. Layout loader `TERBUKA`
+
+`_layout.hyx` saat ini komponen klien murni. Layout yang butuh data (sidebar,
+profil navigasi) harus mengambilnya di setiap halaman anak. Dibutuhkan loader
+di tingkat layout yang datanya diwariskan ke bawah tanpa fetch ganda.
+
+---
+
+## Status saat ini
+
+Versi: **0.14.0** (dengan F20 di Unreleased).
+Cakupan pengujian: **418 tes Rust** (281 unit + 137 integrasi) dan **220 tes
+Node** di 27 suite. Sintaks bahasa tetap beku di 0.3.

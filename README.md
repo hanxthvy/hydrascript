@@ -18,7 +18,7 @@ esbuild, PostCSS and Tailwind to produce a site.
 
 **Status: 0.14.0, pre-1.0.** The compiler, file-based router, prerendering,
 server rendering, language server and test runner are implemented and covered by
-414 Rust tests (277 unit + 137 integration) and 208 Node tests across 26 suites.
+418 Rust tests (281 unit + 137 integration) and 220 Node tests across 27 suites.
 The language syntax is frozen (see below); what ships between now and 1.0 is
 tooling, not new constructs.
 
@@ -916,8 +916,9 @@ dates; the version numbers are targets and the order is the honest part.
 | 0.13.1 | Compiler error recovery: every broken line reported in one run | shipped |
 | 0.13.1 | Prebuilt binaries for seven targets, via `optionalDependencies` | shipped |
 | 0.13.2 | CSS pipeline is the project's choice: PostCSS config, plugin list, Tailwind, or plain | shipped |
-| 0.14.0 | Security release: trusted-proxy rate limiting, origin checks on API routes, per-segment dotfile guard, generic 5xx bodies, lexical dynamic-import rewrite | shipped |
 | 0.13.3 | Built-in per-IP rate limiting, SSG for single-page apps, and community standards | shipped |
+| 0.14.0 | Security release: trusted-proxy rate limiting, origin checks on API routes, per-segment dotfile guard, generic 5xx bodies, lexical dynamic-import rewrite | shipped |
+| unreleased | Interactive `hydra init`: prompt for template, styling, layout, SSG, and types | shipped |
 | next | Fast Refresh: the edited markup swaps into the live tree | open |
 
 ### Streaming, precisely
