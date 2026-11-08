@@ -118,6 +118,25 @@
           "additionalProperties": {
             "type": "string"
           }
+        },
+        "trustProxy": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "string",
+              "description": "Comma-separated list of proxy addresses whose X-Forwarded-For is believed."
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ],
+          "default": false,
+          "description": "Which peers may set X-Forwarded-For. OFF by default: the header is written by the client, so trusting it unconditionally lets a caller pick its own rate-limit bucket (and grow the limiter’s memory without bound). Set true (or list the proxy addresses) only when the server really runs behind a proxy that overwrites the header."
         }
       }
     },

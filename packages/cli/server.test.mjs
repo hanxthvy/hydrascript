@@ -212,7 +212,12 @@ test('rate limiting blocks requests exceeding max with 429 and Retry-After', asy
   }
 });
 
-test('rate limiting separates buckets by client IP', async () => {
+test('a forged X-Forwarded-For from an untrusted peer does NOT change the bucket', async () => {
+  // Sebelumnya tes ini justru MEMBUKTIKAN bug-nya: ia mengirim header palsu
+  // dari koneksi langsung dan berharap setiap nilai menjadi bucket baru.
+  // Itu persis cara melewati rate limit -- dan cara menumbuhkan Map tanpa
+  // batas. Sekarang header dari peer yang tidak dinyatakan tepercaya diabaikan,
+  // jadi ketiga permintaan jatuh ke bucket yang sama dan yang ketiga ditolak.
   const dir = makeDir();
   const { server, port } = await serveDirectory(dir, 5355, '127.0.0.1', {
     version: '0.3.0',
@@ -239,16 +244,51 @@ test('rate limiting separates buckets by client IP', async () => {
   }
 
   try {
-    // IP 1 uses all its quota
+    // Tiga IP karangan, tiga permintaan. Kalau header dipercaya, ketiganya 200.
     assert.equal((await getWithIp('/', '10.0.0.1')).status, 200);
-    assert.equal((await getWithIp('/', '10.0.0.1')).status, 200);
-    assert.equal((await getWithIp('/', '10.0.0.1')).status, 429);
-
-    // IP 2 still has full quota
     assert.equal((await getWithIp('/', '10.0.0.2')).status, 200);
-    assert.equal((await getWithIp('/', '10.0.0.2')).status, 200);
-    assert.equal((await getWithIp('/', '10.0.0.2')).status, 429);
+    assert.equal(
+      (await getWithIp('/', '10.0.0.3')).status,
+      429,
+      'rotating a forged header must not grant fresh quota',
+    );
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test('X-Forwarded-For IS honoured once the peer is declared a trusted proxy', async () => {
+  // Di belakang nginx, header itu justru satu-satunya sumber IP asli. Yang
+  // membedakan "aman" dan "bocor" adalah deklarasi eksplisit, bukan header-nya.
+  const dir = makeDir();
+  const { server, port } = await serveDirectory(dir, 5356, '127.0.0.1', {
+    version: '0.3.0',
+    rateLimit: { windowMs: 10000, max: 2 },
+    trustProxy: true,
+  });
+
+  function getWithIp(urlPath, ip) {
+    return new Promise((resolve, reject) => {
+      const req = http.get(
+        { host: '127.0.0.1', port, path: urlPath, headers: { 'X-Forwarded-For': ip } },
+        (res) => {
+          let body = '';
+          res.on('data', (c) => (body += c));
+          res.on('end', () => resolve({ status: res.statusCode, body, headers: res.headers }));
+        },
+      );
+      req.on('error', reject);
+    });
+  }
+
+  try {
+    assert.equal((await getWithIp('/', '10.0.0.1')).status, 200);
+    assert.equal((await getWithIp('/', '10.0.0.1')).status, 200);
+    assert.equal((await getWithIp('/', '10.0.0.1')).status, 429);
+    // IP lain masih punya kuota penuh.
+    assert.equal((await getWithIp('/', '10.0.0.2')).status, 200);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+

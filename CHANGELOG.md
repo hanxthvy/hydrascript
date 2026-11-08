@@ -37,6 +37,51 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## 0.14.0 — 2026-11-08
+
+Security release. Six findings from an external static audit were checked
+against the source; five were real and are fixed here. Nothing in the public
+API changed, but two behaviours did — both listed under **Changed** because a
+deployment that relied on them will notice.
+
+### Fixed
+
+- **`X-Forwarded-For` was believed from any peer.** The header is written by
+  the client, so any caller could pick its own rate-limit bucket — and each new
+  value added an entry to the limiter's Map, so forging also grew memory.
+  Forwarding is now read only from a peer named in `server.trustProxy`.
+  Loopback is **not** trusted implicitly: a local process, a tunnel or a bot on
+  the same host would otherwise get that trust for free.
+- **The rate limiter's Map had no upper bound.** It is now capped at 10000
+  entries, with expired entries evicted first. When the cap is reached, new
+  entries are skipped and the request is served rather than refused — filling
+  the table must not become a way to deny service to everyone.
+- **API routes had no origin check at all.** `handleAction` had one; `/api/*`
+  did not, leaving two doors to the same data with different locks. Both now use
+  one shared predicate, and it runs **before the body is read**.
+- **`Origin: null` was treated as "no Origin".** It is not: sandboxed iframes
+  and `data:` URLs send it deliberately. It is now refused. A request with *no*
+  `Origin` header is still allowed — that is curl, tests, and server-to-server.
+- **Hidden directories were reachable.** The dotfile guard looked at
+  `path.basename()` only, so `/.private/config.json` passed (its basename is
+  `config.json`). Every path segment is checked now, against the path relative
+  to the served root.
+- **Internal error detail reached the client.** 5xx responses in production are
+  now a generic message plus a short `ref` that matches a server log line. 4xx
+  messages are unchanged: those are answers for the caller, not exception
+  text. `HYDRA_EXPOSE_ERRORS=1` restores the old behaviour for non-public hosts.
+- **`rewriteDynamicImports` used a bare regex.** It had no idea what a string,
+  template literal or comment was, so `const s = "__import__('./x')"` was
+  rewritten and the code quietly changed meaning. Replaced with a single-pass
+  lexical scanner; `${ }` inside a template is still treated as code.
+
+### Changed
+
+- `server.trustProxy` added to the schema (boolean, comma-separated string, or
+  array). Default **false**. Behind nginx, set it — otherwise every request is
+  attributed to the proxy's address and the limiter becomes a global cap.
+- 5xx error bodies in production lose their `message` and `detail`.
+
 ## 0.13.3 — 2026-11-06
 
 ## Added

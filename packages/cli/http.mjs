@@ -76,8 +76,46 @@ export function sendHttpIntent(res, intent, extraHeaders = {}) {
  * application's answer, not the framework's complaint, and a project that wants
  * a body of its own shape must be able to have one.
  */
-export function errorBody(code, message, detail = null) {
-  return { error: String(message), code, ...(detail ? { detail } : {}) };
+/**
+ * Apakah pesan internal boleh keluar ke klien.
+ *
+ * Default: tidak, kalau NODE_ENV=production. Pesan exception memuat path
+ * filesystem, nama tabel, nama modul, dan kadang potongan konfigurasi -- semua
+ * itu gratis untuk pengintaian. Escaping HTML tidak menolong: yang bocor
+ * bukan markup, tapi isi.
+ *
+ * Bisa dinyalakan lewat HYDRA_EXPOSE_ERRORS=1 untuk debugging di server yang
+ * memang tidak publik. Sengaja memilih "sembunyikan" sebagai default: lupa
+ * mematikan lebih berbahaya daripada lupa menyalakan.
+ */
+function bolehBocorDetail() {
+  if (process.env.HYDRA_EXPOSE_ERRORS === '1') return true;
+  return process.env.NODE_ENV !== 'production';
+}
+
+/** ID korelasi pendek: menyambungkan respons ke baris log tanpa membocorkan isi. */
+function idKorelasi() {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+export function errorBody(code, message, detail = null, status = 500) {
+  // Hanya 5xx yang disamarkan. 4xx adalah jawaban yang memang untuk pemanggil
+  // ("field ini salah", "route tidak ada") -- menyembunyikannya membuat
+  // framework sulit dipakai tanpa menambah keamanan apa pun, karena pesannya
+  // ditulis framework, bukan berasal dari exception.
+  const internal = Number(status) >= 500;
+  if (!internal || bolehBocorDetail()) {
+    return { error: String(message), code, ...(detail ? { detail } : {}) };
+  }
+  // Produksi: pesan generik + ID yang bisa dicari di log server. Pengunjung
+  // tetap punya sesuatu untuk dilaporkan; penyerang tidak dapat apa-apa.
+  const ref = idKorelasi();
+  try {
+    console.error(`[hydra] ${ref} ${code}: ${message}`, detail ?? '');
+  } catch {
+    /* logging tidak boleh menggagalkan respons */
+  }
+  return { error: 'internal error', code, ref };
 }
 
 /** Write a framework error. Returns nothing; the response is finished. */
@@ -86,6 +124,6 @@ export function sendError(res, status, code, message, detail = null, headers = {
     'Content-Type': 'application/json; charset=utf-8',
     ...headers,
   });
-  res.end(JSON.stringify(errorBody(code, message, detail)));
+  res.end(JSON.stringify(errorBody(code, message, detail, status)));
 }
 

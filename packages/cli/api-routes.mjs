@@ -535,6 +535,23 @@ function sendResult(res, { status, body, headers }, headOnly = false) {
  * `@returns {Promise<boolean>} true when this answered the request`
  */
 export async function handleApiRequest(req, res, url, bundlePath, options = {}) {
+  // Ditolak SEBELUM body dibaca. Membaca body lebih dulu berarti penyerang
+  // lintas situs tetap bisa menghabiskan CPU dan memori server walau
+  // permintaannya akhirnya ditolak.
+  if (options.refuseCrossOrigin) {
+    sendError(
+      res,
+      403,
+      'cross_origin_api',
+      'cross-origin API request refused',
+      {
+        origin: options.origin,
+        hint: 'API routes accept same-origin requests; a browser sent this from another site',
+      },
+    );
+    return true;
+  }
+
   const rawPath = url.split('?')[0];
   const mod = loadApi(bundlePath);
   if (!mod) {

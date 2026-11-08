@@ -307,11 +307,154 @@ function cliFallbackCompile(file, source) {
  * string literal or a comment would be rewritten too; that is a known limit of
  * doing this before the parser rather than in it.
  */
+/**
+ * Ubah `__import__("x")` menjadi `import("x")`, tanpa menyentuh teks yang bukan
+ * kode.
+ *
+ * Versi sebelumnya memakai satu regex atas seluruh berkas. Regex itu tidak tahu
+ * apa itu string, template literal, atau komentar, jadi semuanya bisa berubah:
+ *
+ *     const contoh = "__import__('./Page.hyx')";   // string, bukan pemanggilan
+ *     // __import__("./Page.hyx") di dalam komentar
+ *
+ * Mengubah string literal tidak membuat build gagal -- hasilnya tetap sah, dan
+ * semantiknya diam-diam berbeda. Itu jenis bug yang baru ketahuan di produksi.
+ *
+ * Pemindai di bawah berjalan sekali dari kiri ke kanan sambil melacak keadaan
+ * leksikal. Ia tidak perlu parser penuh; yang dibutuhkan hanya tahu kapan kita
+ * berada di dalam string, template, atau komentar -- dan di situlah
+ * `__import__` boleh diganti, di luar itu tidak.
+ */
 function rewriteDynamicImports(code) {
-  return code.replace(
-    /(^|[^\w$.])__import__\s*\(\s*(['"])([^'"\n]+)\2\s*\)/g,
-    (m, lead, quote, spec) => `${lead}import(${quote}${spec}${quote})`,
-  );
+  const out = [];
+  let i = 0;
+  const n = code.length;
+  // Kedalaman `${ ... }` pada template literal. Template bersarang butuh ini:
+  // di dalam `${}` kita kembali ke keadaan kode biasa.
+  const templateStack = [];
+
+  const push = (str) => out.push(str);
+
+  while (i < n) {
+    const ch = code[i];
+    const next = code[i + 1];
+
+    // Komentar baris
+    if (ch === '/' && next === '/') {
+      const end = code.indexOf('\n', i);
+      const stop = end === -1 ? n : end;
+      push(code.slice(i, stop));
+      i = stop;
+      continue;
+    }
+
+    // Komentar blok
+    if (ch === '/' && next === '*') {
+      const end = code.indexOf('*/', i + 2);
+      const stop = end === -1 ? n : end + 2;
+      push(code.slice(i, stop));
+      i = stop;
+      continue;
+    }
+
+    // String '...' dan "..."
+    if (ch === "'" || ch === '"') {
+      const quote = ch;
+      let j = i + 1;
+      while (j < n) {
+        if (code[j] === '\\') {
+          j += 2;
+          continue;
+        }
+        if (code[j] === quote) {
+          j += 1;
+          break;
+        }
+        j += 1;
+      }
+      push(code.slice(i, j));
+      i = j;
+      continue;
+    }
+
+    // Template literal
+    if (ch === '`') {
+      // Buka template: salin sampai `${` atau penutup.
+      let j = i + 1;
+      while (j < n) {
+        if (code[j] === '\\') {
+          j += 2;
+          continue;
+        }
+        if (code[j] === '`') {
+          j += 1;
+          break;
+        }
+        if (code[j] === '$' && code[j + 1] === '{') {
+          j += 2;
+          templateStack.push(1);
+          break;
+        }
+        j += 1;
+      }
+      push(code.slice(i, j));
+      i = j;
+      continue;
+    }
+
+    // Penutup `${ ... }`
+    if (ch === '}' && templateStack.length && templateStack[templateStack.length - 1] === 1) {
+      templateStack.pop();
+      push('}');
+      i += 1;
+      continue;
+    }
+
+    // Di luar semua itu: cek `__import__(`.
+    if (code.startsWith('__import__', i)) {
+      const before = i === 0 ? '' : code[i - 1];
+      // Bukan bagian dari nama lain: `foo.__import__` atau `my__import__`.
+      const boundary = before === '' || !/[\w$.]/.test(before);
+      if (boundary) {
+        let j = i + '__import__'.length;
+        while (j < n && /\s/.test(code[j])) j += 1;
+        if (code[j] === '(') {
+          let k = j + 1;
+          while (k < n && /\s/.test(code[k])) k += 1;
+          const quote = code[k];
+          if (quote === "'" || quote === '"') {
+            // Cari penutup string argumennya.
+            let m = k + 1;
+            let specOk = true;
+            while (m < n && code[m] !== quote) {
+              if (code[m] === '\\' || code[m] === '\n') {
+                specOk = false;
+                break;
+              }
+              m += 1;
+            }
+            if (specOk && code[m] === quote) {
+              let t = m + 1;
+              while (t < n && /\s/.test(code[t])) t += 1;
+              if (code[t] === ')') {
+                // Hanya bentuk persis `__import__("x")`. Argumen lain (variabel,
+                // ekspresi) dibiarkan supaya perilakunya tidak berubah diam-diam.
+                const spec = code.slice(k + 1, m);
+                push(`import(${quote}${spec}${quote})`);
+                i = t + 1;
+                continue;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    push(ch);
+    i += 1;
+  }
+
+  return out.join('');
 }
 
 /**
@@ -2904,6 +3047,7 @@ export async function runServe(cwd = process.cwd(), opts = {}) {
     api: readApiBundle(cwd),
     bodyLimit: config.server?.bodyLimit,
     rateLimit: config.server?.rateLimit,
+    trustProxy: config.server?.trustProxy,
     headers: config.server?.headers,
     version: opts.version,
     sha: opts.sha,
@@ -2922,6 +3066,44 @@ export async function runServe(cwd = process.cwd(), opts = {}) {
   return served;
 }
 
+/**
+ * Tolak permintaan lintas-origin yang mengubah state.
+ *
+ * Dipakai oleh action DAN api route. Sebelumnya hanya action yang memeriksa,
+ * jadi endpoint API yang menerima POST jalan tanpa lapisan ini sama sekali --
+ * kebijakan yang berbeda untuk dua pintu yang sama-sama bisa mengubah data
+ * adalah kebijakan yang tidak ada.
+ *
+ * Tiga keputusan yang perlu dijelaskan:
+ *
+ *  - `Origin: null` DITOLAK, bukan dilewati. Dulu dilewati karena dianggap
+ *    sama dengan "tidak ada Origin". Tidak: `null` dikirim secara eksplisit
+ *    oleh sandbox iframe dan oleh halaman data: — dua tempat yang justru
+ *    dipakai untuk serangan. Tidak adanya header tetap diizinkan, karena itu
+ *    curl, tes, dan panggilan server-ke-server.
+ *  - Perbandingan memakai host, bukan origin penuh, supaya http/https di balik
+ *    proxy tidak saling menolak.
+ *  - Hanya berlaku untuk metode yang mengubah state. GET tidak.
+ *
+ * Ini BUKAN pengganti autentikasi. Ia menutup satu kelas serangan (CSRF lewat
+ * form/fetch lintas situs) dan tidak menyentuh yang lain.
+ */
+function crossOriginRefused(req) {
+  const method = (req.method || 'GET').toUpperCase();
+  if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return false;
+  const origin = req.headers.origin;
+  if (origin === undefined) return false; // non-browser client
+  if (origin === 'null') return true; // sandboxed iframe / data: URL
+  const host = req.headers.host || '';
+  let originHost = '';
+  try {
+    originHost = new URL(origin).host;
+  } catch {
+    return true; // unparseable Origin is not trustworthy
+  }
+  return !originHost || originHost !== host;
+}
+
 async function handleAction(req, res, reqPath, rawUrl, bundlePath, opts = {}) {
   // Cross-site POSTs are refused before anything runs.
   //
@@ -2933,26 +3115,19 @@ async function handleAction(req, res, reqPath, rawUrl, bundlePath, opts = {}) {
   // modern browsers. A request with NO Origin header is a non-browser client
   // (curl, a test, a server-to-server call) and is allowed, because a form post
   // from a browser is the only case this defends against.
-  const origin = req.headers.origin;
-  if (origin && origin !== 'null') {
-    const host = req.headers.host || '';
-    let originHost = '';
-    try {
-      originHost = new URL(origin).host;
-    } catch {
-      originHost = '';
-    }
-    if (!originHost || originHost !== host) {
-      sendError(
-        res,
-        403,
-        'cross_origin_action',
-        'cross-origin action refused',
-        { origin, hint: 'actions accept same-origin requests; a browser sent this from another site' },
-        baseHeaders(),
-      );
-      return;
-    }
+  if (crossOriginRefused(req)) {
+    sendError(
+      res,
+      403,
+      'cross_origin_action',
+      'cross-origin action refused',
+      {
+        origin: req.headers.origin,
+        hint: 'actions accept same-origin requests; a browser sent this from another site',
+      },
+      baseHeaders(),
+    );
+    return;
   }
 
   let mod;
@@ -3034,6 +3209,49 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
     return null;
   })();
 
+  // IP klien, dan kepercayaan yang eksplisit.
+  //
+  // `X-Forwarded-For` dikirim oleh KLIEN, bukan oleh jaringan: siapa pun bisa
+  // menulis `X-Forwarded-For: 1.2.3.4` dan, kalau header itu dipercaya tanpa
+  // syarat, rate limit-nya diukur terhadap IP karangan itu. Mengganti nilai
+  // per request berarti batasnya tidak pernah tercapai, dan setiap nilai baru
+  // menambah satu entri di Map -- jadi pemalsuan juga menaikkan memori.
+  //
+  // Aturannya sekarang: header hanya dibaca kalau koneksinya datang dari
+  // proxy yang memang dinyatakan tepercaya (`server.trustProxy`). Selain itu,
+  // alamat socket yang dipakai. Ini satu-satunya perbedaan antara "di belakang
+  // nginx" dan "terbuka langsung".
+  const trustProxy = (() => {
+    const raw = opts.trustProxy;
+    if (raw === true) return () => true;
+    if (typeof raw === 'string') {
+      const allow = raw.split(',').map((x) => x.trim()).filter(Boolean);
+      return (addr) => allow.includes(addr);
+    }
+    if (Array.isArray(raw)) return (addr) => raw.includes(addr);
+    return () => false;
+  })();
+
+  const clientIpOf = (req) => {
+    const socketAddr = req.socket?.remoteAddress || '127.0.0.1';
+    // Loopback TIDAK otomatis tepercaya. Awalnya sempat begitu, dengan alasan
+    // "dev berjalan di mesin yang sama" -- tapi itu justru membuat siapa pun
+    // yang bisa menjangkau port lokal (proses lain, tunnel, bot di mesin yang
+    // sama) memperoleh kepercayaan penuh dan bisa memalsukan IP. Kepercayaan
+    // harus dinyatakan, bukan disimpulkan dari alamat.
+    const dariProxy = trustProxy(socketAddr);
+    if (!dariProxy) return socketAddr;
+    const h = req.headers['x-forwarded-for'];
+    if (!h) return socketAddr;
+    // Rantai proxy: entri PALING KANAN adalah yang paling dekat dengan kita,
+    // dan itu yang paling sulit dipalsukan. Entri paling kiri berasal dari
+    // klien dan bisa berisi apa saja.
+    const chain = String(h).split(',').map((x) => x.trim()).filter(Boolean);
+    return chain.length ? chain[chain.length - 1] : socketAddr;
+  };
+
+  const RATE_LIMIT_MAX_ENTRIES = 10000;
+
   const rateLimitState = rateLimitCfg ? new Map() : null;
 
   const server = http.createServer(async (req, res) => {
@@ -3045,18 +3263,40 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
     for (const [name, value] of Object.entries(baseHeaders())) res.setHeader(name, value);
 
     if (rateLimitCfg && rateLimitState) {
-      const clientIp =
-        (req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
-        req.socket?.remoteAddress ||
-        '127.0.0.1';
+      const clientIp = clientIpOf(req);
       const now = Date.now();
       let record = rateLimitState.get(clientIp);
       if (!record || now >= record.resetAt) {
-        record = { count: 0, resetAt: now + rateLimitCfg.windowMs };
-        rateLimitState.set(clientIp, record);
+        // Map dibatasi. Tanpa batas, pemalsuan IP (atau scan dari banyak alamat
+        // sungguhan) menumbuhkan entri tanpa henti sampai prosesnya kehabisan
+        // memori -- dan rate limiter sendiri jadi jalan untuk DoS.
+        //
+        // Saat penuh: entri kedaluwarsa dibuang lebih dulu. Kalau masih penuh,
+        // entri baru TIDAK dicatat, tapi permintaan tetap dilayani -- menolak
+        // pengunjung baru karena Map penuh akan mengubah serangan menjadi
+        // pemadaman untuk semua orang.
+        if (rateLimitState.size >= RATE_LIMIT_MAX_ENTRIES) {
+          for (const [ip, rec] of rateLimitState) {
+            if (now >= rec.resetAt) rateLimitState.delete(ip);
+          }
+        }
+        if (rateLimitState.size < RATE_LIMIT_MAX_ENTRIES) {
+          record = { count: 0, resetAt: now + rateLimitCfg.windowMs };
+          rateLimitState.set(clientIp, record);
+        } else {
+          record = null;
+        }
       }
+      if (!record) {
+        // Tabel penuh: lewati pembatasan untuk request ini, jangan tolak.
+        record = { count: 0, resetAt: now + rateLimitCfg.windowMs, uncapped: true };
+      }
+      if (record.uncapped) {
+        // tidak dihitung
+      } else {
       record.count += 1;
-      if (record.count > rateLimitCfg.max) {
+      }
+      if (!record.uncapped && record.count > rateLimitCfg.max) {
         const retryAfter = Math.max(1, Math.ceil((record.resetAt - now) / 1000));
         res.writeHead(429, {
           'Content-Type': 'text/plain; charset=utf-8',
@@ -3103,6 +3343,11 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
       // response at all — a timeout, which reads as "the server is down".
       const answered = await handleApiRequest(req, res, rawUrl, opts.api, {
         bodyLimit: opts.bodyLimit,
+        // Kebijakan origin yang SAMA dengan actions. Tanpa ini, API route
+        // adalah pintu kedua yang bisa mengubah state tanpa lapisan apa pun,
+        // dan penyerang cukup memilih pintu yang lebih longgar.
+        refuseCrossOrigin: crossOriginRefused(req),
+        origin: req.headers.origin,
       });
       if (answered) return;
     }
@@ -3200,8 +3445,20 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
     // `dist/` because `hydra analyze` reads it there, and it must not be on the
     // public internet — a build artifact that describes the build is free
     // reconnaissance, and it is never something a visitor asked for.
-    const publicName = path.basename(reqPath);
-    if (publicName.startsWith('.')) {
+    //
+    // Diperiksa per SEGMEN, bukan hanya nama berkas terakhir. `path.basename`
+    // untuk `/.private/config.json` menghasilkan `config.json` -- tidak diawali
+    // titik -- sehingga direktori tersembunyi di tengah path lolos. Yang benar:
+    // satu segmen pun yang diawali titik berarti berkas itu bukan untuk publik.
+    //
+    // Pemeriksaan dilakukan pada path RELATIF terhadap root yang disajikan,
+    // bukan pada URL mentah, supaya `..` yang sudah dinormalisasi tidak
+    // menyamarkan segmen tersembunyi.
+    const relSegments = path
+      .relative(rootDir, filePath)
+      .split(path.sep)
+      .filter(Boolean);
+    if (relSegments.some((seg) => seg.startsWith('.'))) {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Not Found');
       return;
@@ -3530,6 +3787,7 @@ export async function runPreview(cwd = process.cwd(), opts = {}) {
     api: apiForPreview,
     bodyLimit: config.server?.bodyLimit,
     rateLimit: config.server?.rateLimit,
+    trustProxy: config.server?.trustProxy,
     version: opts.version,
     sha: opts.sha,
     configPath: path.join(cwd, 'hydraconfig.json'),
@@ -3580,6 +3838,7 @@ export async function runDev(cwd = process.cwd(), opts = {}) {
     ssr: renderer.available ? renderer : null,
     bodyLimit: config.server?.bodyLimit,
     rateLimit: config.server?.rateLimit,
+    trustProxy: config.server?.trustProxy,
     // The dev server injects the HMR client into every HTML response, because
     // the build wrote the file and the page has to reach the browser with it.
     injectHtml: (html) => injectHmrClient(html),
