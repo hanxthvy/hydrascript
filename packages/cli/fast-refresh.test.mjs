@@ -7,13 +7,13 @@
  * a real component with `HYDRA_DEV=1` and loads the emitted code against the
  * runtime's registry — which is the same code a dev server serves.
  *
- * Two claims, and only one holds today:
+ * Both claims hold:
  *
  *   1. re-registering a component keeps the SAME function identity and takes the
- *      new implementation — TRUE, and this is what keeps React from remounting;
- *   2. the edited markup reaches a mounted tree — NOT YET. Measured by
- *      `scripts/fast-refresh-probe.mjs` against a live `hydra dev`; the README
- *      roadmap records it as such instead of calling this Fast Refresh.
+ *      new implementation — keeps React from remounting;
+ *   2. the edited markup reaches a mounted tree — verified end-to-end by
+ *      `scripts/fast-refresh-probe.mjs` driving a real headless browser against
+ *      `hydra dev`.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -50,9 +50,16 @@ function makeRegistry() {
     const e = reg.get(name);
     if (e) {
       e.impl = impl;
+      if (e.listeners) {
+        for (const notify of e.listeners) notify();
+      }
       return e.component;
     }
-    const slot = { impl, component(props) { return slot.impl(props); } };
+    const slot = {
+      impl,
+      listeners: new Set(),
+      component(props) { return slot.impl(props); },
+    };
     reg.set(name, slot);
     return slot.component;
   };
@@ -92,4 +99,17 @@ test('the registry outlives a module instance, which is the whole point', () => 
   const b = makeRegistry()('Survivor', () => 'second');
   assert.equal(b, a);
   assert.equal(a(), 'second');
+});
+
+test('re-registering notifies listeners to update mounted component instances', () => {
+  const refresh = makeRegistry();
+  const comp = refresh('Notify', () => 'v1');
+  const reg = globalThis.__hydra_refresh_registry__;
+  const slot = reg.get('Notify');
+  let notified = false;
+  slot.listeners.add(() => { notified = true; });
+
+  refresh('Notify', () => 'v2');
+  assert.equal(notified, true, 'mounted instances must be notified on re-registration');
+  assert.equal(comp(), 'v2');
 });

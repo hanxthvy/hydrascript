@@ -501,6 +501,50 @@ function runtimeSpecifierPlugin(allow) {
   };
 }
 
+function reactDevSingletonPlugin(cwd) {
+  return {
+    name: 'hydra-dev-react-singleton',
+    setup(build) {
+      build.onLoad({ filter: /node_modules[\/\\](react|react-dom)[\/\\].*\.js$/ }, async (args) => {
+        let contents = await fs.promises.readFile(args.path, 'utf8');
+        const isClient = args.path.endsWith('client.js') && args.path.includes('react-dom');
+        if (isClient) {
+          contents = contents.replace(
+            /exports\.createRoot\s*=\s*function\s*\(([^)]*)\)\s*\{/,
+            'exports.createRoot = function($1) { var _c = arguments[0]; if (_c && _c.__hydra_root__) return _c.__hydra_root__; ',
+          );
+          contents = contents.replace(
+            /return m\.createRoot\(([^)]*)\);/,
+            'var _r = m.createRoot($1); if (arguments[0]) arguments[0].__hydra_root__ = _r; return _r;',
+          );
+          contents = contents.replace(
+            /exports\.hydrateRoot\s*=\s*function\s*\(([^)]*)\)\s*\{/,
+            'exports.hydrateRoot = function($1) { var _c = arguments[0]; if (_c && _c.__hydra_root__) { _c.__hydra_root__.render(arguments[1]); return _c.__hydra_root__; } ',
+          );
+          contents = contents.replace(
+            /return m\.hydrateRoot\(([^)]*)\);/,
+            'var _r = m.hydrateRoot($1); if (arguments[0]) arguments[0].__hydra_root__ = _r; return _r;',
+          );
+        }
+
+        const key = '__hydra_singleton_' + shortHash(args.path) + '__';
+        const wrapped = `
+var g = typeof globalThis !== "undefined" ? globalThis : typeof window !== "undefined" ? window : this;
+if (g && g["${key}"]) {
+  module.exports = g["${key}"];
+} else {
+  ${contents}
+  if (g) {
+    g["${key}"] = module.exports;
+  }
+}
+`;
+        return { contents: wrapped, loader: 'js' };
+      });
+    },
+  };
+}
+
 function createHydraEsbuildPlugin(options = {}) {
   const native = findNativeAddon();
   // Two layers, on purpose.
@@ -2007,6 +2051,7 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     publicPath: assetsPublicPath,
     metafile: true,
     plugins: [
+      ...(opts.dev ? [reactDevSingletonPlugin(cwd)] : []),
       runtimeSpecifierPlugin({ hydra: hydraAlias, 'hydra/client': clientAlias }),
       createHydraEsbuildPlugin({
         cache: compileCache,
@@ -2148,6 +2193,7 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   if (!entryOutKey) {
     throw new Error('[hydra] The client build produced no JavaScript entry chunk');
   }
+  const entryUrl = outputUrl(cwd, outDir, base, entryOutKey);
   if (chunkCandidates.length > 1) {
     const others = chunkCandidates.filter((k) => k !== entryOutKey);
     console.warn(
@@ -2248,7 +2294,6 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     let html = fs.readFileSync(htmlInPath, 'utf8');
 
     // Replace the source entry with the bundle esbuild actually wrote.
-    const entryUrl = outputUrl(cwd, outDir, base, entryOutKey);
     const scriptTag = `<script type="module" crossorigin src="${entryUrl}"></script>`;
     const entrySrc = path.relative(cwd, entryPoint).split(path.sep).join('/');
     let replaced = false;
@@ -2804,6 +2849,8 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
       throw new Error('[hydra] runtime gate failed');
     }
   }
+
+  return { entryUrl, cssUrl };
 }
 
 /**
@@ -3867,14 +3914,14 @@ export async function runDev(cwd = process.cwd(), opts = {}) {
         if (building) return;
         building = true;
         try {
-          await runBuild(cwd, { dev: true });
+          const buildInfo = await runBuild(cwd, { dev: true });
           // A successful dev rebuild asks the client to REFRESH (swap the
           // component implementations in place), not to reload. A full reload
           // resets every component's state, which is the whole difference between
           // live reload and Fast Refresh. `ok` remains the message for a plain
           // reload, used when the client cannot refresh (no registry, a bundle
           // that failed to re-import).
-          if (hmr) hmr.broadcast(JSON.stringify({ type: 'refresh' }));
+          if (hmr) hmr.broadcast(JSON.stringify({ type: 'refresh', entry: buildInfo?.entryUrl }));
         } catch (err) {
           const message = err && err.message ? err.message : String(err);
           console.error('[hydra] Build error:', message);

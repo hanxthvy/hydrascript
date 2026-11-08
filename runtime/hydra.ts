@@ -14,6 +14,24 @@ import React, {
 } from 'react'
 import * as ReactDOM from 'react-dom/client'
 
+// Share React internals across dev rebuilds so re-imported module graphs
+// share the active hook dispatcher rather than throwing "Invalid hook call".
+if (typeof window !== 'undefined' && (React as any)?.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED) {
+  const g = globalThis as any
+  const internals = (React as any).__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED
+  if (!g.__hydra_react_internals__) {
+    g.__hydra_react_internals__ = internals
+  } else {
+    internals.ReactCurrentDispatcher = g.__hydra_react_internals__.ReactCurrentDispatcher
+    if (internals.ReactCurrentBatchConfig && g.__hydra_react_internals__.ReactCurrentBatchConfig) {
+      internals.ReactCurrentBatchConfig = g.__hydra_react_internals__.ReactCurrentBatchConfig
+    }
+    if (internals.ReactCurrentOwner && g.__hydra_react_internals__.ReactCurrentOwner) {
+      internals.ReactCurrentOwner = g.__hydra_react_internals__.ReactCurrentOwner
+    }
+  }
+}
+
 // The React-free half. Re-exported below so `from "hydra" import len` is
 // unchanged, and importable on its own as `hydra/core` from a server file that
 // must not pull React into its bundle.
@@ -234,6 +252,7 @@ interface RefreshSlot {
   impl: (props: any) => any
   /** The stable component React sees. Identity never changes for a given key. */
   component: (props: any) => any
+  listeners: Set<() => void>
 }
 
 /**
@@ -269,13 +288,27 @@ export function __refresh(name: string, impl: (props: any) => any): (props: any)
   const existing = reg.get(name)
   if (existing) {
     existing.impl = impl
+    for (const notify of existing.listeners) {
+      try {
+        notify()
+      } catch (_) {}
+    }
     return existing.component
   }
   const slot: RefreshSlot = {
     impl,
-    // Not an arrow over `slot.impl` captured once: it reads the field on every
-    // render, which is what makes the swap take effect without a remount.
+    listeners: new Set(),
     component(props: any) {
+      try {
+        const [, setTick] = useState(0)
+        useEffect(() => {
+          const notify = () => setTick((t: number) => (t + 1) | 0)
+          slot.listeners.add(notify)
+          return () => {
+            slot.listeners.delete(notify)
+          }
+        }, [])
+      } catch (_) {}
       return slot.impl(props)
     },
   }

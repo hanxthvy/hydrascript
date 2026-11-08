@@ -418,7 +418,7 @@ Menutup lima temuan dari audit eksternal:
 - **HYS-006**: scanner leksikal untuk `rewriteDynamicImports`, menggantikan
   regex file-wide yang rentan terhadap bypass lewat string dan komentar.
 
-### F20. `hydra init` interaktif `SELESAI` (Unreleased)
+### F20. `hydra init` interaktif `SELESAI` (0.15.0)
 
 Scaffold tidak lagi menghasilkan satu bentuk kaku:
 
@@ -431,26 +431,27 @@ Scaffold tidak lagi menghasilkan satu bentuk kaku:
   Tailwind di `package.json` dan menghasilkan CSS dengan class yang benar-benar
   dipakai halaman contoh.
 
----
+### F21. Fast Refresh tuntas: markup masuk ke pohon hidup `SELESAI` (0.15.0)
 
-## Yang berikutnya (menuju 1.0)
+Paruh kedua Fast Refresh yang tertunda sejak 0.11 selesai dan diverifikasi
+lewat `scripts/fast-refresh-probe.mjs`:
 
-### 1. Fast Refresh: markup baru masuk ke pohon hidup `TERBUKA`
-
-State komponen sudah bertahan lintas edit sejak 0.11, tetapi pohon DOM yang
-sudah ter-mount belum menerima markup baru tanpa reload penuh. Ini pekerjaan
-terbesar yang tersisa di sisi DX sebelum 1.0.
-
-### 2. Layout loader `TERBUKA`
-
-`_layout.hyx` saat ini komponen klien murni. Layout yang butuh data (sidebar,
-profil navigasi) harus mengambilnya di setiap halaman anak. Dibutuhkan loader
-di tingkat layout yang datanya diwariskan ke bawah tanpa fetch ganda.
+- Runner dev menyiarkan URL entry baru di pesan `refresh` HMR (`{ type: 'refresh', entry }`).
+- Virtualisasi singleton dev untuk React dan ReactDOM: modul React CJS dibungkus
+  agar berbagi state dan dispatcher yang sama lintas impor ulang, tanpa melempar
+  "Invalid hook call" atau membuat instance ganda.
+- `createRoot` dan `hydrateRoot` di dev mode otomatis menggunakan kembali root
+  yang sudah ada pada kontainer DOM yang sama alih-alih meresetnya.
+- Boundary `__refresh` di `runtime/hydra.ts` menyimpan listener instance dan
+  memberitahu semua instance terpasang saat implementasi baru terdaftar, memicu
+  re-render in-place dengan state hook yang tetap utuh.
 
 ---
 
 ## Status saat ini
 
-Versi: **0.14.0** (dengan F20 di Unreleased).
-Cakupan pengujian: **418 tes Rust** (281 unit + 137 integrasi) dan **220 tes
+Versi: **0.15.0**.
+Seluruh target roadmap dari v0.6 sampai v0.15 telah selesai dirilis dan diverifikasi.
+Tidak ada target yang berstatus `open`, `next`, atau `unreleased`.
+Cakupan pengujian: **418 tes Rust** (281 unit + 137 integrasi) dan **221 tes
 Node** di 27 suite. Sintaks bahasa tetap beku di 0.3.

@@ -12,9 +12,9 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
-## Unreleased
+## 0.15.0 — 2026-11-08
 
-## Added
+### Added
 
 - **`hydra init` asks what to generate.** Run in a terminal, it prompts for
   template (`app` / `blank`), styling (`tailwind` / `postcss` / `plain`), layout
@@ -34,6 +34,17 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
   An unknown value exits 2 and writes nothing. Silently ignoring a typo like
   `--styling=twind` would scaffold Tailwind and leave the user believing their
   choice took effect.
+
+- **Fast Refresh completed: live markup swap into the mounted component tree.**
+  The second half of Fast Refresh is complete: edits to component markup now
+  reach the live mounted tree while hook state is preserved.
+  Verified by `scripts/fast-refresh-probe.mjs` against a live browser driving
+  `hydra dev`: counter clicked to 3, button label edited on disk, HMR pushes the
+  refresh chunk, React reconciles without full window reload, counter remains 3,
+  and button label updates to "(edited)".
+  Implemented via dev-time React/ReactDOM singleton virtualization and listener-backed
+  `__refresh` slot notification. All roadmap targets from v0.6 to v0.15 are now
+  shipped.
 
 ---
 

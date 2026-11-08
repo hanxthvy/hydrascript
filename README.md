@@ -16,16 +16,13 @@ HydraScript compiles indentation-based `.hyx` files to React TSX and `.hys` file
 to plain JavaScript. The compiler is a Rust binary; a small Node runner wraps
 esbuild, PostCSS and Tailwind to produce a site.
 
-**Status: 0.14.0, pre-1.0.** The compiler, file-based router, prerendering,
-server rendering, language server and test runner are implemented and covered by
-418 Rust tests (281 unit + 137 integration) and 220 Node tests across 27 suites.
-The language syntax is frozen (see below); what ships between now and 1.0 is
-tooling, not new constructs.
+**Status: 0.15.0, pre-1.0.** The compiler, file-based router, prerendering,
+server rendering, language server, Fast Refresh, and test runner are implemented
+and covered by 418 Rust tests (281 unit + 137 integration) and 221 Node tests
+across 27 suites. The language syntax is frozen (see below); what ships between
+now and 1.0 is polish and production hardening, not new constructs.
 
-Known limit, stated rather than implied: Fast Refresh preserves a mounted
-component's state across an edit, but the edited markup does not yet swap into
-the live tree. Until that lands, `hydra dev` is honest about it — see
-[Roadmap](#roadmap).
+All roadmap targets are shipped — see [Roadmap](#roadmap).
 
 ### The syntax is frozen at 0.3
 
@@ -918,8 +915,7 @@ dates; the version numbers are targets and the order is the honest part.
 | 0.13.2 | CSS pipeline is the project's choice: PostCSS config, plugin list, Tailwind, or plain | shipped |
 | 0.13.3 | Built-in per-IP rate limiting, SSG for single-page apps, and community standards | shipped |
 | 0.14.0 | Security release: trusted-proxy rate limiting, origin checks on API routes, per-segment dotfile guard, generic 5xx bodies, lexical dynamic-import rewrite | shipped |
-| unreleased | Interactive `hydra init`: prompt for template, styling, layout, SSG, and types | shipped |
-| next | Fast Refresh: the edited markup swaps into the live tree | open |
+| 0.15.0 | Interactive `hydra init`, and Fast Refresh completed (live markup swap into mounted tree while preserving hook state) | shipped |
 
 ### Streaming, precisely
 
@@ -940,19 +936,15 @@ are true at once.
 
 ### Fast Refresh, precisely
 
-State **is** preserved when you edit a component: the dev server sends `refresh`
-instead of `reload`, the boundary in `runtime/hydra.ts` keeps the component's
-function identity, and a mounted tree keeps its hooks. That much is measured —
-`scripts/fast-refresh-probe.mjs` drives a real browser, clicks a counter to 3,
-edits the component, and reads 3 back with the page's window intact.
+State **is** preserved and the new markup **swaps into the live tree**: the dev server
+sends `refresh` with the new entry URL, the dev runner virtualizes React/ReactDOM as
+shared singletons across re-imports, and the component boundary in `runtime/hydra.ts`
+notifies mounted instances of the new implementation.
 
-What is **not** done is the second half: the new markup does not reach the live
-tree. The rebuild produces a new bundle and the client re-imports it, but the
-mounted tree keeps rendering the previous implementation, so the counter keeps
-its state while the label stays stale. The remaining work is the module swap
-itself, not the boundary. Until it lands the row says `open` rather than
-`shipped`, because calling this Fast Refresh would be the kind of green lie this
-project keeps removing.
+This is measured end-to-end — `scripts/fast-refresh-probe.mjs` drives a real browser,
+clicks a counter to 3, edits the component on disk, and verifies that the window is
+never reloaded, hook state remains at 3, and the edited button label updates in the
+live DOM.
 
 Not planned, and not a gap: React Server Components, islands and multi-platform
 deploy adapters. The compiler's output is ordinary React on the client, and that

@@ -99,10 +99,14 @@ test('dev serves the live-reload client and pushes a rebuild message', async (t)
     await new Promise((r) => setTimeout(r, 400));
     fs.appendFileSync(path.join(dir, 'src/pages/index.hyx'), '\n# touched\n');
     for (let i = 0; i < 80 && messages.length === 0; i++) await new Promise((r) => setTimeout(r, 250));
-    assert.deepEqual(
-      messages[0],
-      { type: 'refresh' },
+    assert.equal(
+      messages[0] && messages[0].type,
+      'refresh',
       `expected a refresh, got ${JSON.stringify(messages)}`,
+    );
+    assert.ok(
+      typeof messages[0].entry === 'string' && messages[0].entry.includes('index-'),
+      `refresh message must carry the new entry URL, got ${messages[0].entry}`,
     );
 
     // A broken edit: an error, NOT a reload. Reloading into a broken bundle takes

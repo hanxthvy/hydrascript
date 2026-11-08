@@ -110,6 +110,7 @@ for (let i = 0; i < 40; i++) {
   if (js.length && js[0] !== finalHash) finalHash = js[0];
   if (finalHash && fs.readFileSync(path.join(dir, finalHash), 'utf8').includes('(edited)')) break;
 }
+await sleep(1500);
 
 const tokenAlive = await evalJs(`window.__probe_token === 'alive'`);
 console.log('page kept its window (no full reload):', tokenAlive);

@@ -16,16 +16,13 @@ HydraScript mengompilasi berkas `.hyx` berbasis indentasi menjadi React TSX, dan
 berkas `.hys` menjadi JavaScript biasa. Compiler-nya biner Rust; runner Node
 kecil membungkus esbuild, PostCSS dan Tailwind untuk menghasilkan situs.
 
-**Status: 0.14.0, pra-1.0.** Compiler, file-based router, prerender, server
-rendering, language server, dan test runner sudah jadi dan ditutup 418 tes Rust
-(281 unit + 137 integrasi) serta 220 tes Node di 27 suite. Sintaks bahasanya
-dibekukan (lihat di bawah); yang dirilis sampai 1.0 adalah perkakas, bukan
+**Status: 0.15.0, pra-1.0.** Compiler, file-based router, prerender, server
+rendering, language server, Fast Refresh, dan test runner sudah jadi dan ditutup 418 tes Rust
+(281 unit + 137 integrasi) serta 221 tes Node di 27 suite. Sintaks bahasanya
+dibekukan (lihat di bawah); yang dirilis sampai 1.0 adalah perkakas dan pematangan, bukan
 konstruksi baru.
 
-Batas yang diketahui, ditulis terang-terangan: Fast Refresh mempertahankan state
-komponen yang sudah ter-mount saat kamu mengedit, tapi markup hasil editnya belum
-ikut berganti di pohon yang hidup. Sampai itu selesai, `hydra dev` mengatakannya
-apa adanya — lihat [Roadmap](#roadmap).
+Seluruh target roadmap sudah dirilis — lihat [Roadmap](#roadmap).
 
 ### Sintaksnya dibekukan di 0.3
 
@@ -705,8 +702,7 @@ versinya target, dan urutannya bagian yang jujur.
 | 0.13.2 | Pipeline CSS jadi pilihan proyek: config PostCSS, daftar plugin, Tailwind, atau polos | rilis |
 | 0.13.3 | Rate limiting per-IP bawaan, SSG landing page satu-halaman, dan standar komunitas | rilis |
 | 0.14.0 | Rilis keamanan: rate limit dengan trusted proxy, cek origin di API route, penjaga dotfile per segmen, body 5xx generik, rewrite dynamic import leksikal | rilis |
-| unreleased | `hydra init` interaktif: tanya template, styling, layout, SSG, dan deklarasi types | rilis |
-| berikutnya | Fast Refresh: markup hasil edit ikut berganti di pohon yang hidup | terbuka |
+| 0.15.0 | `hydra init` interaktif, dan Fast Refresh selesai tuntas (markup hasil edit masuk ke pohon hidup dengan state hook utuh) | rilis |
 
 ### Streaming, tepatnya
 
@@ -724,19 +720,15 @@ itu benar sekaligus.
 
 ### Fast Refresh, tepatnya
 
-State **memang** dipertahankan saat kamu mengedit komponen: dev server mengirim
-`refresh` alih-alih `reload`, boundary di `runtime/hydra.ts` menjaga identitas
-fungsi komponen, dan pohon yang sudah ter-mount mempertahankan hook-nya. Itu
-terukur — `scripts/fast-refresh-probe.mjs` menggerakkan browser sungguhan,
-mengklik counter sampai 3, mengedit komponennya, lalu membaca 3 lagi dengan
-`window` halaman tetap utuh.
+State **tetap utuh** dan markup baru **langsung berganti di pohon yang hidup**: dev server
+mengirim `refresh` dengan URL entry baru, runner dev memvirtualisasi React/ReactDOM
+sebagai singleton bersama lintas impor ulang, dan boundary komponen di `runtime/hydra.ts`
+memberitahu semua instance terpasang untuk merender ulang implementasi baru.
 
-Yang **belum** selesai adalah bagian keduanya: markup baru tidak sampai ke pohon
-yang hidup. Rebuild menghasilkan bundel baru dan klien mengimpornya ulang, tapi
-pohon yang ter-mount tetap merender implementasi sebelumnya — counter tetap
-menyimpan state sementara labelnya basi. Sisa pekerjaannya ada di penukaran modul,
-bukan di boundary-nya. Sampai itu selesai, barisnya berbunyi `terbuka`, bukan
-`rilis`.
+Ini terukur ujung-ke-ujung — `scripts/fast-refresh-probe.mjs` menggerakkan browser
+sungguhan, mengklik counter sampai 3, mengedit komponen di disk, lalu membuktikan
+bahwa window tidak pernah di-reload, state hook tetap 3, dan label tombol yang diedit
+langsung terbarui di DOM hidup.
 
 Tidak direncanakan, dan bukan kekurangan: React Server Components, islands,
 streaming SSR, dan adapter deploy multi-platform. Keluaran compiler ini React

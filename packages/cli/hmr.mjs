@@ -151,29 +151,21 @@ export const HMR_CLIENT = `// [xihanzu-NR]
         // components are wrapped in a registry boundary, so the re-evaluated
         // module writes its new implementation into the existing slot and React
         // keeps the mounted tree's hook state.
-        //
-        // The cache-busting query is what makes the browser fetch a NEW module
-        // rather than serve the previous one from the module map.
         clearOverlay();
         if (window.__hydra_refreshing) return;
         window.__hydra_refreshing = true;
-        // Which module to re-import is DISCOVERED from the DOM, not remembered
-        // from the first load: the bundle filename is content-hashed, so it
-        // changes on every rebuild. Re-importing the old name would 404, and the
-        // "catch, then reload" would turn that into a full reload: state lost, while
-        // the label still updated, which reads as "Fast Refresh works" until you
-        // look at the counter.
-        var tag = document.querySelector('script[type="module"][src*="assets/"]');
-        var entry = tag && tag.getAttribute('src');
+        var entry = msg.entry;
+        if (!entry) {
+          var tag = document.querySelector('script[type="module"][src*="assets/"]');
+          entry = tag && tag.getAttribute('src');
+        }
         if (!entry) { location.reload(); return; }
-        var cached = window.__hydra_refresh_entry === entry;
+        var scriptTag = document.querySelector('script[type="module"][src*="assets/"]');
+        if (scriptTag && msg.entry) scriptTag.setAttribute('src', msg.entry);
         window.__hydra_refresh_entry = entry;
-        // A rebuild that produced the SAME file means nothing changed for the
-        // browser to fetch; a reload would be a lie about what happened.
         import(entry + (entry.indexOf('?') === -1 ? '?' : '&') + 't=' + Date.now())
           .catch(function () { location.reload(); })
           .then(function () { window.__hydra_refreshing = false; });
-        void cached;
         return;
       }
       if (msg.type === 'error') { overlay(msg.message || 'build failed'); return; }

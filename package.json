@@ -1,6 +1,6 @@
 {
   "name": "hydrascript",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Pythonic Syntax for React & Modern Web Applications \u2014 Standalone native Rust compiler with zero runtime overhead",
   "type": "module",
   "bin": {
