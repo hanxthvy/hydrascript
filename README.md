@@ -19,7 +19,7 @@ esbuild, PostCSS and Tailwind to produce a site.
 **Status: 0.15.0, pre-1.0.** The compiler, file-based router, prerendering,
 server rendering, language server, Fast Refresh, and test runner are implemented
 and covered by 418 Rust tests (281 unit + 137 integration) and 221 Node tests
-across 27 suites. The language syntax is frozen (see below); what ships between
+across 30 suites. The language syntax is frozen (see below); what ships between
 now and 1.0 is polish and production hardening, not new constructs.
 
 All roadmap targets are shipped — see [Roadmap](#roadmap).
@@ -748,8 +748,8 @@ and wiring both would double every squiggle.
 ## Testing
 
 ```bash
-cd compiler-rs && cargo test          # 413 tests: 276 unit + 137 integration
-node --test packages/cli/*.test.mjs   # 197 CLI/runtime tests, some against a real browser
+cd compiler-rs && cargo test          # 418 tests: 281 unit + 137 integration
+node --test packages/cli/*.test.mjs   # 221 CLI/runtime tests, some against a real browser
 node benchmarks/measure.mjs           # the numbers quoted above
 node benchmarks/compile.mjs           # what the compile cache and the pool buy
 bash scripts/hx-examples-check.sh     # builds every example/ project

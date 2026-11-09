@@ -12,6 +12,16 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## Unreleased
+
+### Fixed
+
+- **The documented test counts were stale.** README, README.id.md, docs/ROADMAP.md
+  and docs/BENCHMARKS.md quoted 413 Rust tests (276 unit) and 197 Node tests in 27
+  suites, and a 408/271 Rust split in BENCHMARKS. The trees hold 281 unit + 137
+  integration Rust tests and 221 Node tests across 30 files; both suites pass.
+  Also corrected the binary sizes in BENCHMARKS (1.4 MB CLI, 975 KB addon).
+
 ## 0.15.0 — 2026-11-08
 
 ### Added

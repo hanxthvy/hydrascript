@@ -454,4 +454,4 @@ Versi: **0.15.0**.
 Seluruh target roadmap dari v0.6 sampai v0.15 telah selesai dirilis dan diverifikasi.
 Tidak ada target yang berstatus `open`, `next`, atau `unreleased`.
 Cakupan pengujian: **418 tes Rust** (281 unit + 137 integrasi) dan **221 tes
-Node** di 27 suite. Sintaks bahasa tetap beku di 0.3.
+Node** di 30 suite. Sintaks bahasa tetap beku di 0.3.
