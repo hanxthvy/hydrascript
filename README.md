@@ -1,5 +1,5 @@
 <!-- [xihanzu-NR] -->
-# HydraScript
+# HydraScript 
 
 **A Pythonic syntax for React, compiled by a native Rust binary.**
 
