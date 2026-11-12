@@ -63,13 +63,28 @@ extern "C" {
     ) -> NapiStatus;
 }
 
-unsafe fn get_string(env: NapiEnv, val: NapiValue) -> String {
-    let mut len = 0;
-    napi_get_value_string_utf8(env, val, std::ptr::null_mut(), 0, &mut len);
+/// `napi_ok`. Every Node-API call returns one of these, and ignoring it is how
+/// `h.compile(123, 456)` used to return a successful compile of `""`.
+const NAPI_OK: NapiStatus = 0;
+
+/// Read an argument as a UTF-8 string.
+///
+/// The status is CHECKED. It used to be dropped, so a non-string argument left
+/// `len` at 0 and the function compiled an empty file successfully — a caller got
+/// `{code: ""}` with no error, which is the worst possible answer.
+unsafe fn get_string(env: NapiEnv, val: NapiValue) -> Result<String, String> {
+    let mut len = 0usize;
+    let status = napi_get_value_string_utf8(env, val, std::ptr::null_mut(), 0, &mut len);
+    if status != NAPI_OK {
+        return Err("argument is not a string".to_string());
+    }
     let mut buf = vec![0u8; len + 1];
-    let mut copied = 0;
-    napi_get_value_string_utf8(env, val, buf.as_mut_ptr(), len + 1, &mut copied);
-    String::from_utf8_lossy(&buf[..copied]).to_string()
+    let mut copied = 0usize;
+    let status = napi_get_value_string_utf8(env, val, buf.as_mut_ptr(), len + 1, &mut copied);
+    if status != NAPI_OK {
+        return Err("argument is not a valid UTF-8 string".to_string());
+    }
+    Ok(String::from_utf8_lossy(&buf[..copied]).to_string())
 }
 
 unsafe fn make_string(env: NapiEnv, s: &str) -> NapiValue {
@@ -101,10 +116,47 @@ pub unsafe extern "C" fn node_compile(env: NapiEnv, info: NapiCallbackInfo) -> N
         return res_obj;
     }
 
-    let source = get_string(env, argv[0]);
-    let filename = get_string(env, argv[1]);
+    let source = match get_string(env, argv[0]) {
+        Ok(v) => v,
+        Err(msg) => {
+            let err_val = make_string(env, &msg);
+            napi_set_named_property(env, res_obj, b"error\0".as_ptr() as *const _, err_val);
+            return res_obj;
+        }
+    };
+    let filename = match get_string(env, argv[1]) {
+        Ok(v) => v,
+        Err(msg) => {
+            let err_val = make_string(env, &msg);
+            napi_set_named_property(env, res_obj, b"error\0".as_ptr() as *const _, err_val);
+            return res_obj;
+        }
+    };
 
-    match compile_checked(&source, &filename) {
+    // A panic inside the compiler must not take the HOST down with it.
+    //
+    // The addon is a cdylib linked into Node, so an unwinding panic crosses the
+    // C ABI — undefined behaviour at best, and with `panic = "abort"` (the shipped
+    // release profile) it is an immediate abort: the editor, the Vite dev server or
+    // the bundler that merely compiled an untrusted file dies, with no message a
+    // person can act on. The `addon` profile switches to `unwind` and this catches
+    // it. A stack overflow is still not catchable, which is why the parser has a
+    // node budget of its own.
+    let compiled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        compile_checked(&source, &filename)
+    }));
+    let compiled = match compiled {
+        Ok(v) => v,
+        Err(payload) => {
+            let detail = panic_message(&payload);
+            let msg = format!("hydra compiler panicked: {detail}. This is a bug in hydra, not in your file.");
+            let err_val = make_string(env, &msg);
+            napi_set_named_property(env, res_obj, b"error\0".as_ptr() as *const _, err_val);
+            return res_obj;
+        }
+    };
+
+    match compiled {
         Ok((code, map, warnings)) => {
             let code_val = make_string(env, &code);
             let map_val = make_string(env, &map);
@@ -130,6 +182,18 @@ pub unsafe extern "C" fn node_compile(env: NapiEnv, info: NapiCallbackInfo) -> N
     }
 
     res_obj
+}
+
+/// The payload of a caught panic, as a string. `panic!("x")` payloads are
+/// `&str`/`String`; anything else is reported by type rather than dropped.
+fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        return (*s).to_string();
+    }
+    if let Some(s) = payload.downcast_ref::<String>() {
+        return s.clone();
+    }
+    "unknown panic payload".to_string()
 }
 
 #[no_mangle]

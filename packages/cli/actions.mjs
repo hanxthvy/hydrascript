@@ -229,6 +229,16 @@ export async function bundleActions(
  * exchange without reading the rest of a body we have already refused.
  */
 export function readBody(req, limitBytes = 1024 * 1024) {
+  // A non-number limit silently removes the limit: `size > "10mb"` is always
+  // false, so a config that asked for a BIGGER limit got none at all. Loud beats
+  // silent, and the caller converts sizes once at startup.
+  if (typeof limitBytes !== 'number' || !Number.isFinite(limitBytes) || limitBytes <= 0) {
+    return Promise.reject(
+      new TypeError(
+        `readBody: limit must be a positive number of bytes, got ${JSON.stringify(limitBytes)}`,
+      ),
+    );
+  }
   return new Promise((resolve, reject) => {
     let size = 0;
     let settled = false;

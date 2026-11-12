@@ -84,9 +84,17 @@
           }
         },
         "bodyLimit": {
-          "type": "integer",
-          "minimum": 1024,
-          "description": "Largest request body an API route or action will read, in bytes. Default 1048576 (1 MiB). A bigger body is answered with 413 and `Connection: close`, never a dropped socket."
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1024
+            },
+            {
+              "type": "string",
+              "pattern": "^\\s*[0-9]+(\\.[0-9]+)?\\s*(b|kb|kib|mb|mib|gb|gib)?\\s*$"
+            }
+          ],
+          "description": "Largest request body an API route or action will read. Default 1048576 (1 MiB). Either bytes (`1048576`) or a size string (`\"10mb\"`, `\"512kib\"`); a string is converted once at startup, because a string compared against a byte count silently removes the limit. A bigger body is answered with 413 and `Connection: close`, never a dropped socket."
         },
         "rateLimit": {
           "oneOf": [
@@ -114,10 +122,17 @@
         },
         "headers": {
           "type": "object",
-          "description": "Extra response headers, added to every answer. The framework sets nosniff, Referrer-Policy, X-Frame-Options and Permissions-Policy itself; this is where a project adds its own, most usefully Content-Security-Policy.",
+          "description": "Extra response headers, added to every answer. The framework sets nosniff, Referrer-Policy, X-Frame-Options and Permissions-Policy itself; this is where a project adds its own, most usefully Content-Security-Policy. Applied to static files, SSR, API routes, actions, the data endpoint and error pages alike. `{nonce}` is replaced per request with a fresh nonce, so a policy can cover the inline hydration JSON.",
           "additionalProperties": {
             "type": "string"
           }
+        },
+        "allowedOrigins": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Which Origins may POST to an action or an API route (CSRF gate). List the site's public origins, e.g. [\"https://example.com\"]. Without it the check compares Origin to the Host header, which a DNS-rebinding attacker can make agree — so set this on anything real."
         },
         "trustProxy": {
           "oneOf": [
@@ -169,6 +184,11 @@
           "type": "boolean",
           "default": true,
           "description": "Pre-render every static route to its own HTML file. ON by default (the code treats anything but an explicit false as on); `HYDRA_NO_SSG=1` skips it for one build."
+        },
+        "ssr": {
+          "type": "boolean",
+          "default": true,
+          "description": "Server-render dynamic routes on each request. ON by default; `hydra init` writes it here when the project asked for SSR, and `false` makes a dynamic route answer with the client shell (which `hydra serve` reports)."
         }
       }
     },
@@ -209,8 +229,7 @@
       }
     },
     "styling": {
-      "type": "object",
-      "description": "Which CSS pipeline this project uses. An array of PostCSS plugin names (or a relative path to one): `\"styling\": [\"autoprefixer\"]`. Ignored when a `postcss.config.*` file exists, because that config is the project speaking. When neither is present, a top-level `tailwind` key or a tailwind.config turns on Tailwind + autoprefixer; otherwise the stylesheet runs through plain PostCSS (autoprefixer only if installed).",
+      "description": "Which CSS pipeline this project uses. An array of PostCSS plugin names (or a relative path to one): `\"styling\": [\"autoprefixer\"]`. Ignored when a `postcss.config.*` file exists, because that config is the project speaking. When neither is present, a top-level `tailwind` key or a tailwind.config turns on Tailwind + autoprefixer; otherwise the stylesheet runs through plain PostCSS (autoprefixer only if installed). There is no `type` here on purpose: the two shapes below are the whole value, and a `type: object` beside `oneOf` rejected the array form the README documents.",
       "oneOf": [
         {
           "type": "array",
@@ -227,16 +246,36 @@
               "items": {
                 "type": "string"
               }
+            },
+            "tailwind": {
+              "type": "boolean",
+              "description": "`{\"styling\": {\"tailwind\": true}}` — what `hydra init --styling=tailwind` writes. Same meaning as the top-level `tailwind` key."
             }
           },
           "additionalProperties": false,
-          "description": "Same, wrapped in an object."
+          "description": "Same, wrapped in an object. `hydra init` writes `{\"tailwind\": true}` here for the Tailwind pipeline."
         }
       ]
     },
     "ssr": {
       "type": "boolean",
       "description": "Set false to disable server rendering of dynamic routes in dev/preview/serve. A dynamic route then answers with the client shell, and `hydra serve` reports why."
+    },
+    "types": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "TypeScript declaration output. `hydra init --types` writes `{\"emit\": true}`; `hydra types` also writes them on demand.",
+      "properties": {
+        "emit": {
+          "type": "boolean",
+          "default": true,
+          "description": "Write `routes.d.ts` and the `hydra` module declaration during build."
+        }
+      }
+    },
+    "tests": {
+      "type": "string",
+      "description": "Directory `hydra test` looks in. Default `tests/`."
     }
   }
 }

@@ -553,6 +553,21 @@ export async function handleApiRequest(req, res, url, bundlePath, options = {}) 
   }
 
   const rawPath = url.split('?')[0];
+  // Decode ONCE, here, and match on the decoded path.
+  //
+  // Params used to be taken straight from the raw URL, so `/api/users/%61dmin`
+  // produced `params.id === "%61dmin"` while the runner's own routing decoded for
+  // actions — two layers disagreeing about the same segment. An authorisation
+  // check written as `params.id === 'admin'` was then bypassed by the encoding
+  // whenever the handler normalised. `params` are decoded exactly once, and this
+  // is where.
+  let reqPath;
+  try {
+    reqPath = decodeURIComponent(rawPath);
+  } catch {
+    sendError(res, 400, 'bad_path', 'the request path is not valid percent-encoding');
+    return true;
+  }
   const mod = loadApi(bundlePath);
   if (!mod) {
     sendError(res, 500, 'api_bundle_missing', 'the API bundle is missing; run `hydra build` again');
@@ -583,10 +598,10 @@ export async function handleApiRequest(req, res, url, bundlePath, options = {}) 
   // handler sees the original and the feature silently does nothing.
   const request = {
     ...requestFor(req, url, rawBody),
-    path: rawPath,
+    path: reqPath,
   };
 
-  const hit = mod.match(rawPath);
+  const hit = mod.match(reqPath);
 
   // `req.params` for a nested route: `/api/users/[id]` answers with
   // `{"id": "42"}`, and a catch-all gives a list. Set BEFORE the middleware

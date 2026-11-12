@@ -5,7 +5,7 @@
 //! as one 464KB executable with no Python anywhere in the loop.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
@@ -406,18 +406,47 @@ pub fn run_script(args: &[String]) -> ExitCode {
 
 /// Recursively collect every file under `dir` whose extension is `ext`.
 fn collect(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
+    collect_inner(dir, ext, out, &mut Vec::new())
+}
+
+/// `collect`, but never walks through a symlinked directory.
+///
+/// `p.is_dir()` FOLLOWS the link, so a `up -> ..` inside a project made `hydra
+/// check .` report the same file forty-one times — once per level of `../..`
+/// it climbed before the path length finally stopped it. Following links also
+/// means a checkout can point a "directory" at `/` and turn a check into a scan
+/// of the whole filesystem. `symlink_metadata` does not follow, so a link is
+/// skipped and `visited` catches a cycle reached any other way.
+fn collect_inner(dir: &Path, ext: &str, out: &mut Vec<PathBuf>, visited: &mut Vec<PathBuf>) {
+    let Ok(canon) = fs::canonicalize(dir) else {
+        return;
+    };
+    if visited.contains(&canon) {
+        return;
+    }
+    visited.push(canon);
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     for e in entries.flatten() {
         let p = e.path();
+        let is_link = e.file_type().map(|t| t.is_symlink()).unwrap_or(false);
+        if is_link {
+            // A symlink to a FILE is still a file to check — that is a normal
+            // monorepo layout. A symlink to a directory is what creates cycles.
+            let target_is_file = fs::metadata(&p).map(|m| m.is_file()).unwrap_or(false);
+            if target_is_file && p.extension().map_or(false, |x| x == ext) {
+                out.push(p);
+            }
+            continue;
+        }
         if p.is_dir() {
             if p.file_name()
                 .map_or(false, |n| n == "node_modules" || n == "dist" || n == ".git")
             {
                 continue;
             }
-            collect(&p, ext, out);
+            collect_inner(&p, ext, out, visited);
         } else if p.extension().map_or(false, |x| x == ext) {
             out.push(p);
         }
@@ -473,10 +502,32 @@ fn output_paths(path: &Path) -> (PathBuf, PathBuf) {
         .extension()
         .map_or(false, |x| x == "hys" || x == "hs" || x == "hx");
     let out_ext = if is_js { "mjs" } else { "tsx" };
+    // The mirror has to stay INSIDE `watch-out/`.
+    //
+    // Two ways it did not: `Path::join` with an ABSOLUTE path REPLACES the base
+    // (`watch-out` + `/tmp/x.hyx` = `/tmp/x.hyx`), and a relative path with `..`
+    // climbs out. Confirmed with `hydra watch ../target_dir/evil.hyx`, which wrote
+    // `../target_dir/evil.tsx` — next to the source, over whatever was there.
     let rel = path.strip_prefix("src").unwrap_or(path);
+    let mut safe = PathBuf::new();
+    for component in rel.components() {
+        match component {
+            Component::Normal(part) => safe.push(part),
+            // `.` adds nothing; root prefixes and `..` are exactly what must not
+            // survive into a join.
+            Component::CurDir | Component::RootDir | Component::Prefix(_) | Component::ParentDir => {}
+        }
+    }
+    if safe.as_os_str().is_empty() {
+        safe = PathBuf::from(
+            path.file_name()
+                .map(|n| n.to_os_string())
+                .unwrap_or_else(|| std::ffi::OsString::from("anonymous")),
+        );
+    }
     let base = Path::new("watch-out");
-    let out_file = base.join(rel).with_extension(out_ext);
-    let map_path = base.join(rel).with_extension(format!("{}.map", out_ext));
+    let out_file = base.join(&safe).with_extension(out_ext);
+    let map_path = base.join(&safe).with_extension(format!("{}.map", out_ext));
     (out_file, map_path)
 }
 
@@ -1146,4 +1197,48 @@ pub fn types_cmd(args: &[String]) -> ExitCode {
         written, skipped
     );
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::output_paths;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn output_paths_stays_inside_watch_out() {
+        // The mirror is a readable view of source files, so it may only ever be
+        // written under `watch-out/`. Both escapes are checked, because they fail
+        // differently: an absolute path REPLACES the base in `Path::join`, and a
+        // `..` climbs out of it.
+        for input in [
+            "src/App.hyx",
+            "/tmp/abs/evil.hyx",
+            "../../outside/evil.hyx",
+            "src/../../escape.hyx",
+            "./src/pages/index.hyx",
+        ] {
+            let (out, map) = output_paths(Path::new(input));
+            assert!(
+                out.starts_with("watch-out") && map.starts_with("watch-out"),
+                "{input} escaped to {out:?}"
+            );
+            assert!(
+                !out.to_string_lossy().contains(".."),
+                "{input} kept a parent segment: {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn output_paths_keeps_the_source_name() {
+        // A relative source keeps its shape; an absolute one keeps its full path
+        // but rooted under `watch-out/`, so two files of the same name from
+        // different directories cannot overwrite each other.
+        let (out, map) = output_paths(Path::new("src/pages/Post.hyx"));
+        assert_eq!(out, PathBuf::from("watch-out/pages/Post.tsx"));
+        assert_eq!(map, PathBuf::from("watch-out/pages/Post.tsx.map"));
+
+        let (abs, _) = output_paths(Path::new("/tmp/abs/evil.hyx"));
+        assert_eq!(abs, PathBuf::from("watch-out/tmp/abs/evil.tsx"));
+    }
 }

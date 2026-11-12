@@ -70,11 +70,11 @@ const ONLY = (() => {
  * `--otp <code>`, optional.
  *
  * Held in a module-local for the lifetime of this process and nowhere else: not
- * written to a file, not put in the environment, not part of any message. It is
- * passed to npm as an argv element because that is the only interface npm
- * offers (`npm publish --otp=...`); the value is therefore visible to `ps` for
- * the duration of the call, which is inherent to npm's own design, and is one
- * more reason the interactive path is the default and this is the shortcut.
+ * written to a file, not part of any message. It reaches npm through
+ * `NPM_CONFIG_OTP` in the CHILD's environment, never through argv — an argv
+ * element is world-readable in `/proc/<pid>/cmdline` for as long as the process
+ * lives, and this script used to pass the code that way to thirteen `npm view`
+ * calls that do not need it at all.
  *
  * Never printed. Every message in this file that mentions OTP talks about the
  * FLAG, never the value.
@@ -99,9 +99,18 @@ const OTP = (() => {
   return value;
 })();
 
-/** The arguments that carry the OTP to npm, or none. Never logged. */
-function otpArgs() {
-  return OTP ? [`--otp=${OTP}`] : [];
+/**
+ * The environment that carries the OTP to npm, or an empty object.
+ *
+ * It used to be an ARGUMENT (`--otp=123456`), which puts the code in
+ * `/proc/<pid>/cmdline` for every local user to read for the life of the
+ * process — and it was passed to `npm view` as well, a read-only call that never
+ * needs a one-time password, so the window covered fourteen invocations instead
+ * of one. `NPM_CONFIG_OTP` is read by npm from the environment and appears in no
+ * command line. Never logged, never echoed.
+ */
+function otpEnv() {
+  return OTP ? { NPM_CONFIG_OTP: OTP } : {};
 }
 
 if (!DIR) {
@@ -173,7 +182,16 @@ function binaryArch(binPath, container) {
  * Returns null when neither works, and the caller refuses to publish: guessing a
  * version is how the wrong build ships under the right number.
  */
-function readBinaryVersion(binPath) {
+function readBinaryVersion(binPath, { runnable = false } = {}) {
+  // EXECUTION IS OPT-IN, and it used to be the default.
+  //
+  // This function ran whatever file sat at `<dir>/<target>/bin/hydra` and only
+  // verified it afterwards — so a substituted artifact (a shell script with a
+  // `#!` line runs through `execFileSync`, which uses kernel exec) got code
+  // execution as the publisher BEFORE any of the checks the script advertises.
+  // The gate was inverted. `runnable` is now derived from the artifact's own
+  // container and arch compared against the host, after `verifyBinary`.
+  if (!runnable) return readVersionFromBytes(binPath);
   try {
     // `stdio: 'ignore'` on stderr is not tidiness. Running an arm64 ELF on x64
     // makes the SHELL print "ELF\x02\x01... not found" and "Syntax error: word
@@ -190,6 +208,11 @@ function readBinaryVersion(binPath) {
   } catch {
     // Expected for a foreign architecture; fall through to the bytes.
   }
+  return readVersionFromBytes(binPath);
+}
+
+/** The version as plain bytes. Pure reads only — never executes the file. */
+function readVersionFromBytes(binPath) {
   try {
     const buf = fs.readFileSync(binPath);
     // Latin1 keeps one byte per character, so the whole file scans as text
@@ -238,7 +261,7 @@ function verifyBinary(target, binPath) {
     // does not name the package.
     throw new Error(`${target}: binary is ${arch}, package advertises ${wantArch} (${binPath})`);
   }
-  return { size, arch };
+  return { size, arch, container: got };
 }
 
 /**
@@ -257,10 +280,12 @@ const UNKNOWN = 'unknown';
 /** Run `npm view` and classify the answer. */
 function viewVersion(spec, { timeoutMs = 20000 } = {}) {
   try {
-    const out = execFileSync('npm', ['view', spec, 'version', ...otpArgs()], {
+    const out = execFileSync('npm', ['view', spec, 'version'], {
       encoding: 'utf8',
       // stdin closed: `npm view` cannot prompt, and a prompt that hangs is worse
-      // than an error. The OTP travels as an argument when one was supplied.
+      // than an error. No OTP here at all — a read-only registry query is not an
+      // authenticated write, and handing it a one-time password only widens the
+      // window in which the code can be stolen.
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: timeoutMs,
     }).trim();
@@ -301,10 +326,16 @@ function npmPublish(cwd, { timeoutMs = 300000 } = {}) {
   // which is the point: a prompt the user cannot see is a prompt that does not
   // exist. The package name is printed before the call so the prompt is not
   // ambiguous, and nothing here ever prints a token — npm does not either.
-  execFileSync('npm', ['publish', '--access', 'public', ...otpArgs()], {
+  // `--provenance` needs the OIDC token npm mints from the workflow, so it can
+  // only be used in CI. Without it the platform packages are the only artifacts
+  // in a release with no attestation linking them to a commit, which is exactly
+  // backwards: these are the binaries that execute on a user's machine.
+  const provenance = process.env.GITHUB_ACTIONS === 'true' ? ['--provenance'] : [];
+  execFileSync('npm', ['publish', '--access', 'public', ...provenance], {
     cwd,
     stdio: 'inherit',
     timeout: timeoutMs,
+    env: { ...process.env, ...otpEnv() },
   });
 }
 
@@ -376,33 +407,42 @@ for (const [target, spec] of Object.entries(TARGETS)) {
     continue;
   }
 
-  // The binary must be the SAME VERSION as the package about to be published.
+  // VERIFY FIRST, THEN READ THE VERSION.
   //
-  // Artifacts are downloaded from a CI run, and a directory from an older run
-  // looks identical: same layout, same file names, a compiler that builds. The
-  // version is the only thing that says whether it is the right build, so it is
-  // read from the binary itself and compared before anything else happens.
-  // Reading `--version` only works when the binary can RUN here. A cross-target
-  // artifact (arm64 on an x64 box, PE on Linux) cannot, and the failure is an
-  // exec format error rather than a wrong answer — so the version is read from
-  // the BYTES when execution is impossible, and execution is preferred when it
-  // works because it proves the artifact is runnable at all.
-  const binaryVersion = readBinaryVersion(binPath);
-  if (binaryVersion !== VERSION) {
-    stage(target, `FAIL binary is ${binaryVersion || '?'}, package is ${VERSION}`);
-    failed.push(
-      `${target}: ${spec.bin} reports ${binaryVersion || 'an unreadable version'}, but this run publishes ${VERSION}. ` +
-        'The artifact directory is from a different build — download the one for this version.',
-    );
-    continue;
-  }
-
+  // The order was the other way round, and reading the version EXECUTES the
+  // artifact — so a substituted file got code execution before the checks that
+  // are supposed to stop it. `verifyBinary` is pure reads (size, container
+  // magic, arch), so it runs first and its answer then decides whether running
+  // the file at all is appropriate.
   let info;
   try {
     info = verifyBinary(target, binPath);
   } catch (err) {
     stage(target, 'FAIL bad binary');
     failed.push(err.message);
+    continue;
+  }
+
+  // The binary must be the SAME VERSION as the package about to be published.
+  //
+  // Artifacts are downloaded from a CI run, and a directory from an older run
+  // looks identical: same layout, same file names, a compiler that builds. The
+  // version is the only thing that says whether it is the right build. Reading
+  // `--version` proves the artifact actually executes, which is worth having,
+  // but only a binary of THIS host's container and arch can be executed at all —
+  // a cross-target artifact is an exec format error, not a wrong answer, so the
+  // version is read from the bytes in that case.
+  const hostContainer =
+    process.platform === 'linux' ? 'elf' : process.platform === 'darwin' ? 'macho' : 'pe';
+  const hostArch = process.arch === 'arm64' ? 'arm64' : 'x64';
+  const native = info.container === hostContainer && info.arch === hostArch;
+  const binaryVersion = readBinaryVersion(binPath, { runnable: native });
+  if (binaryVersion !== VERSION) {
+    stage(target, `FAIL binary is ${binaryVersion || '?'}, package is ${VERSION}`);
+    failed.push(
+      `${target}: ${spec.bin} reports ${binaryVersion || 'an unreadable version'}, but this run publishes ${VERSION}. ` +
+        'The artifact directory is from a different build — download the one for this version.',
+    );
     continue;
   }
 

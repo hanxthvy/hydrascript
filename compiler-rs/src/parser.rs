@@ -11,8 +11,22 @@ use crate::lexer::{TokType, Token};
 pub struct Parser {
     toks: Vec<Token>,
     i: usize,
-    src: Vec<String>,
+    /// Source lines, SHARED with every error this parser produces.
+    ///
+    /// Was `Vec<String>` cloned at each site: one full copy of the file per
+    /// diagnostic. `Arc<[String]>` makes those clones pointer bumps.
+    src: std::sync::Arc<[String]>,
     depth: usize,
+    /// Terms in the expression currently being parsed.
+    ///
+    /// `depth` counts RECURSIVE DESCENT, and the crash it was meant to prevent
+    /// came from a different shape: a left-associative chain (`a.b.b.b…`,
+    /// `1+1+1…`, `f()()()…`) is parsed in a `while` loop, so the counter never
+    /// leaves 1 while the tree grows one node deeper per iteration. 900 terms
+    /// produced a 900-deep spine, the emitter recursed once per node, and the
+    /// host process died with SIGABRT (a stack overflow inside a `panic = "abort"`
+    /// cdylib linked into Node takes the editor down with it).
+    chain: usize,
 }
 
 type PResult<T> = Result<T, CompileError>;
@@ -22,14 +36,42 @@ type PResult<T> = Result<T, CompileError>;
 /// real stack overflow (SIGABRT) before the guard fires.
 const MAX_DEPTH: usize = 128;
 
+/// Maximum terms in one left-associative chain.
+///
+/// Deliberately counted per TERM rather than by descent level, because that is
+/// where the stack cost is: 200 is far past anything a person writes, and far
+/// below the ~870 where the release build overflowed its stack.
+const MAX_CHAIN: usize = 200;
+
 impl Parser {
-    pub fn new(toks: Vec<Token>, src: Vec<String>) -> Self {
+    pub fn new(toks: Vec<Token>, src: impl Into<std::sync::Arc<[String]>>) -> Self {
         Self {
             toks,
             i: 0,
-            src,
+            src: src.into(),
             depth: 0,
+            chain: 0,
         }
+    }
+
+    /// Count one term of a left-associative chain, and refuse the chain when it
+    /// gets longer than a person could mean.
+    ///
+    /// Called from every `while` loop that wraps the previous node in a new one.
+    /// The error is a `CompileError`, so a hostile file is a diagnostic — not a
+    /// dead process.
+    fn chain_step(&mut self, line: usize, col: usize) -> PResult<()> {
+        self.chain += 1;
+        if self.chain > MAX_CHAIN {
+            return Err(CompileError::new(
+                format!("expression chain is too long ({MAX_CHAIN} terms)"),
+                line,
+                col,
+                self.src.clone(),
+            )
+            .with_hint("split the chain into named intermediate values"));
+        }
+        Ok(())
     }
 
     fn enter_depth(&mut self) -> PResult<()> {
@@ -1585,6 +1627,9 @@ impl Parser {
     // ----------------------------------------------------------- expressions
 
     pub fn expr(&mut self) -> PResult<Node> {
+        // Each expression gets its own chain budget: `f(a.b.b…, c.d.d…)` is two
+        // chains, not one.
+        self.chain = 0;
         self.enter_depth()?;
         let res = self.ternary();
         self.leave_depth();
@@ -1602,6 +1647,7 @@ impl Parser {
             let orelse = self.ternary()?;
             self.leave_depth();
             let (line, col) = (n.line, n.col);
+            self.chain_step(line, col)?;
             return Ok(Node::new(
                 Kind::Ternary {
                     test: Box::new(test),
@@ -1622,6 +1668,7 @@ impl Parser {
             self.i += 1;
             let r = self.or()?;
             let (line, col) = (n.line, n.col);
+            self.chain_step(line, col)?;
             n = Node::new(
                 Kind::Bin {
                     op: "??".into(),
@@ -1642,6 +1689,7 @@ impl Parser {
             self.i += 1;
             let r = self.and()?;
             let (line, col) = (n.line, n.col);
+            self.chain_step(line, col)?;
             n = Node::new(
                 Kind::Bin {
                     op: "||".into(),
@@ -1662,6 +1710,7 @@ impl Parser {
             self.i += 1;
             let r = self.not()?;
             let (line, col) = (n.line, n.col);
+            self.chain_step(line, col)?;
             n = Node::new(
                 Kind::Bin {
                     op: "&&".into(),
@@ -1795,6 +1844,7 @@ impl Parser {
             self.i += 1;
             let r = self.multiplicative()?;
             let (line, col) = (n.line, n.col);
+            self.chain_step(line, col)?;
             n = Node::new(
                 Kind::Bin {
                     op,
@@ -1844,6 +1894,7 @@ impl Parser {
             // different answer for negatives, so it goes through Math.floor.
             let op = if raw == "//" { "floordiv".to_string() } else { raw };
             let (line, col) = (n.line, n.col);
+            self.chain_step(line, col)?;
             n = Node::new(
                 Kind::Bin {
                     op,
@@ -1924,6 +1975,7 @@ impl Parser {
         // are collapsed here instead, where the token stream is visible ahead.
         if matches!(n.kind, Kind::Super) {
             let (line, col) = (n.line, n.col);
+            self.chain_step(line, col)?;
             if self.cur().ty == TokType::LParen {
                 let after = n;
                 n = self.call(after)?;
@@ -1965,13 +2017,20 @@ impl Parser {
         }
         loop {
             match self.cur().ty {
-                TokType::LParen => n = self.call(n)?,
+                TokType::LParen => {
+                    // `f()()()…` is a chain too, and the only one whose node is
+                    // built inside `call()` rather than here — so it needs its own
+                    // count or 900 calls overflow the stack during emit.
+                    self.chain_step(n.line, n.col)?;
+                    n = self.call(n)?;
+                }
                 // `` tag`text` `` — a tagged template. The token after an expression
                 // belongs to it, and leaving it out split the call in two statements.
                 TokType::Template => {
                     let t = self.cur().clone();
                     self.i += 1;
                     let (line, col) = (n.line, n.col);
+                    self.chain_step(line, col)?;
                     n = Node::new(
                         Kind::TaggedTemplate {
                             tag: Box::new(n),
@@ -1985,6 +2044,7 @@ impl Parser {
                     self.i += 1;
                     let name = self.ident_or_kw()?;
                     let (line, col) = (n.line, n.col);
+                    self.chain_step(line, col)?;
                     n = Node::new(
                         Kind::Attr {
                             obj: Box::new(n),
@@ -2001,6 +2061,7 @@ impl Parser {
                     // which is why callback props had to be guarded by hand.
                     if self.cur().ty == TokType::LParen {
                         let (line, col) = (n.line, n.col);
+                        self.chain_step(line, col)?;
                         // `call` consumes the parentheses and hands back a
                         // normal Call; take its pieces and mark them optional.
                         let inner = self.call(n)?;
@@ -2019,6 +2080,7 @@ impl Parser {
                         let idx = self.expr()?;
                         self.eat(TokType::RBrack)?;
                         let (line, col) = (n.line, n.col);
+                        self.chain_step(line, col)?;
                         n = Node::new(
                             Kind::OptIndex {
                                 obj: Box::new(n),
@@ -2030,6 +2092,7 @@ impl Parser {
                     } else {
                         let name = self.ident_or_kw()?;
                         let (line, col) = (n.line, n.col);
+                        self.chain_step(line, col)?;
                         n = Node::new(
                             Kind::OptAttr {
                                 obj: Box::new(n),
@@ -2071,6 +2134,7 @@ impl Parser {
                         };
                         self.eat(TokType::RBrack)?;
                         let (line, col) = (n.line, n.col);
+                        self.chain_step(line, col)?;
                         n = Node::new(
                             Kind::Slice {
                                 obj: Box::new(n),
@@ -2089,6 +2153,7 @@ impl Parser {
                     };
                     self.eat(TokType::RBrack)?;
                     let (line, col) = (n.line, n.col);
+                    self.chain_step(line, col)?;
                     n = Node::new(
                         Kind::Index {
                             obj: Box::new(n),

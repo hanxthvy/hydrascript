@@ -18,6 +18,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# The default token is read/write on everything the repo allows. CI needs to
+# read code and nothing else, so it is narrowed here — a compromised step or a
+# typo'd action in this workflow then cannot push, tag, or publish.
+permissions:
+  contents: read
+
 # A newer push to the same branch makes the older run's result irrelevant.
 concurrency:
   group: ci-${{ github.ref }}
@@ -34,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.90.0
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: compiler-rs
@@ -51,7 +57,10 @@ jobs:
           # only export is gone, and the pool tests would wait forever on a
           # promise that nothing resolves.
           cargo build --release --locked --bin hydra
-          cargo rustc --release --locked --lib --features node-addon --crate-type cdylib
+          # The addon uses the `addon` profile, whose only difference is
+          # `panic = "unwind"`: it is linked INTO Node, so an abort would take the
+          # editor or bundler down with it, and `src/napi.rs` catches the unwind.
+          cargo rustc --profile addon --locked --lib --features node-addon --crate-type cdylib
       - name: Test
         working-directory: compiler-rs
         run: cargo test --locked
@@ -60,7 +69,7 @@ jobs:
       - name: Install compiler into bin/
         run: |
           cp compiler-rs/target/release/hydra bin/hydra
-          cp compiler-rs/target/release/libhydra.so bin/hydra.node
+          cp compiler-rs/target/addon/libhydra.so bin/hydra.node
           chmod +x bin/hydra
           # The addon must actually load, not merely exist: a library built
           # without the feature is a valid .so with no `compile` export.
@@ -209,7 +218,7 @@ jobs:
         with:
           node-version: '22'
       # The declaration emitter lives in the compiler, so it must be built first.
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.90.0
       - name: Build the compiler
         run: |
           cd compiler-rs

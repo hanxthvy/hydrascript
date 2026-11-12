@@ -1,6 +1,6 @@
 {
   "name": "hydrascript",
-  "version": "0.15.0",
+  "version": "0.15.1",
   "description": "Pythonic Syntax for React & Modern Web Applications \u2014 Standalone native Rust compiler with zero runtime overhead",
   "type": "module",
   "bin": {
@@ -10,7 +10,8 @@
     ".": "./packages/cli/runner.mjs",
     "./runner": "./packages/cli/runner.mjs",
     "./esbuild": "./packages/cli/esbuild-plugin.mjs",
-    "./vite": "./packages/cli/esbuild-plugin.mjs"
+    "./vite": "./packages/cli/esbuild-plugin.mjs",
+    "./package.json": "./package.json"
   },
   "repository": {
     "type": "git",
@@ -34,7 +35,7 @@
     "esbuild": "^0.25.0"
   },
   "scripts": {
-    "build:compiler": "cd compiler-rs && cargo build --release && cp target/release/hydra ../bin/hydra && cargo rustc --release --lib --features node-addon --crate-type cdylib && cp target/release/libhydra.so ../bin/hydra.node",
+    "build:compiler": "cd compiler-rs && cargo build --release && cp target/release/hydra ../bin/hydra && cargo rustc --profile addon --lib --features node-addon --crate-type cdylib && cp target/addon/libhydra.so ../bin/hydra.node",
     "test": "cd compiler-rs && cargo test && cd .. && npm run test:node",
     "test:server": "node --test packages/cli/server.test.mjs",
     "test:rust": "cd compiler-rs && cargo test",
@@ -42,7 +43,7 @@
     "test:examples": "bash scripts/hx-examples-check.sh",
     "bench:routes": "node benchmarks/routes.mjs && node benchmarks/route-table.mjs",
     "types": "hydra types",
-    "prepublishOnly": "npm run test:node && bash scripts/pack-install-check.sh",
+    "prepublishOnly": "node scripts/prepublish-guard.mjs && npm run test:node && bash scripts/pack-install-check.sh",
     "test:files": "bash scripts/test-per-file.sh",
     "bench:dev": "node benchmarks/dev-reload.mjs examples/blog 3"
   },

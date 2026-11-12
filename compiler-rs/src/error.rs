@@ -3,6 +3,7 @@
 //! a span, the offending line, a caret, and a hint that teaches.
 
 use std::fmt;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct CompileError {
@@ -18,19 +19,34 @@ pub struct CompileError {
     /// without counting columns.
     pub end_line: Option<usize>,
     pub end_col: Option<usize>,
-    pub src: Vec<String>,
+    /// The source lines, SHARED.
+    ///
+    /// This was `Vec<String>`: one full copy of every line per diagnostic. The
+    /// recovering lexer reports one error per bad line, so an N-line file with N
+    /// bad lines owned N² strings — a 70 KB file reached 2.7 GB of RSS and a
+    /// 280 KB one was OOM-killed, which makes anything compiling untrusted input
+    /// (the Vite plugin, an editor LSP, CI linting a PR) a remote DoS.
+    ///
+    /// `Arc<[String]>` makes the copy O(1) and immutable, which is what a
+    /// diagnostic needs: nothing edits source while reporting on it.
+    pub src: Arc<[String]>,
     pub hint: Option<String>,
 }
 
 impl CompileError {
-    pub fn new(msg: impl Into<String>, line: usize, col: usize, src: Vec<String>) -> Self {
+    pub fn new(
+        msg: impl Into<String>,
+        line: usize,
+        col: usize,
+        src: impl Into<Arc<[String]>>,
+    ) -> Self {
         Self {
             msg: msg.into(),
             line,
             col,
             end_line: None,
             end_col: None,
-            src,
+            src: src.into(),
             hint: None,
         }
     }
@@ -76,14 +92,22 @@ impl CompileError {
             let s = &self.src[self.line - 1];
             o.push("   |".to_string());
             o.push(format!("{:2} | {}", self.line, s));
-            // The caret covers the span when there is one, and one column when
-            // there is not. Clamped to the line so a span that overshoots (a
-            // token at the end of a line, say) cannot paint past it.
-            let len = self.caret_len().min(s.chars().count().saturating_sub(self.col).max(1));
+            // `col` is a BYTE offset (the lexer walks `&str` with byte indices),
+            // but the caret is drawn under CHARACTERS. On a line holding any
+            // multi-byte character — an emoji, CJK, an accented letter — the two
+            // diverge and the caret lands left of the token it is pointing at,
+            // which is worse than no caret: it accuses the wrong column. So the
+            // byte column is converted to a char column first.
+            let byte_col = self.col.min(s.len());
+            let char_col = s
+                .get(..byte_col)
+                .map(|p| p.chars().count())
+                .unwrap_or_else(|| s.chars().count());
+            let len = self.caret_len().min(s.chars().count().saturating_sub(char_col).max(1));
             let carets = "^".repeat(len.max(1));
             o.push(format!(
                 "   | {}\x1b[1;31m{}\x1b[0m",
-                " ".repeat(self.col),
+                " ".repeat(char_col),
                 carets
             ));
         }
@@ -131,9 +155,48 @@ mod tests {
     }
 
     #[test]
+    fn caret_lands_on_the_right_character_after_multibyte_text() {
+        // The lexer reports BYTE columns; the caret is drawn under CHARACTERS.
+        // On a line with an emoji or CJK before the token the two diverge, and
+        // the caret used to sit several columns left of the thing it named.
+        let src = vec!["let x = 日本語 !!!".to_string()];
+        // Byte offset of the first `!`: "let x = " is 8 bytes, 日本語 is 9, so 17.
+        let err = CompileError::new("unexpected character '!'", 1, 17, src);
+        let rendered = err.pretty();
+        let caret_line = rendered
+            .lines()
+            .find(|l| l.contains('^'))
+            .expect("a caret line");
+        let plain = caret_line.replace("\x1b[1;31m", "").replace("\x1b[0m", "");
+        // "   | " prefix, then one space per CHARACTER before the token. There
+        // are 11 characters before it, not 17 bytes.
+        let at = plain.find('^').expect("caret");
+        assert_eq!(at, "   | ".len() + 11, "caret column: {plain:?}");
+    }
+
+    #[test]
     fn pretty_without_src_does_not_panic() {
         let err = CompileError::new("empty src", 5, 2, Vec::new());
         let rendered = err.pretty();
         assert!(rendered.contains("line 5, col 3"));
+    }
+}
+
+#[cfg(test)]
+mod sharing_tests {
+    use super::*;
+
+    #[test]
+    fn diagnostics_share_one_source_copy() {
+        // The quadratic blowup was N full copies of the file for N diagnostics.
+        // Cloning a diagnostic must not copy the lines either.
+        let lines: Vec<String> = (0..2000).map(|i| format!("line {i}")).collect();
+        let big = lines.iter().map(|s| s.len()).sum::<usize>();
+        let a = CompileError::new("one", 1, 0, lines.clone());
+        let b = a.clone();
+        assert_eq!(Arc::strong_count(&a.src), 2, "a clone must not copy the lines");
+        // Same allocation, so no second copy of ~big bytes exists.
+        assert!(std::ptr::eq(a.src.as_ptr(), b.src.as_ptr()));
+        assert!(big > 0);
     }
 }

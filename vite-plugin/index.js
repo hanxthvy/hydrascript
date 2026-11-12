@@ -31,8 +31,36 @@ const COMPONENT_EXT = /\.(hyx|hsx)$/
 /** Extensions that compile to plain JavaScript. */
 const SCRIPT_EXT = /\.(hys|hs)$/
 
+/**
+ * The ROOT of the installed `hydrascript` package, or null.
+ *
+ * `path.join(HERE, '..', ...)` is only correct when this plugin is vendored
+ * inside that package. Installed STANDALONE (`npm i vite-plugin-hydrascript`),
+ * `HERE` is `node_modules/vite-plugin-hydrascript`, so `..` is `node_modules/`
+ * and the compiler resolved to `node_modules/bin/hydra` — a path another package
+ * can own — then executed it. Resolution goes through the package that declares
+ * the compiler, never through a bare relative hop.
+ */
+function hydrascriptRoot() {
+  for (const spec of ['hydrascript/package.json']) {
+    try {
+      return path.dirname(selfRequire.resolve(spec))
+    } catch {}
+  }
+  // Same-package layout: this file lives at `<root>/vite-plugin/index.js`.
+  const sibling = path.join(HERE, '..', 'package.json')
+  try {
+    if (path.basename(path.dirname(HERE)) !== 'node_modules') {
+      return path.dirname(HERE)
+    }
+  } catch {}
+  if (existsSync(sibling)) return path.join(HERE, '..')
+  return null
+}
+
 /** Where the native binary lives. Checked in order. */
 function findCompiler(explicit) {
+  const root = hydrascriptRoot()
   const candidates = [
     explicit,
     process.env.HYDRA_COMPILER,
@@ -41,9 +69,9 @@ function findCompiler(explicit) {
     // the compiler it is supposed to be running, so the order is: the repo's
     // build, then the package that owns it, then PATH. `HERE/bin/hydra` was the
     // first entry and is deliberately gone.
-    path.join(HERE, '..', 'bin', 'hydra'),
-    path.join(HERE, '..', 'compiler-rs', 'target', 'release', 'hydra'),
-    path.join(HERE, '..', 'compiler-rs', 'target', 'debug', 'hydra'),
+    root && path.join(root, 'bin', 'hydra'),
+    root && path.join(root, 'compiler-rs', 'target', 'release', 'hydra'),
+    root && path.join(root, 'compiler-rs', 'target', 'debug', 'hydra'),
   ].filter(Boolean)
   for (const c of candidates) {
     if (existsSync(c)) return c
@@ -57,11 +85,11 @@ function findCompiler(explicit) {
 
 /** The prebuilt in-process addon, if this checkout has one. */
 function findAddon(explicit) {
+  const root = hydrascriptRoot()
   const candidates = [
     explicit,
     process.env.HYDRA_NATIVE,
-    path.join(HERE, 'bin', 'hydra.node'),
-    path.join(HERE, '..', 'bin', 'hydra.node'),
+    root && path.join(root, 'bin', 'hydra.node'),
   ].filter(Boolean)
   for (const c of candidates) {
     if (!existsSync(c)) continue

@@ -7,14 +7,15 @@ import https from 'node:https';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import net from 'node:net';
 import zlib from 'node:zlib';
 
 const selfRequire = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 import { writeActionBundle, bundleActions, loadActions, readBody, requestFor } from './actions.mjs';
-import { httpIntent, sendHttpIntent, sendError } from './http.mjs';
+import { httpIntent, sendHttpIntent, sendError, errorBody, detailAllowed } from './http.mjs';
 import { loadProjectEnv, publicEnvValues, clientEnvViolations, describeClientEnvViolation } from './env.mjs';
 import {
   API_BUNDLE,
@@ -52,6 +53,7 @@ import {
   matchRoute,
 } from './router.mjs';
 import { applyMeta, validateRichMeta } from './meta.mjs';
+import { readConfigFile, formatConfigErrors, parseByteSize } from './config.mjs';
 
 /**
  * The entrypoint filenames, in priority order. ONE list: the runner resolves
@@ -728,10 +730,14 @@ function injectLoaderData(html, pattern, data, url = pattern) {
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
   const tag = `<script type="application/json" id="__hydra_data__">${payload}</script>`;
+  // Function replacers: the payload is JSON, and `String.replace` reads `$&`,
+  // `` $` `` and `$'` in a replacement STRING as "the match" / "before" / "after".
+  // A query value of `$'` was enough to splice the rest of the document into the
+  // hydration payload and make it unparseable.
   if (html.includes('id="__hydra_data__"')) {
-    return html.replace(/<script type="application\/json" id="__hydra_data__">[\s\S]*?<\/script>/, tag);
+    return html.replace(/<script type="application\/json" id="__hydra_data__">[\s\S]*?<\/script>/, () => tag);
   }
-  return html.includes('</body>') ? html.replace('</body>', `  ${tag}\n  </body>`) : html + `\n${tag}\n`;
+  return html.includes('</body>') ? html.replace('</body>', () => `  ${tag}\n  </body>`) : html + `\n${tag}\n`;
 }
 
 /**
@@ -921,16 +927,31 @@ function pagesDirectory(cwd, config) {
 }
 
 export function readConfig(cwd) {
-  const configPath = path.join(cwd, 'hydraconfig.json');
-  let config = {};
-  if (fs.existsSync(configPath)) {
-    try {
-      config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    } catch (e) {
-      console.error('[hydra] Error parsing hydraconfig.json:', e.message);
-    }
+  const result = readConfigFile(cwd);
+  const configPath = result.path;
+  if (result.parseError) {
+    // Exit 2 rather than build on defaults: a config file that does not parse is
+    // never what the project meant, and silently ignoring it produces a build
+    // that is green and wrong. 2 is the conventional "bad input" code.
+    console.error(`[hydra] ${path.basename(configPath)} ${result.parseError}`);
+    console.error(`        fix it, or delete the file to build on defaults`);
+    process.exit(2);
   }
-  return config;
+  if (result.schemaError) {
+    // A broken schema is hydra's bug, not the project's: say so and continue.
+    console.error(`[hydra] internal: schema.json could not be used (${result.schemaError})`);
+  }
+  if (result.errors.length > 0) {
+    for (const line of formatConfigErrors(configPath, result.errors).split('\n')) {
+      console.error(`[hydra] ${line}`);
+    }
+    console.error(
+      `[hydra] ${path.basename(configPath)} has ${result.errors.length} problem(s); ` +
+        `the schema is at https://raw.githubusercontent.com/hanxthvy/hydrascript/main/schema.json`,
+    );
+    process.exit(2);
+  }
+  return result.config;
 }
 
 /**
@@ -2303,7 +2324,7 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
         'i',
       );
       if (re.test(html)) {
-        html = html.replace(re, scriptTag);
+        html = html.replace(re, () => scriptTag);
         replaced = true;
         break;
       }
@@ -2487,7 +2508,7 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
           let out = html;
           if (entryTag) {
             out = re.test(out)
-              ? out.replace(re, entryTag)
+              ? out.replace(re, () => entryTag)
               : out.includes('</body>')
                 ? out.replace('</body>', `  ${entryTag}\n  </body>`)
                 : out + entryTag;
@@ -2854,6 +2875,20 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
 }
 
 /**
+ * An address as a person writes it.
+ *
+ * A dual-stack `::` bind reports IPv4 peers as `::ffff:127.0.0.1`, so an
+ * operator's `trustProxy: "127.0.0.1"` never matched and every visitor behind a
+ * local proxy collapsed into one rate-limit bucket. IPv6 literals keep their
+ * brackets off; zone ids are kept.
+ */
+function normalizeAddress(addr) {
+  const s = String(addr || '').trim();
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(s);
+  return mapped ? mapped[1] : s;
+}
+
+/**
  * Response headers every answer carries.
  *
  * A framework that ships a server and sends none of these is telling the
@@ -2960,9 +2995,43 @@ function proxyRequest(req, res, target, rawPath, rawUrl) {
 
   const mod = url.protocol === 'https:' ? https : http;
   const headers = { ...req.headers };
+
+  // Hop-by-hop headers belong to ONE connection, not to the message: forwarding
+  // `Connection`, `Transfer-Encoding` or `Keep-Alive` describes the client's
+  // socket to the backend and corrupts framing. `x-forwarded-*` from the client is
+  // worse than useless — it is the caller's own claim about its address, and the
+  // backend will believe it. Both directions are stripped, and the forwarding
+  // headers are then derived from the socket the request actually arrived on.
+  const HOP_BY_HOP = [
+    'connection',
+    'keep-alive',
+    'proxy-authenticate',
+    'proxy-authorization',
+    'proxy-connection',
+    'te',
+    'trailer',
+    'transfer-encoding',
+    'upgrade',
+    'x-forwarded-for',
+    'x-forwarded-proto',
+    'x-forwarded-host',
+    'x-real-ip',
+    'forwarded',
+  ];
+  for (const name of HOP_BY_HOP) delete headers[name];
+  // `Connection: x-foo` also lists headers that are hop-by-hop for this hop.
+  const connectionList = String(req.headers.connection || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  for (const name of connectionList) delete headers[name];
+
   // A different origin: keeping the original Host would make name-based vhosts
   // and TLS SNI answer for the wrong site.
   headers.host = url.host;
+  headers['x-forwarded-for'] = req.socket?.remoteAddress || '';
+  headers['x-forwarded-proto'] = req.socket?.encrypted ? 'https' : 'http';
+  headers['x-forwarded-host'] = req.headers.host || '';
 
   const mount = url.pathname && url.pathname !== '/' ? url.pathname.replace(/\/$/, '') : '';
 
@@ -2976,7 +3045,10 @@ function proxyRequest(req, res, target, rawPath, rawUrl) {
       headers,
     },
     (proxyRes) => {
-      res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+      const outHeaders = { ...proxyRes.headers };
+      for (const name of HOP_BY_HOP) delete outHeaders[name];
+      res.writeHead(proxyRes.statusCode || 502, outHeaders);
+      proxyRes.on('error', () => res.destroy());
       proxyRes.pipe(res);
     },
   );
@@ -2991,6 +3063,12 @@ function proxyRequest(req, res, target, rawPath, rawUrl) {
     res.end(`[hydra] proxy error for ${rawPath}: ${err.message}`);
   });
   req.on('error', () => proxyReq.destroy());
+  // A client that goes away must not leave the upstream request (and its
+  // connection) running: without this, every abandoned upload held a backend
+  // worker until the backend's own timeout.
+  res.on('close', () => {
+    if (!res.writableFinished) proxyReq.destroy();
+  });
   req.pipe(proxyReq);
 }
 
@@ -3034,6 +3112,15 @@ function readActionBundle(cwd) {
  * check can prevent for free.
  */
 export async function runServe(cwd = process.cwd(), opts = {}) {
+  // `serve` is the documented production command, so it is production by
+  // default. It used to leave `NODE_ENV` unset, which switched OFF the whole 5xx
+  // redaction policy on the one command people deploy: `/api/boom` answered with
+  // `TOKEN_XYZ_9931 host=internal-db.local` while the identical build under
+  // `NODE_ENV=production` masked it. `HYDRA_DEV=1` is the documented override.
+  if (!process.env.NODE_ENV) {
+    if (process.env.HYDRA_DEV === '1') process.env.NODE_ENV = 'development';
+    else process.env.NODE_ENV = 'production';
+  }
   loadProjectEnv(cwd);
   const config = readConfig(cwd);
   const outDir = path.resolve(cwd, config.outputDir || 'dist');
@@ -3093,6 +3180,7 @@ export async function runServe(cwd = process.cwd(), opts = {}) {
     ssr: renderer,
     api: readApiBundle(cwd),
     bodyLimit: config.server?.bodyLimit,
+    allowedOrigins: config.server?.allowedOrigins,
     rateLimit: config.server?.rateLimit,
     trustProxy: config.server?.trustProxy,
     headers: config.server?.headers,
@@ -3102,11 +3190,25 @@ export async function runServe(cwd = process.cwd(), opts = {}) {
     portFallback: false,
   });
 
+  //
+  // A shutdown that answers `200 ok` until the instant it exits loses requests:
+  // whatever the load balancer sent in the last second is cut mid-flight. So the
+  // sequence is drain → close → wait for what was already accepted → exit. The
+  // grace period is a ceiling for a request that never finishes, not the normal
+  // path.
+  let stopping = false;
   const shutdown = (signal) => {
-    console.log(`[hydra] ${signal}, closing server`);
-    served.server.close(() => process.exit(0));
-    // A hung keep-alive socket must not make a deploy wait forever.
-    setTimeout(() => process.exit(0), 5000).unref();
+    if (stopping) return;
+    stopping = true;
+    console.log(`[hydra] ${signal}, draining (${served.inFlight} in flight)`);
+    served.drain().then(
+      () => process.exit(0),
+      () => process.exit(0),
+    );
+    setTimeout(() => {
+      console.error(`[hydra] drain did not finish in 10s, ${served.inFlight} still in flight`);
+      process.exit(0);
+    }, 10000).unref();
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
@@ -3135,20 +3237,54 @@ export async function runServe(cwd = process.cwd(), opts = {}) {
  * Ini BUKAN pengganti autentikasi. Ia menutup satu kelas serangan (CSRF lewat
  * form/fetch lintas situs) dan tidak menyentuh yang lain.
  */
-function crossOriginRefused(req) {
+function crossOriginRefused(req, opts = {}) {
   const method = (req.method || 'GET').toUpperCase();
   if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return false;
+
+  // `Sec-Fetch-Site` is the browser's own statement about who started this, and a
+  // rebinding attacker cannot make it lie: after DNS rebinding the page is still
+  // cross-site by the browser's accounting, while `Origin` and `Host` agree.
+  const fetchSite = String(req.headers['sec-fetch-site'] || '').toLowerCase();
+  if (fetchSite === 'cross-site') return true;
+
   const origin = req.headers.origin;
-  if (origin === undefined) return false; // non-browser client
+  if (origin === undefined) return false; // non-browser client (curl, a test, a service)
   if (origin === 'null') return true; // sandboxed iframe / data: URL
-  const host = req.headers.host || '';
-  let originHost = '';
+
+  let parsed;
   try {
-    originHost = new URL(origin).host;
+    parsed = new URL(origin);
   } catch {
     return true; // unparseable Origin is not trustworthy
   }
-  return !originHost || originHost !== host;
+
+  // A declared allowlist, when there is one. This is the part a Host header cannot
+  // forge: `Origin: http://evil.example` with `Host: evil.example` used to pass,
+  // which is exactly what DNS rebinding produces.
+  const allowed = Array.isArray(opts.allowedOrigins) ? opts.allowedOrigins.filter(Boolean) : [];
+  if (allowed.length > 0) {
+    return !allowed.some((entry) => {
+      try {
+        const a = new URL(String(entry).includes('://') ? String(entry) : `//${entry}`, 'http://localhost');
+        // Scheme is compared only when both sides name one, so an http/https flip
+        // behind a TLS-terminating proxy does not refuse a real form post.
+        const schemeOk =
+          !String(entry).includes('://') ||
+          a.protocol === parsed.protocol ||
+          (a.protocol === 'http:' && parsed.protocol === 'https:') ||
+          (a.protocol === 'https:' && parsed.protocol === 'http:');
+        return schemeOk && a.host === parsed.host;
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  // Fallback: header-vs-header. Weaker by construction (a rebinding attacker makes
+  // both sides agree), so it is stated as such — `server.allowedOrigins` is the
+  // supported answer, and the framework warns at startup when it is missing.
+  const host = req.headers.host || '';
+  return !parsed.host || parsed.host !== host;
 }
 
 async function handleAction(req, res, reqPath, rawUrl, bundlePath, opts = {}) {
@@ -3162,7 +3298,7 @@ async function handleAction(req, res, reqPath, rawUrl, bundlePath, opts = {}) {
   // modern browsers. A request with NO Origin header is a non-browser client
   // (curl, a test, a server-to-server call) and is allowed, because a form post
   // from a browser is the only case this defends against.
-  if (crossOriginRefused(req)) {
+  if (crossOriginRefused(req, opts)) {
     sendError(
       res,
       403,
@@ -3219,8 +3355,25 @@ async function handleAction(req, res, reqPath, rawUrl, bundlePath, opts = {}) {
     // route cannot disagree about what `redirect()` means.
     if (sendHttpIntent(res, httpIntent(out))) return;
     const status = out && typeof out === 'object' && out.status ? out.status : 200;
+    // Serialize first, then commit the status line. Writing the header and then
+    // running `JSON.stringify` is how a returned ORM row killed the process: the
+    // throw landed in the `catch`, whose `sendError` then threw
+    // `ERR_HTTP_HEADERS_SENT` out of the request handler.
+    let body;
+    try {
+      body = JSON.stringify(out === undefined ? null : out);
+    } catch (e) {
+      sendError(
+        res,
+        500,
+        'action_unserializable',
+        `the action's return value is not JSON-serializable: ${e && e.message ? e.message : e}`,
+        null,
+      );
+      return;
+    }
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify(out === undefined ? null : out));
+    res.end(body);
   } catch (e) {
     // An action that throws is a bug in the action, and the browser deserves to
     // know rather than receiving a 200 with an empty body.
@@ -3268,19 +3421,96 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
   // proxy yang memang dinyatakan tepercaya (`server.trustProxy`). Selain itu,
   // alamat socket yang dipakai. Ini satu-satunya perbedaan antara "di belakang
   // nginx" dan "terbuka langsung".
+  // Satu angka, dihitung sekali.
+  //
+  // `bodyLimit` dulu diteruskan apa adanya ke `size > limitBytes`. Kalau nilainya
+  // string ("10mb"), perbandingan itu SELALU false — jadi menulis batas dalam
+  // bentuk yang lebih ramah justru MENGHAPUS batasnya. Konversi di sini, sekali,
+  // supaya setiap pembaca body melihat angka.
+  const bodyLimitBytes = (() => {
+    const parsed = parseByteSize(opts.bodyLimit);
+    if (parsed !== null) return parsed;
+    if (opts.bodyLimit !== undefined && opts.bodyLimit !== null) {
+      // Sengaja berisik: nilai yang tidak bisa dibaca berarti batasnya tidak
+      // berlaku, dan diam-diam menghapus batas adalah bug yang tidak terlihat
+      // sampai ada yang mengirim 2 GB.
+      throw new TypeError(
+        `[hydra] server.bodyLimit: cannot read ${JSON.stringify(opts.bodyLimit)} as a byte size ` +
+          `(use bytes like 1048576, or a string like "10mb")`,
+      );
+    }
+    return 1024 * 1024;
+  })();
+
+  // Root yang benar-benar ada di disk. `rootDir` hanya hasil `path.resolve`, jadi
+  // ia masih bisa berisi symlink; perbandingan containment di bawah harus memakai
+  // jalur nyata di kedua sisi atau sebuah link di dalam dist/ tetap lolos.
+  const realRoot = (() => {
+    try {
+      return fs.realpathSync(rootDir);
+    } catch {
+      return rootDir;
+    }
+  })();
+
+  // `trustProxy` menerima daftar alamat DAN CIDR, dan membandingkan alamat yang
+  // sudah dinormalkan: peer IPv4 di socket dual-stack datang sebagai
+  // `::ffff:127.0.0.1`, sehingga `trustProxy: "127.0.0.1"` tidak pernah cocok dan
+  // semua pengunjung di belakang proxy lokal jatuh ke satu ember rate-limit.
   const trustProxy = (() => {
     const raw = opts.trustProxy;
-    if (raw === true) return () => true;
-    if (typeof raw === 'string') {
-      const allow = raw.split(',').map((x) => x.trim()).filter(Boolean);
-      return (addr) => allow.includes(addr);
+    if (raw === true) {
+      if (!opts.quiet) {
+        console.error(
+          '[hydra] server.trustProxy: true trusts EVERY peer, so any client can set its own ' +
+            'X-Forwarded-For (and therefore its own rate-limit bucket). List the proxy addresses instead.',
+        );
+      }
+      return () => true;
     }
-    if (Array.isArray(raw)) return (addr) => raw.includes(addr);
-    return () => false;
+    const list = (
+      typeof raw === 'string'
+        ? raw.split(',')
+        : Array.isArray(raw)
+          ? raw
+          : []
+    )
+      .map((x) => String(x).trim())
+      .filter(Boolean);
+    if (list.length === 0) return () => false;
+
+    const exact = new Set();
+    const block = new net.BlockList();
+    for (const entry of list) {
+      const slash = entry.indexOf('/');
+      if (slash === -1) {
+        exact.add(normalizeAddress(entry));
+        continue;
+      }
+      const addr = entry.slice(0, slash);
+      const bits = Number(entry.slice(slash + 1));
+      const family = net.isIPv6(addr) ? 'ipv6' : 'ipv4';
+      try {
+        block.addSubnet(addr, bits, family);
+      } catch {
+        // Alamat yang tidak bisa dibaca tidak boleh membuat startup gagal; ia
+        // hanya tidak akan pernah cocok, dan itu terlihat di log sekali.
+        console.error(`[hydra] server.trustProxy: ignoring unreadable entry ${entry}`);
+      }
+    }
+    return (addr) => {
+      const bare = normalizeAddress(addr);
+      if (exact.has(bare)) return true;
+      try {
+        return block.check(bare, net.isIPv6(bare) ? 'ipv6' : 'ipv4');
+      } catch {
+        return false;
+      }
+    };
   })();
 
   const clientIpOf = (req) => {
-    const socketAddr = req.socket?.remoteAddress || '127.0.0.1';
+    const socketAddr = normalizeAddress(req.socket?.remoteAddress || '127.0.0.1');
     // Loopback TIDAK otomatis tepercaya. Awalnya sempat begitu, dengan alasan
     // "dev berjalan di mesin yang sama" -- tapi itu justru membuat siapa pun
     // yang bisa menjangkau port lokal (proses lain, tunnel, bot di mesin yang
@@ -3301,13 +3531,108 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
 
   const rateLimitState = rateLimitCfg ? new Map() : null;
 
-  const server = http.createServer(async (req, res) => {
+  const server = http.createServer((req, res) => {
+    // Counted so `drain()` can be honest about what is still running. 'close'
+    // fires after the response is finished OR destroyed, so a client that hangs
+    // up does not leave the counter stuck.
+    inFlight += 1;
+    res.on('close', () => {
+      inFlight -= 1;
+    });
+    handleRequest(req, res).catch((err) => failRequest(req, res, err));
+  });
+
+  // Batas waktu dan koneksi.
+  //
+  // Dulu tidak ada satu pun: POST yang mengirim satu byte lalu berhenti menahan
+  // permintaan sampai default Node 300 detik, dan jumlah koneksi tidak dibatasi
+  // sama sekali. Nilai di bawah bisa ditimpa dari `server.*`.
+  server.headersTimeout = Number.isInteger(opts.headersTimeout) ? opts.headersTimeout : 15000;
+  server.requestTimeout = Number.isInteger(opts.requestTimeout) ? opts.requestTimeout : 30000;
+  server.timeout = Number.isInteger(opts.idleTimeout) ? opts.idleTimeout : 30000;
+  server.maxConnections = Number.isInteger(opts.maxConnections) ? opts.maxConnections : 1024;
+
+  /**
+   * The one failure boundary for the request path.
+   *
+   * The handler is `async`, so any throw after its first `await` used to become an
+   * unhandled rejection — and Node exits 1 on those. Four ordinary inputs reached
+   * it: a `redirect()` whose target contained CRLF (writeHead throws
+   * `ERR_INVALID_CHAR`), an action returning a circular object or a BigInt
+   * (`JSON.stringify` throws after the header went out), a data endpoint with the
+   * same shape, and a `readFileSync`/stream error on static serving. None of them
+   * is a crash; all of them killed the process and every request in flight with it.
+   *
+   * The answer differs by whether the header is already on the wire: after that
+   * there is no status line to correct, so the response is destroyed (the client
+   * sees a truncated body, which is honest) instead of pretending to a 500 it
+   * cannot send.
+   */
+  function failRequest(req, res, err) {
+    const message = err && err.message ? err.message : String(err);
+    try {
+      console.error(`[hydra] request failed: ${req.method || 'GET'} ${req.url || '/'}: ${message}`);
+    } catch {
+      /* logging must never be the second failure */
+    }
+    if (res.headersSent) {
+      try {
+        res.destroy();
+      } catch {
+        /* already gone */
+      }
+      return;
+    }
+    let body;
+    try {
+      body = JSON.stringify(errorBody('internal_error', message, null, 500));
+    } catch {
+      body = '{"error":"internal error","code":"internal_error"}';
+    }
+    try {
+      res.writeHead(500, {
+        ...baseHeaders(),
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store',
+      });
+      res.end(body);
+    } catch {
+      try {
+        res.destroy();
+      } catch {
+        /* nothing left to do */
+      }
+    }
+  }
+
+  const handleRequest = async (req, res) => {
+    // A client that disconnects mid-response is an ordinary event, not a process
+    // event: without a listener, the 'error' emitted on the socket response is
+    // thrown and takes the server down with it.
+    res.on('error', () => {});
+    req.on('error', () => {});
+
     // Set once, here, rather than at each of the eight `writeHead` sites below.
     // Only the file-serving path used to carry these, so every error, API,
     // action and data answer shipped without them — and those are the answers
     // most likely to echo something a caller supplied. `writeHead` merges with
     // what is already set, so a path that wants a different value still can.
     for (const [name, value] of Object.entries(baseHeaders())) res.setHeader(name, value);
+
+    // The project's own headers go on EVERY answer, not only on static files.
+    //
+    // This is the documented way to set a CSP, and it used to be applied inside
+    // the file-serving branch alone: with `server.headers` set, `GET /` carried
+    // the policy and `GET /blog/hello` (SSR), `/api/*`, an action POST,
+    // `/__hydra/data` and every 404 carried none — the responses that actually
+    // render user data or answer an API. `{nonce}` is substituted per request so a
+    // policy can be written against the inline hydration JSON.
+    const nonce = randomBytes(16).toString('base64');
+    const configuredHeaders = opts.headers && typeof opts.headers === 'object' ? opts.headers : {};
+    for (const [name, value] of Object.entries(configuredHeaders)) {
+      if (typeof value !== 'string') continue;
+      res.setHeader(name, value.replaceAll('{nonce}', nonce));
+    }
 
     if (rateLimitCfg && rateLimitState) {
       const clientIp = clientIpOf(req);
@@ -3318,32 +3643,25 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
         // sungguhan) menumbuhkan entri tanpa henti sampai prosesnya kehabisan
         // memori -- dan rate limiter sendiri jadi jalan untuk DoS.
         //
-        // Saat penuh: entri kedaluwarsa dibuang lebih dulu. Kalau masih penuh,
-        // entri baru TIDAK dicatat, tapi permintaan tetap dilayani -- menolak
-        // pengunjung baru karena Map penuh akan mengubah serangan menjadi
-        // pemadaman untuk semua orang.
+        // Saat penuh: entri kedaluwarsa dibuang lebih dulu, lalu entri TERTUA.
+        // Dulu permintaan dari IP baru ditandai `uncapped` dan dilayani tanpa
+        // batas sama sekali -- jadi mengisi tabel adalah cara mematikan limiter,
+        // dan `trustProxy: true` membuatnya sepele: satu header per request.
         if (rateLimitState.size >= RATE_LIMIT_MAX_ENTRIES) {
           for (const [ip, rec] of rateLimitState) {
             if (now >= rec.resetAt) rateLimitState.delete(ip);
           }
+          while (rateLimitState.size >= RATE_LIMIT_MAX_ENTRIES) {
+            const oldest = rateLimitState.keys().next().value;
+            if (oldest === undefined) break;
+            rateLimitState.delete(oldest);
+          }
         }
-        if (rateLimitState.size < RATE_LIMIT_MAX_ENTRIES) {
-          record = { count: 0, resetAt: now + rateLimitCfg.windowMs };
-          rateLimitState.set(clientIp, record);
-        } else {
-          record = null;
-        }
+        record = { count: 0, resetAt: now + rateLimitCfg.windowMs };
+        rateLimitState.set(clientIp, record);
       }
-      if (!record) {
-        // Tabel penuh: lewati pembatasan untuk request ini, jangan tolak.
-        record = { count: 0, resetAt: now + rateLimitCfg.windowMs, uncapped: true };
-      }
-      if (record.uncapped) {
-        // tidak dihitung
-      } else {
       record.count += 1;
-      }
-      if (!record.uncapped && record.count > rateLimitCfg.max) {
+      if (record.count > rateLimitCfg.max) {
         const retryAfter = Math.max(1, Math.ceil((record.resetAt - now) / 1000));
         res.writeHead(429, {
           'Content-Type': 'text/plain; charset=utf-8',
@@ -3389,11 +3707,11 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
       // this and returning unconditionally left the request hanging with no
       // response at all — a timeout, which reads as "the server is down".
       const answered = await handleApiRequest(req, res, rawUrl, opts.api, {
-        bodyLimit: opts.bodyLimit,
+        bodyLimit: bodyLimitBytes,
         // Kebijakan origin yang SAMA dengan actions. Tanpa ini, API route
         // adalah pintu kedua yang bisa mengubah state tanpa lapisan apa pun,
         // dan penyerang cukup memilih pintu yang lebih longgar.
-        refuseCrossOrigin: crossOriginRefused(req),
+        refuseCrossOrigin: crossOriginRefused(req, opts),
         origin: req.headers.origin,
       });
       if (answered) return;
@@ -3411,7 +3729,28 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
     // handler, because the alternative is serving index.html to a POST, which
     // "succeeds" and does nothing.
     if ((req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE') && opts.actions) {
-      handleAction(req, res, reqPath, rawUrl, opts.actions, { bodyLimit: opts.bodyLimit });
+      handleAction(req, res, reqPath, rawUrl, opts.actions, {
+        bodyLimit: bodyLimitBytes,
+        allowedOrigins: opts.allowedOrigins,
+      });
+      return;
+    }
+
+    // Everything else that is not a read gets 405, not a page.
+    //
+    // `TRACE`, `PUT`, `DELETE`, `OPTIONS` and friends all answered `200` with
+    // `index.html`: no echo, so nothing was exploitable, but a scanner, an uptime
+    // monitor and a pentest report all read 200 as "the endpoint exists and
+    // accepted the method". Plain `GET`/`HEAD` is the whole surface of a static
+    // file server, and saying so costs one branch.
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      res.writeHead(405, {
+        ...baseHeaders(),
+        'Content-Type': 'text/plain; charset=utf-8',
+        Allow: 'GET, HEAD',
+        'Cache-Control': 'no-store',
+      });
+      res.end('Method Not Allowed');
       return;
     }
 
@@ -3428,19 +3767,24 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
     if (reqPath === '/__hydra/version' || reqPath === '/__hydra/healthz') {
       const base = {
         name: 'hydra',
-        status: 'ok',
+        // 503 while draining, so a load balancer stops sending NEW requests to a
+        // process that is about to exit. Answering 200 until the very last
+        // millisecond is how a rolling deploy guarantees a few dropped requests.
+        status: draining ? 'draining' : 'ok',
         uptime_s: Math.round((Date.now() - startedAt) / 1000),
       };
       const detail =
         opts.metadata === true
           ? { ...base, version: opts.version || null, sha: opts.sha || null, port: actualPort, host }
           : base;
-      res.writeHead(200, {
+      res.writeHead(draining ? 503 : 200, {
         ...baseHeaders(),
         'Content-Type': 'application/json; charset=utf-8',
         // A health check is read by a monitor, and a cached "ok" answers for a
         // server that is down.
         'Cache-Control': 'no-store',
+        // A draining process still accepts the connections already queued.
+        ...(draining ? { Connection: 'close' } : {}),
       });
       res.end(JSON.stringify(detail));
       return;
@@ -3451,9 +3795,24 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
     // would otherwise hand it index.html with a 200 — a JSON endpoint that
     // answers HTML is worse than one that is missing.
     if (reqPath === '/__hydra/data' && opts.ssr) {
-      handleDataRequest(req, res, opts.ssr, rawUrl).catch((err) => {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ error: err && err.message ? err.message : String(err) }));
+      handleDataRequest(req, res, opts.ssr, rawUrl, {
+        // The same request object the render path builds. Without it a loader
+        // reading `cookie`/`authorization` saw the real value on first paint and
+        // an EMPTY headers object on client navigation, so a header-based guard
+        // either denied wrongly or served the public branch.
+        request: requestFor(req, rawUrl, ''),
+      }).catch((err) => {
+        const message = err && err.message ? err.message : String(err);
+        if (res.headersSent) {
+          res.destroy();
+          return;
+        }
+        res.writeHead(500, {
+          ...baseHeaders(),
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+        });
+        res.end(JSON.stringify(errorBody('data_failed', message, null, 500)));
       });
       return;
     }
@@ -3505,17 +3864,49 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
       .relative(rootDir, filePath)
       .split(path.sep)
       .filter(Boolean);
-    if (relSegments.some((seg) => seg.startsWith('.'))) {
+    // `.well-known` is the one dot-directory that is PUBLIC by protocol: ACME
+    // HTTP-01, `apple-app-site-association`, security.txt. Blocking it made the
+    // built-in server unable to complete a Let's Encrypt challenge.
+    const isWellKnown = relSegments[0] === '.well-known';
+    if (!isWellKnown && relSegments.some((seg) => seg.startsWith('.'))) {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Not Found');
       return;
     }
 
-    let exists = fs.existsSync(filePath);
-    if (exists && fs.statSync(filePath).isDirectory()) {
-      filePath = path.join(filePath, 'index.html');
-      exists = fs.existsSync(filePath);
+    // Symlink containment.
+    //
+    // `path.resolve` normalises `..` but follows nothing, and the read does. So
+    // `dist/escape -> /etc/passwd` passed every guard above — the URL is clean, the
+    // link name is dot-free — and answered 200 with `/etc/passwd`. The check has to
+    // be on the RESOLVED path, compared against the resolved root, and it is
+    // reachable whenever the artifact contains a link: a copied `public/`, a
+    // monorepo, an upload directory, a compromised dependency's postinstall.
+    const realPathOf = (p) => {
+      try {
+        return fs.realpathSync(p);
+      } catch {
+        return null; // ENOENT, ENOTDIR, a broken link: all of them are "no file"
+      }
+    };
+    const withinRoot = (p) => p === realRoot || p.startsWith(realRoot + path.sep);
+    let servedPath = realPathOf(filePath);
+    if (servedPath !== null) {
+      try {
+        if (fs.statSync(servedPath).isDirectory()) servedPath = realPathOf(path.join(servedPath, 'index.html'));
+      } catch {
+        servedPath = null;
+      }
     }
+    if (servedPath !== null && !withinRoot(servedPath)) {
+      // Deliberately the same 403 the traversal guard gives: which of the two
+      // rules a caller tripped is not information a caller needs.
+      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Forbidden');
+      return;
+    }
+    let exists = servedPath !== null;
+    if (servedPath !== null) filePath = servedPath;
 
     if (!exists) {
       const isNavigation = req.method === 'GET' || req.method === 'HEAD';
@@ -3585,6 +3976,12 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
               console.error(`[hydra] SSR stream failed for ${reqPath}: ${err.message || err}`);
               res.destroy(err);
             });
+            // `pipe` does NOT destroy the source when the destination goes away,
+            // so a client that hung up left the render running to completion.
+            // Destroying the stream is what tells the renderer to abort.
+            res.on('close', () => {
+              if (!streamed.stream.destroyed) streamed.stream.destroy();
+            });
             return;
           }
           const out2 = streamed ? null : await opts.ssr.renderPage(rawUrl, {
@@ -3626,29 +4023,67 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
           // shell it gets must SAY that, because a bare shell is a blank page
           // with no explanation anywhere the developer is looking. "Why is my
           // page empty" is the question this answers.
+          //
+          // What goes IN the notice follows the framework's one redaction policy
+          // (`errorBody`). It used to build `err.message + err.loaderStack` and
+          // interpolate it directly, so `NODE_ENV=production` still shipped
+          // "connect ECONNREFUSED 10.0.0.5:5432 db=prod_users password=hunter2"
+          // to the visitor. `escapeHtml` is not a control here: the leak is the
+          // content, not the markup.
           const message = err && err.message ? err.message : String(err);
-          const detail = err && err.loaderStack ? `${message}\n\n${err.loaderStack}` : message;
-          console.error(`[hydra] SSR failed for ${reqPath}: ${message}`);
+          const fullDetail = err && err.loaderStack ? `${message}\n\n${err.loaderStack}` : message;
+          const ref = Math.random().toString(36).slice(2, 10);
+          console.error(`[hydra] SSR failed for ${reqPath} [${ref}]: ${message}`);
+          const shownDetail = detailAllowed()
+            ? fullDetail
+            : `internal error (ref ${ref}) — set HYDRA_EXPOSE_ERRORS=1 to see the message on a non-public server`;
           try {
-            const shell = fs.readFileSync(indexPath, 'utf8');
-            const shown = opts.injectHtml
-              ? opts.injectHtml(shell)
-              : shell;
             const notice =
               `<div id="__hydra_ssr_error" style="font:14px/1.5 ui-monospace,monospace;` +
               `padding:16px;margin:16px;border:1px solid #cf2d56;border-radius:8px;` +
               `background:#fff5f7;color:#3a1a22;white-space:pre-wrap">` +
-              `hydra: the server could not render ${escapeHtml(reqPath)}\n\n${escapeHtml(detail)}` +
+              `hydra: the server could not render ${escapeHtml(reqPath)}\n\n${escapeHtml(shownDetail)}` +
               `</div>`;
-            const withNotice = shown.includes('<div id="root"></div>')
-              ? shown.replace('<div id="root"></div>', `<div id="root">${notice}</div>`)
-              : shown;
-            res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+            // Where the notice goes is a correctness question, not styling.
+            //
+            // An empty `<div id="root"></div>` is a dev shell: it has no content of
+            // its own, so the notice belongs inside it and the app's chrome
+            // survives. A PRE-RENDERED shell already holds ANOTHER page's markup —
+            // injecting into it is how `/blog/boom` answered with the home page's
+            // body, status 500 and (before this fix) no notice at all. Reusing it
+            // would ship one page's content as another's error, so a standalone
+            // error document is the honest answer.
+            let withNotice;
+            const shell = fs.readFileSync(indexPath, 'utf8');
+            const shown = opts.injectHtml ? opts.injectHtml(shell) : shell;
+            if (shown.includes('<div id="root"></div>')) {
+              // Function replacer: a replacement string would read `$&` in the
+              // notice as "the match".
+              withNotice = shown.replace('<div id="root"></div>', () => `<div id="root">${notice}</div>`);
+            } else {
+              withNotice =
+                '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n' +
+                '<meta name="viewport" content="width=device-width, initial-scale=1">\n' +
+                '<meta name="robots" content="noindex">\n' +
+                '<title>500 — internal error</title>\n</head>\n<body>\n' +
+                notice +
+                '\n</body>\n</html>\n';
+            }
+            res.writeHead(500, {
+              'Content-Type': 'text/html; charset=utf-8',
+              ...baseHeaders(),
+              'Cache-Control': 'no-store',
+            });
             res.end(withNotice);
             return;
           } catch (shellErr) {
-            res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-            res.end(`hydra: SSR failed for ${reqPath}\n\n${detail}`);
+            console.error(`[hydra] SSR error page could not be assembled: ${shellErr && shellErr.message ? shellErr.message : shellErr}`);
+            res.writeHead(500, {
+              'Content-Type': 'text/plain; charset=utf-8',
+              ...baseHeaders(),
+              'Cache-Control': 'no-store',
+            });
+            res.end(`hydra: SSR failed for ${reqPath}\n\n${shownDetail}`);
             return;
           }
         }
@@ -3669,14 +4104,68 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
     const ext = path.extname(filePath).toLowerCase();
     const contentType = MIME_TYPES[ext] || 'application/octet-stream';
 
+    // Conditional GET for static files.
+    //
+    // Without a validator, a returning visitor re-downloads every asset it must
+    // revalidate (`Cache-Control: no-cache` on HTML) and, worse, a browser that
+    // does have a cached copy has no way to say "I already have this", so a page
+    // reload re-transfers the shell every time. `Last-Modified` alone is too
+    // coarse: it is second-resolution, and a build that runs twice in one second
+    // produces two different documents with the same timestamp. The tag is
+    // size+mtime in hex, which changes whenever the file does and requires no
+    // hashing pass over a large dist/.
+    let stat = null;
+    if (!(opts.injectHtml && ext === '.html')) {
+      try {
+        stat = fs.statSync(filePath);
+      } catch {
+        stat = null;
+      }
+    }
+    // A dev-injected HTML page is rendered per request and must not be cached;
+    // everything else in a served directory is a file on disk and can be.
+    const etag = stat ? `W/"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"` : null;
+    if (etag) {
+      const inm = String(req.headers['if-none-match'] || '');
+      const ims = String(req.headers['if-modified-since'] || '');
+      const match = inm
+        ? inm.split(',').some((t) => t.trim() === etag || t.trim() === '*')
+        : ims
+          ? Date.parse(ims) >= Math.floor(stat.mtimeMs / 1000) * 1000
+          : false;
+      if (match) {
+        // A 304 carries no body, but it MUST repeat the validators and the
+        // caching policy — a proxy that lost them on the 304 would start
+        // revalidating from scratch.
+        res.writeHead(304, {
+          ...baseHeaders(),
+          ...cacheHeaders(ext, /-[A-Za-z0-9_-]{8,}\.(js|css)$/.test(path.basename(filePath))),
+          ETag: etag,
+          'Last-Modified': new Date(Math.floor(stat.mtimeMs / 1000) * 1000).toUTCString(),
+        });
+        res.end();
+        return;
+      }
+    }
+
     // Headers for a built FILE. HTML is the one thing that must revalidate: it
     // names the hashed assets, so a cached document pins a visitor to the
     // previous release. A hashed asset is immutable by construction.
     const hasHash = /-[A-Za-z0-9_-]{8,}\.(js|css)$/.test(path.basename(filePath));
+    // The project's own headers are already on the response (set once at the top
+    // of the handler, with `{nonce}` substituted). Spreading them again here
+    // re-introduced the literal `{nonce}` — and only on static files, which is how
+    // the two paths disagreed about the same policy.
     const fileHeaders = {
       ...baseHeaders(),
       ...cacheHeaders(ext, hasHash),
-      ...(opts.headers && typeof opts.headers === 'object' ? opts.headers : {}),
+      ...(etag ? { ETag: etag, 'Last-Modified': new Date(Math.floor(stat.mtimeMs / 1000) * 1000).toUTCString() } : {}),
+      // An SVG is a DOCUMENT. Served same-origin with `image/svg+xml`, a crafted
+      // one runs its script as a top-level page, on your origin, with your
+      // cookies — the classic upload-to-XSS pivot. `sandbox` makes the document
+      // opaque: no script, no same-origin access, no forms. It costs nothing for
+      // the `<img src>` case, which is how an icon is actually used.
+      ...(ext === '.svg' ? { 'Content-Security-Policy': 'sandbox' } : {}),
     };
 
     // An HTML file gets the dev-only transform, if the caller asked for one.
@@ -3689,6 +4178,57 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
       return;
     }
 
+    // Byte ranges, for the one thing on a static site that is actually streamed:
+    // video, audio, and a PDF viewer. Without `Accept-Ranges` + a real 206, a
+    // browser cannot seek: Safari refuses to play an mp4 served as a plain 200 at
+    // all, and Chrome re-downloads from zero on every scrub. The parse is
+    // deliberately narrow — one range, no multipart/byteranges — because the
+    // multi-range form is only produced by a client asking for it explicitly, and
+    // answering it wrong is worse than answering `200` with the whole file.
+    const rangeHeader = String(req.headers.range || '');
+    if (rangeHeader && stat && stat.size > 0) {
+      const m = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+      if (m) {
+        const [, rawStart, rawEnd] = m;
+        let start;
+        let end;
+        if (rawStart === '') {
+          // `bytes=-500` is the LAST 500 bytes, not the first 500.
+          const suffix = Number(rawEnd);
+          start = Number.isFinite(suffix) && suffix > 0 ? Math.max(0, stat.size - suffix) : 0;
+          end = stat.size - 1;
+        } else {
+          start = Number(rawStart);
+          end = rawEnd === '' ? stat.size - 1 : Math.min(Number(rawEnd), stat.size - 1);
+        }
+        if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= stat.size) {
+          // 416 must carry `Content-Range: bytes */size`; a bare 416 tells the
+          // player nothing and some clients retry the same range forever.
+          res.writeHead(416, {
+            ...fileHeaders,
+            'Content-Range': `bytes */${stat.size}`,
+            'Accept-Ranges': 'bytes',
+          });
+          res.end();
+          return;
+        }
+        res.writeHead(206, {
+          'Content-Type': contentType,
+          ...fileHeaders,
+          'Accept-Ranges': 'bytes',
+          'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+          'Content-Length': end - start + 1,
+        });
+        const partial = fs.createReadStream(filePath, { start, end });
+        partial.on('error', (err) => {
+          console.error(`[hydra] static read failed for ${reqPath}: ${err.message || err}`);
+          res.destroy();
+        });
+        partial.pipe(res);
+        return;
+      }
+    }
+
     // Text assets are compressed when the client asked for it. Measured on a
     // real build: 508.900 bytes of JSON became 3.200 gzipped, and a page's JS
     // pays the same tax on a slow link. `no-transform` is not set, so a proxy is
@@ -3696,10 +4236,15 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
     const acceptsGzip = /\bgzip\b/.test(String(req.headers['accept-encoding'] || ''));
     const compressible = /^text\/|javascript|json|svg/.test(contentType) && !ext.match(/^\.(png|jpe?g|gif|webp|avif|woff2?|mp4|webm)$/);
     if (acceptsGzip && compressible) {
-      const raw = fs.readFileSync(filePath);
-      // Below ~1 KB the header costs more than the saving; above it, gzip wins.
-      if (raw.length > 1024) {
-        const gz = zlib.gzipSync(raw, { level: 6 });
+      // Async, and cached by (path, mtime, size).
+      //
+      // The `zlib.gzipSync` + `readFileSync` pair ran on the event loop, so two
+      // hundred concurrent requests for one file serialised N full reads and N
+      // full compressions while every other request waited — the framework's own
+      // `Vary: Accept-Encoding` turned into a self-inflicted stall. Below ~1 KB the
+      // header costs more than the saving; above it, gzip wins.
+      const gz = await gzippedFile(filePath);
+      if (gz) {
         res.writeHead(200, {
           'Content-Type': contentType,
           ...fileHeaders,
@@ -3712,9 +4257,68 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
       }
     }
 
-    res.writeHead(200, { 'Content-Type': contentType, ...fileHeaders });
-    fs.createReadStream(filePath).pipe(res);
-  });
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      ...(fileHeaders.Vary ? fileHeaders : { ...fileHeaders, Vary: 'Accept-Encoding' }),
+      'Accept-Ranges': 'bytes',
+    });
+    // An unhandled 'error' on a Readable is THROWN, so a file that vanished
+    // between the stat above and this read (a deploy mid-flight), or `EMFILE`
+    // under load, killed the process. Destroying the response is the correct
+    // answer: the status line is already out.
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.on('error', (err) => {
+      console.error(`[hydra] static read failed for ${reqPath}: ${err.message || err}`);
+      res.destroy();
+    });
+    fileStream.pipe(res);
+  };
+
+  /**
+   * A gzipped copy of a built file, or null when it is not worth compressing.
+   *
+   * Cached by identity (path + mtime + size), which is what makes it safe: a file
+   * rewritten by a rebuild has a new mtime and the entry is discarded rather than
+   * serving a stale body under a fresh name. The cache is bounded and prunes the
+   * oldest entries, because a long-running `serve` over a large dist/ would
+   * otherwise hold every compressed asset in RAM forever.
+   */
+  const gzipCache = new Map();
+  const GZIP_CACHE_MAX = 256;
+  async function gzippedFile(filePath) {
+    let stat;
+    try {
+      stat = await fs.promises.stat(filePath);
+    } catch {
+      return null;
+    }
+    if (stat.size <= 1024) return null;
+    const key = `${filePath}\u0000${stat.mtimeMs}\u0000${stat.size}`;
+    const hit = gzipCache.get(key);
+    if (hit) return hit;
+    const raw = await fs.promises.readFile(filePath);
+    const gz = await new Promise((resolve, reject) => {
+      zlib.gzip(raw, { level: 6 }, (err, buf) => (err ? reject(err) : resolve(buf)));
+    });
+    if (gzipCache.size >= GZIP_CACHE_MAX) {
+      const oldest = gzipCache.keys().next().value;
+      if (oldest !== undefined) gzipCache.delete(oldest);
+    }
+    gzipCache.set(key, gz);
+    return gz;
+  }
+
+  // Drain state, read by `/__hydra/healthz`.
+  //
+  // On SIGTERM the old code called `server.close()` and force-exited five
+  // seconds later REGARDLESS — an in-flight SSR render was cut mid-stream, and
+  // every load balancer in front of the box kept sending traffic because the
+  // health endpoint answered `200 ok` right through the shutdown. A deploy on a
+  // busy box therefore dropped whatever was rendering at that second. `draining`
+  // flips the health answer to 503 first, which takes the process out of
+  // rotation, and the grace period is spent on requests already accepted.
+  let draining = false;
+  let inFlight = 0;
 
   // Without a handler this raises an unhandled 'error' event, which kills the
   // whole process — taking the file watcher with it, so `hydra dev` died with
@@ -3767,6 +4371,13 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
       server.on('error', (err) => {
         console.error(`[hydra] Server error: ${err.message}`);
       });
+      // The bound port, not the requested one. `port: 0` asks the OS for a free
+      // port and the caller was still told `0` — so anything that built a URL
+      // from the returned value (a test, a supervisor, a printed address) aimed
+      // at nothing. On an explicit port the two are the same number.
+      const bound = server.address();
+      if (bound && typeof bound === 'object') actualPort = bound.port;
+
       // Say WHICH interface. Printing `localhost` for a 0.0.0.0 bind is how a
       // server stayed reachable from the network with nobody aware of it.
       const reach =
@@ -3774,7 +4385,49 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
           ? `http://${localIPv4() ?? 'localhost'}:${actualPort}/  (reachable from your network)`
           : `http://${host}:${actualPort}/`;
       if (!opts.quiet) console.log(`[hydra] Server running at ${reach}`);
-      resolve({ server, port: actualPort });
+      resolve({
+        server,
+        port: actualPort,
+        /**
+         * Stop advertising readiness, then close.
+         *
+         * `server.close()` alone is not a drain: it refuses NEW connections
+         * immediately, so a load balancer polling health every second never sees
+         * the 503 — it sees a refused connection and, depending on its config,
+         * either fails the deploy or keeps retrying. So the socket stays open for
+         * `graceMs` (one health interval) while every answer says 503, which is
+         * the signal a balancer actually understands, and only then closes.
+         * Requests already accepted keep running; the promise settles once they
+         * are finished, so the caller's force-exit timer is a ceiling and not the
+         * normal path.
+         */
+        drain(graceMs = 1000) {
+          draining = true;
+          return new Promise((resolveDrain) => {
+            const close = () => {
+              server.close(() => resolveDrain());
+              // Idle keep-alive sockets are what make `close` hang; closing them
+              // lets the promise settle as soon as real requests finish.
+              if (typeof server.closeIdleConnections === 'function') {
+                server.closeIdleConnections();
+              }
+            };
+            const due = Date.now() + graceMs;
+            const check = () => {
+              if (inFlight === 0 && Date.now() >= due) {
+                close();
+                return;
+              }
+              const wait = Math.max(50, due - Date.now());
+              setTimeout(check, Math.min(wait, 100));
+            };
+            check();
+          });
+        },
+        get inFlight() {
+          return inFlight;
+        },
+      });
     });
 
     server.listen(actualPort, host);

@@ -239,3 +239,30 @@ test('an error is NOT cached, so a fixed file compiles immediately', () => {
   assert.deepEqual(fresh.get(good), { code: 'ok' });
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('a forged entry on disk is a miss, not code', async () => {
+  // SEC-29. The key is a hash of the source, so collision was never the
+  // exposure — an attacker who can write `.hydra/cache` (poisoned CI cache,
+  // shared checkout, archive extract) simply pre-seeds the entry for a known
+  // public file. The entry now carries the source hash it was computed for, and
+  // a mismatch is refused.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hydra-cache-forge-'));
+  try {
+    const cache = new CompileCache(dir, { version: '1' });
+    const key = cache.keyFor('a.hyx', 'the real source');
+    const file = path.join(dir, key.slice(0, 2), key + '.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    // What an attacker writes: the real key, someone else's compiled code, and
+    // a `src` that does not match the key it was stored under.
+    fs.writeFileSync(file, JSON.stringify({ src: 'deadbeef', res: { code: 'EVIL' } }), 'utf8');
+    assert.equal(cache.get(key), null, 'a forged entry was trusted as code');
+
+    // The honest entry still round-trips, so the check is not simply refusing
+    // everything on disk.
+    const ok = new CompileCache(dir, { version: '1' });
+    ok.set(key, { code: 'good' });
+    assert.deepEqual(ok.get(key), { code: 'good' });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

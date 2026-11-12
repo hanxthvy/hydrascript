@@ -1,7 +1,7 @@
 # [xihanzu-NR]
 [package]
 name = "hydra"
-version = "0.15.0"
+version = "0.15.1"
 edition = "2021"
 description = "HydraScript compiler: Pythonic syntax for React (.hyx) and Node (.hys)"
 license = "MIT"
@@ -42,3 +42,14 @@ panic = "unwind"
 
 [profile.test]
 opt-level = 1
+
+# The N-API addon is linked INTO Node, so a panic must unwind rather than abort.
+#
+# `panic = "abort"` in `release` is right for the CLI (a compiler that panics has
+# nothing to unwind to) and catastrophic for the addon: an abort in a cdylib takes
+# the host process with it — the editor, the Vite dev server, the bundler — with no
+# message a person can act on. This profile inherits the release settings and asks
+# for `unwind`, and `src/napi.rs` catches it at the boundary.
+[profile.addon]
+inherits = "release"
+panic = "unwind"

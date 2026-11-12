@@ -34,12 +34,49 @@ const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
  * client and silently drops the ones that have gone away, which is the only
  * error handling a dev server needs.
  */
-export function attachSocketServer(httpServer, { path = '/__hydra/hmr' } = {}) {
+export function attachSocketServer(httpServer, { path = '/__hydra/hmr', maxClients = 32 } = {}) {
   const clients = new Set();
 
   httpServer.on('upgrade', (req, socket) => {
     const url = req.url || '';
-    if (!url.startsWith(path)) {
+    // EXACT match, not a prefix: `startsWith` also accepted `/__hydra/hmrx` and
+    // `/__hydra/hmr?x=1`, so a probe could tell a dev server apart from any other
+    // listener by the 101 it got back.
+    if (url !== path && url !== `${path}?`) {
+      socket.destroy();
+      return;
+    }
+    // Same-origin only.
+    //
+    // Without this any page the developer visits could open a socket to
+    // localhost:5173 and receive every build error — compiler output naming
+    // absolute source paths and source snippets. The dev server is the one bound
+    // to 0.0.0.0, so "it is only dev" is not enough.
+    //
+    // A browser always sends Origin on a WebSocket handshake; a non-browser
+    // client (the reload client is a browser, so this is fine) may omit it, and
+    // then `Host` is the only thing to compare against — an attacker's page
+    // cannot forge either header.
+    const origin = req.headers.origin;
+    const host = req.headers.host;
+    if (origin) {
+      let originHost;
+      try {
+        originHost = new URL(origin).host;
+      } catch {
+        originHost = null;
+      }
+      if (!originHost || !host || originHost !== host) {
+        socket.destroy();
+        return;
+      }
+    } else if (!host) {
+      socket.destroy();
+      return;
+    }
+    // A tab left open reconnects forever; unbounded sockets are a slow leak on a
+    // long dev session and a trivial way to exhaust file descriptors.
+    if (clients.size >= maxClients) {
       socket.destroy();
       return;
     }

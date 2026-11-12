@@ -68,11 +68,12 @@ const CLEAN_USAGE: &str = "\
 hydra clean — remove build output
 
 USAGE:
-  hydra clean [--all]
+  hydra clean [--all] [--yes]
 
 OPTIONS:
   --all      also remove node_modules and the common caches
              (.hydra, .esbuild, .vite, node_modules/.cache)
+  --yes      confirm deleting an outputDir that is not dist/build/out
   -h, --help show this message
 ";
 
@@ -667,6 +668,7 @@ pub fn clean(args: &[String]) -> ExitCode {
     }
 
     let all = args.iter().any(|a| a == "--all");
+    let assume_yes = args.iter().any(|a| a == "--yes" || a == "-y");
     let root = project_root();
     println!("hydra clean — {}", root.display());
 
@@ -681,6 +683,37 @@ pub fn clean(args: &[String]) -> ExitCode {
 
     // The output directory comes from a config file the user can edit, so treat
     // it as untrusted: never delete the project itself or anything outside it.
+    // `outputDir` comes from a file the project owner edits, and containment was
+    // never the whole question: `{\"outputDir\": \"./src\"}` resolved INSIDE the
+    // project and recursively deleted the source tree — a one-line config mistake
+    // with the same result as `rm -rf src`.
+    //
+    // Two rules. A target named like source is never removed, and an output
+    // directory outside the conventional names needs an explicit `--yes`.
+    const NEVER_DELETE: [&str; 8] = [
+        "src",
+        "pages",
+        "components",
+        "tests",
+        "public",
+        ".git",
+        ".github",
+        "node_modules",
+    ];
+    let configured_out = root.join(output_dir_name(&root));
+    let conventional = matches!(
+        configured_out.file_name().and_then(|n| n.to_str()),
+        Some("dist") | Some("build") | Some("out")
+    );
+    if !conventional && !assume_yes {
+        eprintln!(
+            "hydra: refusing to remove {} — that is not `dist`, `build` or `out`. \
+             Re-run with --yes if it really is build output.",
+            configured_out.display()
+        );
+        return ExitCode::from(1);
+    }
+
     let canonical_root = root.canonicalize().unwrap_or_else(|_| root.clone());
     let mut freed = 0u64;
     let mut removed = 0usize;
@@ -689,6 +722,15 @@ pub fn clean(args: &[String]) -> ExitCode {
     for target in &targets {
         if !target.exists() {
             continue;
+        }
+        if let Some(name) = target.file_name().and_then(|n| n.to_str()) {
+            if NEVER_DELETE.contains(&name) {
+                eprintln!(
+                    "hydra: refusing to remove {} — it holds tracked source, not build output",
+                    target.display()
+                );
+                continue;
+            }
         }
         let canonical = target.canonicalize().unwrap_or_else(|_| target.clone());
         if canonical == canonical_root || !canonical.starts_with(&canonical_root) {
@@ -1053,7 +1095,11 @@ impl Json {
 
     pub(crate) fn parse(text: &str) -> Result<Json, String> {
         let chars: Vec<char> = text.chars().collect();
-        let mut parser = JsonParser { chars, pos: 0 };
+        let mut parser = JsonParser {
+            chars,
+            pos: 0,
+            depth: 0,
+        };
         parser.skip_ws();
         let value = parser.value()?;
         parser.skip_ws();
@@ -1063,7 +1109,24 @@ impl Json {
         Ok(value)
     }
 
+    /// Serialize with a DEPTH where recursion could otherwise run away.
+    ///
+    /// `Json::write` recurses once per level, and the value it writes may come
+    /// straight from a file the project owner did not write (`hydraconfig.json`
+    /// in a checkout). 5 000 nested arrays are 10 KB of text and 5 000 stack
+    /// frames — enough to abort the process on a default stack. Serializing an
+    /// over-deep value is an error here, not a crash later.
     fn write(&self, indent: usize, out: &mut String) {
+        self.write_at(indent, 0, out);
+    }
+
+    fn write_at(&self, indent: usize, depth: usize, out: &mut String) {
+        // Matches `MAX_JSON_DEPTH` in the parser: a value that could be READ is a
+        // value that can be WRITTEN, and nothing deeper is ever legitimate.
+        if depth > 128 {
+            out.push_str("\"<value nested too deeply to write>\"");
+            return;
+        }
         match self {
             Json::Null => out.push_str("null"),
             Json::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -1077,7 +1140,7 @@ impl Json {
                 out.push_str("[\n");
                 for (i, item) in items.iter().enumerate() {
                     out.push_str(&"  ".repeat(indent + 1));
-                    item.write(indent + 1, out);
+                    item.write_at(indent + 1, depth + 1, out);
                     if i + 1 < items.len() {
                         out.push(',');
                     }
@@ -1096,7 +1159,7 @@ impl Json {
                     out.push_str(&"  ".repeat(indent + 1));
                     write_json_string(key, out);
                     out.push_str(": ");
-                    value.write(indent + 1, out);
+                    value.write_at(indent + 1, depth + 1, out);
                     if i + 1 < entries.len() {
                         out.push(',');
                     }
@@ -1128,7 +1191,19 @@ fn write_json_string(s: &str, out: &mut String) {
 struct JsonParser {
     chars: Vec<char>,
     pos: usize,
+    /// How deep the value currently being parsed sits.
+    ///
+    /// The parser is recursive, and `value()` recursed once per `{`/`[`, so a
+    /// 50 KB file of nested arrays overflowed the stack and aborted the process —
+    /// measured between depth 21,671 (fine) and 22,054 (crash). `hydra clean` and
+    /// `hydra analyze` read this parser, so the input that killed them was a
+    /// config file. A bound turns that into a sentence.
+    depth: usize,
 }
+
+/// Storage nesting the JSON reader accepts. Mirrors the source parser's
+/// `MAX_DEPTH`: far past any real config, far below the stack limit.
+const MAX_JSON_DEPTH: usize = 128;
 
 impl JsonParser {
     fn peek(&self) -> Option<char> {
@@ -1163,6 +1238,20 @@ impl JsonParser {
     }
 
     fn value(&mut self) -> Result<Json, String> {
+        self.depth += 1;
+        if self.depth > MAX_JSON_DEPTH {
+            self.depth -= 1;
+            return Err(format!(
+                "nesting too deep (over {MAX_JSON_DEPTH} levels) at offset {}",
+                self.pos
+            ));
+        }
+        let out = self.value_at_depth();
+        self.depth -= 1;
+        out
+    }
+
+    fn value_at_depth(&mut self) -> Result<Json, String> {
         self.skip_ws();
         match self.peek() {
             Some('{') => self.object(),
@@ -1560,5 +1649,42 @@ mod tests {
         );
         let arg = tree.root.to_string_lossy().to_string();
         assert_eq!(analyze(&[arg]), ExitCode::SUCCESS);
+    }
+}
+
+#[cfg(test)]
+mod json_depth_tests {
+    use super::Json;
+
+    /// SEC-27: a nested config file must be a refusal, never an abort.
+    ///
+    /// Reading was already bounded (`MAX_JSON_DEPTH`); writing was not, and the
+    /// value being written can come straight from a checkout's
+    /// `hydraconfig.json`. 5 000 nested arrays are 10 KB of text and 5 000 stack
+    /// frames — enough to abort the process on a default stack.
+    #[test]
+    fn writing_a_deeply_nested_value_does_not_overflow_the_stack() {
+        let depth = 5000;
+        let mut text = String::new();
+        for _ in 0..depth {
+            text.push('[');
+        }
+        text.push('1');
+        for _ in 0..depth {
+            text.push(']');
+        }
+        // The parser refuses it, so build the value by hand: the writer must be
+        // safe on its own.
+        let mut value = Json::Num("1".to_string());
+        for _ in 0..depth {
+            value = Json::Arr(vec![value]);
+        }
+        let mut out = String::new();
+        value.write(0, &mut out);
+        assert!(
+            out.contains("too deeply"),
+            "deep value was written without a bound: {}",
+            &out[..out.len().min(80)]
+        );
     }
 }

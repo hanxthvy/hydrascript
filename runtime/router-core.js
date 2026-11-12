@@ -70,6 +70,26 @@ function decodePart(part) {
 }
 
 /**
+ * Assign a param WITHOUT going through the prototype chain.
+ *
+ * A route file may be named `[__proto__].hys` or `[constructor].hys`, and plain
+ * assignment treats those as slots rather than keys: `params.__proto__ = 'x'` is
+ * silently dropped for a string, and with an ARRAY it REPLACES the params
+ * object's prototype — so the page renders with params that are not what the URL
+ * said, and `params.slug` now resolves through attacker-chosen data. Defining an
+ * own property bypasses the setter and keeps the object's shape (`{}`), so
+ * existing code that assumes a normal object keeps working.
+ */
+function setParam(params, name, value) {
+  Object.defineProperty(params, name, {
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
+/**
  * Match one route's segments against a URL's segments.
  *
  * Returns the params object, or `null`. No backtracking: this pattern language
@@ -86,7 +106,7 @@ export function matchSegments(urlParts, patternParts) {
     if (seg.kind === 'catchall') {
       const rest = urlParts.slice(i);
       if (rest.length === 0 && !seg.optional) return null;
-      params[seg.name] = rest;
+      setParam(params, seg.name, rest);
       return params;
     }
 
@@ -95,7 +115,7 @@ export function matchSegments(urlParts, patternParts) {
     i += 1;
 
     if (seg.kind === 'param') {
-      params[seg.name] = value;
+      setParam(params, seg.name, value);
     } else if (seg.value !== value) {
       return null;
     }

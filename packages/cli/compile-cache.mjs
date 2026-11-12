@@ -161,7 +161,25 @@ export class CompileCache {
       return null;
     }
     try {
-      const res = JSON.parse(text);
+      const parsed = JSON.parse(text);
+      // An entry on disk is DATA, never code.
+      //
+      // The key is a hash of the source, so a collision was never the exposure —
+      // FORGERY was. Anyone who can write `.hydra/cache` (a poisoned CI cache, a
+      // shared checkout, an archive extract) could pre-seed the exact entry for a
+      // known public source file and the build emitted their code. So the entry
+      // carries the source hash it was computed for, and it is verified against
+      // the source actually being compiled. A mismatch is a miss: the file is
+      // recompiled, which costs a few milliseconds and is the only safe answer.
+      if (!parsed || typeof parsed !== 'object' || parsed.src !== key) {
+        this.misses += 1;
+        return null;
+      }
+      const res = parsed.res;
+      if (!res || typeof res !== 'object' || typeof res.code !== 'string') {
+        this.misses += 1;
+        return null;
+      }
       this.memory.set(key, res);
       this.hits += 1;
       return res;
@@ -190,7 +208,10 @@ export class CompileCache {
       // Written to a temp name and renamed, so a reader never sees a half-written
       // entry and a killed build cannot leave one behind under the real name.
       const tmp = file + '.' + process.pid + '.tmp';
-      fs.writeFileSync(tmp, JSON.stringify(res), 'utf8');
+      // `src` is the key the code was compiled FROM. `get` refuses an entry whose
+      // `src` does not match the key it was asked for, which is what makes a
+      // forged file a miss rather than code.
+      fs.writeFileSync(tmp, JSON.stringify({ src: key, res }), 'utf8');
       fs.renameSync(tmp, file);
     } catch {
       /* a cache that cannot write is a cache that misses */

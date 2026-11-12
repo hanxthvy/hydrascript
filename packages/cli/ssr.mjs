@@ -12,15 +12,13 @@
  * REQUEST from the same prebuilt server bundle the SSG pass uses, and expose
  * the data endpoint a client-side navigation needs.
  *
- * Two rules kept this honest while writing it, and both come from the runtime
- * having one module-global seed:
- *
- *   1. Loading and rendering are separate calls, and nothing may `await` between
- *      `renderSync` and `renderToString`. Otherwise two concurrent requests
- *      interleave and the second page renders with the first one's data.
- *   2. Identity is the full URL. Two URLs can match the same pattern, so the
- *      inlined payload carries `url` and the client only trusts a payload for
- *      the URL it is rendering.
+ * The runtime keeps one module-global seed for the synchronous SSG pass and an
+ * `AsyncLocalStorage` store for a server. Every render below therefore runs
+ * INSIDE `withRequest`, not merely builds an element inside it — an async
+ * render that escapes the store reads whichever request wrote the global last.
+ * Identity is the full URL: two URLs can match the same pattern, so the inlined
+ * payload carries `url` and the client only trusts a payload for the URL it is
+ * rendering.
  */
 
 import fs from 'node:fs';
@@ -63,14 +61,19 @@ export function dataTag(pattern, url, data) {
 
 /** Replace the data tag if the shell has one, else insert before `</body>`. */
 export function injectData(html, tag) {
+  // Function replacers throughout: the tag carries the loader's JSON, and a
+  // replacement STRING interprets `$&`, `` $` `` and `$'` — so a query value of
+  // `$'` spliced the document into the hydration payload and produced JSON that
+  // does not parse (a blank, data-dependent page). No loader needed: `?q=$'` in
+  // the URL was enough.
   if (html.includes('id="__hydra_data__"')) {
     return html.replace(
       /<script type="application\/json" id="__hydra_data__">[\s\S]*?<\/script>/,
-      tag,
+      () => tag,
     );
   }
   return html.includes('</body>')
-    ? html.replace('</body>', `  ${tag}\n  </body>`)
+    ? html.replace('</body>', () => `  ${tag}\n  </body>`)
     : html + `\n${tag}\n`;
 }
 
@@ -197,9 +200,10 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
         'the server bundle predates request context (no __with_ssr_seed) — run `hydra build` again',
     };
   }
+  let alsClass = null;
   try {
-    const { AsyncLocalStorage } = await import('node:async_hooks');
-    mod.__set_async_local_storage(AsyncLocalStorage);
+    alsClass = (await import('node:async_hooks')).AsyncLocalStorage;
+    mod.__set_async_local_storage(alsClass);
   } catch (e) {
     return { available: false, reason: `AsyncLocalStorage is unavailable: ${e.message}` };
   }
@@ -239,7 +243,18 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
     return next;
   };
 
-  const ensureFresh = () => {
+  // Renders that are still running. `ensureFresh()` reloads the bundle in
+  // place, so a rebuild landing between a request's `loadFor` and its
+  // `renderSync` used to hand one request TWO different module instances: data
+  // shaped by the old build, rendered by the new one. In dev that is a render
+  // that throws on a prop the old loader never produced, at exactly the moment
+  // the developer saved the file — the least reproducible bug there is. The swap
+  // now waits until nothing is mid-render, and every render holds the module it
+  // started with.
+  let active = 0;
+  let swapPending = false;
+
+  const ensureFresh = (force = false) => {
     let mtime = loadedAt;
     try {
       mtime = fs.statSync(bundlePath).mtimeMs;
@@ -247,10 +262,21 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
       /* the bundle is gone; keep the one in memory rather than crash a request */
     }
     if (mtime !== loadedAt) {
+      if (active > 0 && !force) {
+        // Deferred: picked up by the next request, which starts cleanly.
+        swapPending = true;
+        return;
+      }
       try {
         delete requireFrom.cache[requireFrom.resolve(bundlePath)];
         mod = requireFrom(bundlePath);
         loadedAt = mtime;
+        swapPending = false;
+        // A new module instance has its own AsyncLocalStorage binding, so the
+        // hook has to be installed again or every request context is lost.
+        if (alsClass && typeof mod.__set_async_local_storage === 'function') {
+          mod.__set_async_local_storage(alsClass);
+        }
       } catch {
         /* a half-written bundle: the previous one is still the better answer */
       }
@@ -309,26 +335,39 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
       if (!hit) return null;
       const params = hit.params;
       const pattern = hit.route.pattern;
-      const data = await mod.loadFor(pattern, params, url, request);
+      // ONE module instance for the whole render. `ensureFresh` may reload the
+      // bundle while this request is awaiting its loader (a rebuild landing
+      // mid-request); reading `mod` again afterwards would pair data from the
+      // old build with the renderer of the new one.
+      const m = mod;
+      active += 1;
+      try {
+      const data = await m.loadFor(pattern, params, url, request);
       // The render runs INSIDE this request's async context, so another request
       // awaiting its own loader cannot see — or overwrite — this one's data.
       // Before request context existed the comment here said the opposite: that
       // nothing may `await` between the seed write and renderToString, because
       // the seed was one module-global. It still is one global for the SSG
       // pass, which is synchronous; a server is not.
-      const rendered = mod.withRequest
-        ? mod.withRequest({ path: pattern, url, data }, () => {
-            const element = mod.renderSync(pattern, params, url, data);
+      const rendered = m.withRequest
+        ? m.withRequest({ path: pattern, url, data }, () => {
+            const element = m.renderSync(pattern, params, url, data);
             return element ? renderToString(element) : null;
           })
         : (() => {
-            const element = mod.renderSync(pattern, params, url, data);
+            const element = m.renderSync(pattern, params, url, data);
             const html = element ? renderToString(element) : null;
-            if (typeof mod.__clear_seed === 'function') mod.__clear_seed();
+            if (typeof m.__clear_seed === 'function') m.__clear_seed();
             return html;
           })();
       if (rendered === null) return null;
       return { pattern, params, data, html: rendered, meta: hit.route.meta || null };
+      } finally {
+        // Only now may a pending reload take effect. A rebuild that arrived
+        // while this request was in flight is picked up by the next one.
+        active -= 1;
+        if (active === 0 && swapPending) ensureFresh(true);
+      }
     },
     /** Render a URL into a complete HTML document. */
     async renderPage(url, opts = {}) {
@@ -390,6 +429,10 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
       const params = hit.params;
       const pattern = hit.route.pattern;
       const request = opts.request || null;
+      // Same reason as `render`: a stream outlives its function call, so it must
+      // hold the instance it started with rather than read the live binding
+      // again mid-flight.
+      const m = mod;
 
       // The route loader is awaited here, BEFORE the head is written.
       //
@@ -402,7 +445,7 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
       // the loader itself needs React Server Components or a resolver-based
       // renderer; neither exists here yet, and pretending otherwise would be the
       // exact "claimed but not measured" failure this release is cleaning up.
-      const data = await mod.loadFor(pattern, params, url, request);
+      const data = await m.loadFor(pattern, params, url, request);
       const intent = httpIntent(data);
       if (intent) return { pattern, params, data, meta: hit.route.meta || null, intent, stream: null };
 
@@ -412,63 +455,104 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
       const head = applyMeta(before, hit.route.meta || null);
       const tail = after;
 
-      // `renderToPipeableStream` returns `{ pipe, abort }` SYNCHRONOUSLY, but it
-      // does not begin rendering until `pipe()` is called. Waiting for
-      // `onShellReady` before piping deadlocks: the callback fires from the
-      // pipe and the pipe waits for the callback. So the stream is piped first,
-      // and the head is written before any of its chunks reach the response.
-      const render = () => mod.renderSync(pattern, params, url, data);
-      const element = mod.withRequest
-        ? React.createElement(() => mod.withRequest({ path: pattern, url, data }, render))
-        : render();
-      if (!element) return null;
+      // The render must run INSIDE this request's async context, not the element
+      // CONSTRUCTION only.
+      //
+      // The bug this fixes was critical and structural: `withRequest` is
+      // `als.run(seed, fn)`, and it used to wrap a lambda that merely BUILT a
+      // React element — so `als.run` had already returned before React rendered
+      // anything. Every hook below that point (`use_path`, `use_params`,
+      // `use_loader`) called `currentSeed()`, which then fell back to the
+      // MODULE-GLOBAL seed written by `renderSync` — i.e. whichever request wrote
+      // it last. A Suspense boundary resolving in a later task read another
+      // visitor's `{pattern, url, data}` and streamed it into this visitor's HTML.
+      //
+      // So the whole streaming setup runs inside `withRequest`: `handle.pipe()`
+      // is what starts the render, and async continuations created under
+      // AsyncLocalStorage inherit the store.
+      const start = () => {
+        const element = m.renderSync(pattern, params, url, data);
+        if (!element) return null;
 
-      let shellFailed = null;
-      const handle = renderToPipeableStream(element, {
-        onShellError(err) {
-          shellFailed = err;
-        },
-        onError(err) {
-          // A boundary failed AFTER the shell. The page still ships, so this is
-          // a log line rather than a failed request — the same distinction the
-          // buffered path makes between a 500 and a rendered error boundary.
-          console.error(`[hydra] SSR stream error for ${pattern}: ${err && err.message ? err.message : err}`);
-        },
-      });
+        let shellFailed = null;
+        const handle = renderToPipeableStream(element, {
+          onShellError(err) {
+            shellFailed = err;
+          },
+          onError(err) {
+            // A boundary failed AFTER the shell. The page still ships, so this is
+            // a log line rather than a failed request — the same distinction the
+            // buffered path makes between a 500 and a rendered error boundary.
+            console.error(`[hydra] SSR stream error for ${pattern}: ${err && err.message ? err.message : err}`);
+          },
+        });
 
-      // Three writes, in order: the head (that is the early first byte), React's
-      // chunks as they are produced, then the data tag and the closing tags.
-      // The last part can only be written once the loader's result exists —
-      // which is the wait streaming exists to hide.
-      const out = new PassThrough();
-      out.write(head);
+        // Three writes, in order: the head (that is the early first byte), React's
+        // chunks as they are produced, then the data tag and the closing tags.
+        // The last part can only be written once the loader's result exists —
+        // which is the wait streaming exists to hide.
+        const out = new PassThrough();
+        out.write(head);
 
-      let finished = false;
-      const finish = () => {
-        if (finished) return;
-        finished = true;
-        if (shellFailed) {
-          out.destroy(shellFailed);
-          return;
-        }
-        out.end(injectData('', dataTag(pattern, url, data)) + tail);
+        let finished = false;
+
+        // A client that navigates away mid-stream leaves React rendering into a
+        // pipe nobody reads: the work continues to completion, holding the
+        // component tree and the loader's data for a response that will never
+        // arrive. One aborted tab is nothing; a mobile client that cancels on
+        // every scroll is a permanent leak. `handle.abort()` is the only thing
+        // that actually stops the render — destroying the PassThrough alone
+        // leaves it going.
+        out.on('close', () => {
+          if (!finished) {
+            try {
+              handle.abort();
+            } catch {
+              /* the handle refuses after completion; that is a no-op we ignore */
+            }
+          }
+        });
+        const finish = () => {
+          if (finished) return;
+          finished = true;
+          // Nothing this request put in the module-global slot may outlive it: a
+          // later render that has no async context (the SSG pass, a tool) must not
+          // find this request's data there.
+          try {
+            if (typeof m.__clear_seed === 'function') m.__clear_seed();
+          } catch {
+            /* clearing must never be the thing that breaks a response */
+          }
+          if (shellFailed) {
+            out.destroy(shellFailed);
+            return;
+          }
+          out.end(injectData('', dataTag(pattern, url, data)) + tail);
+        };
+
+        // React's pipe writes into `sink` and ends it when the render is done;
+        // completion is observed there because the handle is not an emitter.
+        //
+        // React's FIRST chunk begins with a script that hides the fallbacks it
+        // intends to replace later, and the markup follows immediately. The data
+        // tag must come after ALL of it, not merely after the first chunk — the
+        // previous version appended it on React's `end` but React had not flushed
+        // its last chunk yet, so the tag landed between the shell and the markup.
+        // A client reading it would trust a payload for a document that had not
+        // finished arriving.
+        const sink = new PassThrough();
+        sink.on('data', (chunk) => out.write(chunk));
+        sink.on('end', finish);
+        sink.on('error', (err) => out.destroy(err));
+        handle.pipe(sink);
+
+        return out;
       };
 
-      // React's pipe writes into `sink` and ends it when the render is done;
-      // completion is observed there because the handle is not an emitter.
-      //
-      // React's FIRST chunk begins with a script that hides the fallbacks it
-      // intends to replace later, and the markup follows immediately. The data
-      // tag must come after ALL of it, not merely after the first chunk — the
-      // previous version appended it on React's `end` but React had not flushed
-      // its last chunk yet, so the tag landed between the shell and the markup.
-      // A client reading it would trust a payload for a document that had not
-      // finished arriving.
-      const sink = new PassThrough();
-      sink.on('data', (chunk) => out.write(chunk));
-      sink.on('end', finish);
-      sink.on('error', (err) => out.destroy(err));
-      handle.pipe(sink);
+      const out = m.withRequest
+        ? m.withRequest({ path: pattern, url, data }, start)
+        : start();
+      if (!out) return null;
 
       return { pattern, params, data, meta: hit.route.meta || null, intent: null, stream: out };
     },
@@ -513,12 +597,33 @@ export async function createRenderer({ cwd, bundlePath, shellPath }) {
  * and a payload with `data: null` when the route simply has no loader: those are
  * different answers and the client tells them apart by `pattern`.
  */
-export async function handleDataRequest(req, res, renderer, url) {
+export async function handleDataRequest(req, res, renderer, url, opts = {}) {
   const parsed = new URL(url, 'http://localhost');
   const target = parsed.searchParams.get('url');
   const json = (status, body) => {
-    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify(body));
+    // `no-store` + `Vary`: the same URL answers differently per visitor (the
+    // loader reads the request), so a shared cache storing one visitor's JSON is
+    // a cross-user leak. `nosniff` because this is JSON a browser must never
+    // execute as a document.
+    res.writeHead(status, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+      Vary: 'Cookie, Authorization',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    // Serialize first: a loader that returned something circular must not take
+    // the process with it after the header is on the wire.
+    let body_ = 'null';
+    try {
+      body_ = JSON.stringify(body);
+    } catch (e) {
+      res.end(
+        JSON.stringify({ error: 'internal error', code: 'data_unserializable', ref: 'data' }),
+      );
+      console.error(`[hydra] data endpoint: unserializable payload for ${target}: ${e && e.message ? e.message : e}`);
+      return;
+    }
+    res.end(body_);
   };
   if (!target) return json(400, errorBody('data_missing_url', 'missing ?url='));
   if (!renderer || !renderer.available) {
@@ -526,7 +631,11 @@ export async function handleDataRequest(req, res, renderer, url) {
   }
   let out;
   try {
-    out = await renderer.load(target);
+    // The SAME request object the render path builds. Without it, a loader that
+    // reads `cookie`/`authorization` saw the real value on first paint and an
+    // empty headers object on client navigation — so a header-based guard either
+    // denied wrongly or silently served the public branch.
+    out = await renderer.load(target, { request: opts.request || null });
   } catch (e) {
     // The loader threw. Reporting that is the whole point: a page that renders
     // an empty list because the fetch failed looks identical to one that has no
@@ -534,6 +643,23 @@ export async function handleDataRequest(req, res, renderer, url) {
     return json(500, errorBody('loader_threw', e && e.message ? e.message : String(e), { url: target }));
   }
   if (!out) return json(404, errorBody('data_no_route', 'no route matches', { url: target }));
+
+  // A loader used as an auth gate answers HERE too.
+  //
+  // This path used to serialize `out.data` directly and never looked at
+  // `httpIntent`, so `redirect('https://evil.example/x')` came back as
+  // `200 {data:{redirect:...}}` and `fail(401,{secret})` came back as
+  // `200 {data:{status:401,...}}` — the refusal object delivered as page props,
+  // with the client reading 200 as `status:'ready'`. The same three lines the
+  // render path already has, before anything is serialized.
+  const intent = httpIntent(out.data);
+  if (intent && intent.kind === 'redirect') {
+    return json(200, { pattern: out.pattern, url: target, redirect: intent.location, status: intent.status });
+  }
+  if (intent && intent.kind === 'fail') {
+    return json(intent.status, errorBody('loader_refused', 'the loader refused this URL', intent.data, intent.status));
+  }
+
   return json(200, { pattern: out.pattern, url: target, data: out.data ?? null });
 }
 

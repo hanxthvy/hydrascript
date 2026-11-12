@@ -18,7 +18,7 @@ kecil membungkus esbuild, PostCSS dan Tailwind untuk menghasilkan situs.
 
 **Status: 0.15.0, pra-1.0.** Compiler, file-based router, prerender, server
 rendering, language server, Fast Refresh, dan test runner sudah jadi dan ditutup 418 tes Rust
-(281 unit + 137 integrasi) serta 221 tes Node di 30 suite. Sintaks bahasanya
+(291 unit + 137 integrasi) serta 255 tes Node di 33 suite. Sintaks bahasanya
 dibekukan (lihat di bawah); yang dirilis sampai 1.0 adalah perkakas dan pematangan, bukan
 konstruksi baru.
 
@@ -601,7 +601,7 @@ memanggil biner `hydra` untuk diagnostik; tidak ada language server terpisah.
 
 ```bash
 cd compiler-rs && cargo test          # 418 tes: 281 unit + 137 integrasi
-node --test packages/cli/*.test.mjs   # 221 tes CLI/runtime, sebagian terhadap browser nyata
+node --test packages/cli/*.test.mjs   # 255 tes CLI/runtime, sebagian terhadap browser nyata
 node benchmarks/measure.mjs           # angka yang dikutip di atas
 bash scripts/hx-examples-check.sh     # build semua proyek examples/
 ```

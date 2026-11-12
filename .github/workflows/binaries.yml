@@ -127,7 +127,7 @@ jobs:
           # survive into the publish step.
           grep -c "registry.npmjs.org" "$NPM_CONFIG_USERCONFIG" || true
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.90.0
         with:
           targets: ${{ matrix.rust }}
 
@@ -162,6 +162,8 @@ jobs:
           # reason. The addon is a `cdylib` build with `node-addon` on.
           cargo build --release --locked --target ${{ matrix.rust }} --bin hydra
           OUT="target/${{ matrix.rust }}/release"
+          # Where the `addon` profile writes (`release` + `panic = "unwind"`).
+          ADDON_OUT="target/${{ matrix.rust }}/addon"
           mkdir -p ../pkg/bin
 
           # The addon cannot be produced for musl: cargo says the target "does
@@ -184,20 +186,20 @@ jobs:
               ADDON_LINK="-C link-arg=$(pwd -W 2>/dev/null || pwd)/node-lib/node.lib"
             fi
             # shellcheck disable=SC2086
-            cargo rustc --release --locked --target ${{ matrix.rust }} --lib \
+            cargo rustc --profile addon --locked --target ${{ matrix.rust }} --lib \
               --features node-addon --crate-type cdylib -- $ADDON_LINK
           fi
 
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp "$OUT/hydra.exe" ../pkg/bin/hydra.exe
-            [ "$BUILD_ADDON" = "true" ] && cp "$OUT/hydra.dll" ../pkg/bin/hydra.node || true
+            [ "$BUILD_ADDON" = "true" ] && cp "$ADDON_OUT/hydra.dll" ../pkg/bin/hydra.node || true
           else
             cp "$OUT/hydra" ../pkg/bin/hydra
             if [ "$BUILD_ADDON" = "true" ]; then
               if [ "${{ runner.os }}" = "macOS" ]; then
-                cp "$OUT/libhydra.dylib" ../pkg/bin/hydra.node
+                cp "$ADDON_OUT/libhydra.dylib" ../pkg/bin/hydra.node
               else
-                cp "$OUT/libhydra.so" ../pkg/bin/hydra.node
+                cp "$ADDON_OUT/libhydra.so" ../pkg/bin/hydra.node
               fi
             fi
             chmod +x ../pkg/bin/hydra
@@ -261,7 +263,7 @@ jobs:
           # ships, and the npm bundled with it has been 10.9.x on the ubuntu-22.04
           # image — which failed here with "npm 10.9.9 is too old".
           #
-          # `npm install -g npm@^11.5.1` is NOT the fix: it writes to the system
+          # `npm install -g npm@11.5.1` is NOT the fix: it writes to the system
           # prefix (`/usr/local/share/man`) and dies with EACCES on macOS runners.
           # Neither is `npx npm@11`, which cannot publish with provenance because
           # the OIDC token is minted for the running npm process.
@@ -299,7 +301,7 @@ jobs:
           # ships, and the npm bundled with it has been 10.9.x on the ubuntu-22.04
           # image — which failed here with "npm 10.9.9 is too old".
           #
-          # `npm install -g npm@^11.5.1` is NOT the fix: it writes to the system
+          # `npm install -g npm@11.5.1` is NOT the fix: it writes to the system
           # prefix (`/usr/local/share/man`) and dies with EACCES on macOS runners.
           # Neither is `npx npm@11`, which cannot publish with provenance because
           # the OIDC token is minted for the running npm process.
@@ -307,7 +309,7 @@ jobs:
           # So the version is installed into a PRIVATE prefix and put on PATH:
           # writable on every runner, no sudo, and `npm` is genuinely npm 11 from
           # then on. The check below proves it, and names the path it found.
-          npm install --prefix "$RUNNER_TEMP/npm11" --no-audit --no-fund npm@^11.5.1
+          npm install --prefix "$RUNNER_TEMP/npm11" --no-audit --no-fund npm@11.5.1
           NPM_BIN="$RUNNER_TEMP/npm11/node_modules/.bin/npm"
           if [ "${RUNNER_OS:-}" = "Windows" ] || [ -f "$RUNNER_TEMP/npm11/node_modules/.bin/npm.cmd" ]; then
             NPM_BIN="$RUNNER_TEMP/npm11/node_modules/.bin/npm.cmd"

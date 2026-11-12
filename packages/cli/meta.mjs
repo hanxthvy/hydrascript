@@ -249,18 +249,23 @@ export function applyMeta(html, meta) {
 
   if (typeof meta.title === 'string') {
     const tag = `<title>${escapeHtml(meta.title)}</title>`;
+    // `() => tag`, not `tag`. A replacement STRING interprets `$&`, `` $` `` and
+    // `$'` as "the match", "the text before" and "the text after", so a page title
+    // of `A$&B` spliced the previous `<title>` element into the new one. Escaping
+    // does not help: `$` is not HTML. One function kills the whole class, here and
+    // in every other insertion below.
     out = /<title>[\s\S]*?<\/title>/i.test(out)
-      ? out.replace(/<title>[\s\S]*?<\/title>/i, tag)
-      : out.replace(/<\/head>/i, `  ${tag}\n  </head>`);
+      ? out.replace(/<title>[\s\S]*?<\/title>/i, () => tag)
+      : out.replace(/<\/head>/i, () => `  ${tag}\n  </head>`);
   }
 
   if (typeof meta.description === 'string') {
     const tag = `<meta name="description" content="${escapeHtml(meta.description)}" />`;
     const existing = /<meta\b[^>]*\bname=["']description["'][^>]*>/i;
     if (existing.test(out)) {
-      out = out.replace(existing, tag);
+      out = out.replace(existing, () => tag);
     } else if (out.includes('</head>')) {
-      out = out.replace('</head>', `  ${tag}\n  </head>`);
+      out = out.replace('</head>', () => `  ${tag}\n  </head>`);
     }
   }
 
@@ -303,8 +308,10 @@ export function applyMeta(html, meta) {
 function upsertTag(html, matcher, tag) {
   const escaped = matcher.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const re = new RegExp(`${escaped}[^>]*>`, 'i');
-  if (re.test(html)) return html.replace(re, tag);
-  return html.includes('</head>') ? html.replace(/<\/head>/i, `  ${tag}\n  </head>`) : html;
+  // Function replacer: see the note on the title above — a value containing `$&`
+  // must not be read as a pattern, and metadata can come from a database.
+  if (re.test(html)) return html.replace(re, () => tag);
+  return html.includes('</head>') ? html.replace(/<\/head>/i, () => `  ${tag}\n  </head>`) : html;
 }
 
 /**

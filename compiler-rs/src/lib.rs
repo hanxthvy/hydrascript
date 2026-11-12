@@ -95,7 +95,10 @@ pub fn parse_errors(src: &str) -> Vec<CompileError> {
     // both doubles the count, and the second one is never actionable: the line is
     // already named by the first. The rule: on a line that had a lexer error, a
     // parser error is a symptom, not a finding.
-    let lex_lines: Vec<usize> = errors
+    // A HashSet, not a Vec: `lex_lines.contains(&line)` inside the `retain` below
+    // turned this into O(n²) on a file with thousands of bad lines, which is the
+    // same input that made the diagnostics expensive in the first place.
+    let lex_lines: std::collections::HashSet<usize> = errors
         .iter()
         .filter(|e| {
             e.msg.contains("unterminated")
@@ -121,6 +124,31 @@ pub fn parse_errors(src: &str) -> Vec<CompileError> {
             // on — that one is a real second problem.
             is_lex || !lex_lines.contains(&e.line)
         });
+    }
+
+    // Cap what is RETAINED.
+    //
+    // Past a few hundred lines the list stops being advice and becomes output: no
+    // one fixes 4 000 diagnostics, an editor renders the first screen, and the
+    // cost of holding them all is what made a 70 KB file cost gigabytes. The
+    // sentinel keeps the count visible so nothing is silently dropped.
+    const MAX_REPORTED: usize = 100;
+    if errors.len() > MAX_REPORTED {
+        let dropped = errors.len() - MAX_REPORTED;
+        errors.truncate(MAX_REPORTED);
+        let line = errors.last().map_or(0, |e| e.line);
+        errors.push(
+            CompileError::new(
+                format!("…and {} more error(s); fix these and run again", dropped),
+                line,
+                0,
+                errors
+                    .first()
+                    .map(|e| e.src.clone())
+                    .unwrap_or_else(|| std::sync::Arc::from(Vec::<String>::new())),
+            )
+            .with_hint("a file with this many errors is usually generated, not typed"),
+        );
     }
     errors
 }
@@ -312,5 +340,48 @@ mod target_tests {
         assert_eq!(target_for("logic.hs"), Target::Js);
         assert_eq!(target_for("logic.hx"), Target::Js);
         assert_eq!(target_for("fallback.txt"), Target::React);
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_cost_tests {
+    use super::*;
+
+    /// SEC-10: N bad lines must cost O(N), not O(N²).
+    ///
+    /// Each diagnostic used to own a full copy of every line, so a 5 000-line file
+    /// with 5 000 bad lines held 25 million strings — 2.7 GB of RSS from 70 KB of
+    /// input, and an OOM kill at 280 KB. This asserts the behaviour, not the
+    /// allocation: bounded output, bounded time, and every message still sharing
+    /// one source copy.
+    #[test]
+    fn an_error_heavy_file_is_capped_and_shares_its_source() {
+        let src = (0..2000).map(|i| format!("\u{00a5} bad {i}")).collect::<Vec<_>>().join("\n");
+        let errs = parse_errors(&src);
+        // The cap, plus the sentinel that says how many were dropped.
+        assert!(errs.len() <= 101, "{} diagnostics escaped the cap", errs.len());
+        assert!(
+            errs.last().unwrap().msg.contains("more error"),
+            "no sentinel: {:?}",
+            errs.last().map(|e| &e.msg)
+        );
+        // One allocation of source lines for the whole list.
+        let first = errs.first().unwrap().src.as_ptr();
+        assert!(
+            errs.iter().all(|e| e.src.as_ptr() == first),
+            "diagnostics copied the source instead of sharing it"
+        );
+    }
+
+    /// The same input must not take seconds. A generous bound: the point is that
+    /// it is linear, and a quadratic regression blows past this immediately.
+    #[test]
+    fn an_error_heavy_file_is_parsed_quickly() {
+        let src = (0..4000).map(|i| format!("\u{00a5} bad {i}")).collect::<Vec<_>>().join("\n");
+        let start = std::time::Instant::now();
+        let errs = parse_errors(&src);
+        let took = start.elapsed();
+        assert!(!errs.is_empty());
+        assert!(took.as_millis() < 500, "4000 bad lines took {took:?}");
     }
 }

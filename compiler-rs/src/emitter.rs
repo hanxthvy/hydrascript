@@ -927,13 +927,39 @@ fn imported_fn_params(spec: &str, name: &str, base_dir: Option<&std::path::Path>
         return None;
     }
     let base = dir.join(spec);
+    // Bound what a `from "..." import` may READ — and never block on it.
+    //
+    // Two holes here. A specifier that climbs out of the source tree
+    // (`from "../../../../etc/passwd" import x`) was read whenever it happened to
+    // parse, and a device or FIFO (`from "/dev/zero" import x`) never returned:
+    // the compiler was still allocating after five seconds. Neither exfiltrates
+    // content — only "has export default" and parameter names reach the output —
+    // but a build that hangs on a hostile file is a build that hangs.
+    let Ok(base_real) = std::fs::canonicalize(dir) else {
+        return None;
+    };
     for ext in ["", ".hys", ".hyx", ".hs", ".hsx"] {
         let candidate = if ext.is_empty() {
             base.clone()
         } else {
             std::path::PathBuf::from(format!("{}{}", base.display(), ext))
         };
-        let Ok(source) = std::fs::read_to_string(&candidate) else {
+        // Canonicalize FIRST: it resolves `..` and symlinks, and it fails for a
+        // path that does not exist, which is the common case here.
+        let Ok(real) = std::fs::canonicalize(&candidate) else {
+            continue;
+        };
+        if !real.starts_with(&base_real) {
+            continue;
+        }
+        let Ok(meta) = std::fs::metadata(&real) else {
+            continue;
+        };
+        // A regular file, and a small one: `/dev/zero` is neither.
+        if !meta.is_file() || meta.len() > 1024 * 1024 {
+            continue;
+        }
+        let Ok(source) = std::fs::read_to_string(&real) else {
             continue;
         };
         // Line-oriented scan: a `def` header is one line, and the compiler has
@@ -4516,5 +4542,45 @@ fn node_uses_slot(n: &Node) -> bool {
             node_uses_slot(item) || node_uses_slot(container)
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod import_read_tests {
+    use super::imported_fn_params;
+    use std::fs;
+
+    #[test]
+    fn an_import_cannot_read_outside_the_source_tree() {
+        // Only "has export default" / parameter names ever reach the output, so
+        // this was never exfiltration — but a generated file must not depend on
+        // what happens to sit next to the project.
+        let root = std::env::temp_dir().join(format!("hydra-import-{}", std::process::id()));
+        let src = root.join("src");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&src).unwrap();
+        fs::write(root.join("secret.hys"), "export def f(a, b):\n    pass\n").unwrap();
+        fs::write(src.join("lib.hys"), "export def g(x):\n    pass\n").unwrap();
+
+        // Inside: read.
+        let inside = imported_fn_params("./lib.hys", "g", Some(&src));
+        assert_eq!(inside, Some(vec!["x".to_string()]));
+
+        // Outside, by relative traversal: refused.
+        assert_eq!(
+            imported_fn_params("../secret.hys", "f", Some(&src)),
+            None
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_device_file_is_never_read() {
+        // `/dev/zero` has no end. The old code decoded whatever `read_to_string`
+        // produced, which for a FIFO or a device never finished.
+        if !std::path::Path::new("/dev/zero").exists() {
+            return;
+        }
+        assert_eq!(imported_fn_params("/dev/zero", "f", Some(std::path::Path::new("/"))), None);
     }
 }

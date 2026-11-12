@@ -100,6 +100,32 @@ export function envFileNames(mode = process.env.NODE_ENV || 'production') {
   return ['.env', `.env.${mode}`, '.env.local', `.env.${mode}.local`];
 }
 
+/**
+ * Keys a project's `.env` may NOT set.
+ *
+ * The header above has always promised this; the code did not do it. Every key in
+ * every `.env` file was copied into `process.env`, and two of them decide what the
+ * framework EXECUTES:
+ *
+ *   HYDRA_NATIVE=./x/hydra.node   → `selfRequire()`s that file during build
+ *   HYDRA_COMPILER=./x/hydra      → spawns it with the project's source on stdin
+ *
+ * so an untrusted checkout (an extracted archive, a PR, a template repo) got code
+ * execution on `hydra build`/`serve`/`preview` before anything was compiled. The
+ * same mechanism flips off 5xx redaction with `HYDRA_EXPOSE_ERRORS=1` or
+ * `NODE_ENV=production` — the two settings `env.mjs` explicitly says are not read
+ * from a file.
+ *
+ * The rule is now the one the docs describe: a `.env` is the PROJECT's variables
+ * (including `PUBLIC_*`), never the framework's runtime knobs. Those stay real
+ * environment variables, where a deploy sets them and a repo cannot.
+ */
+const FRAMEWORK_KNOBS = /^(?:HYDRA_|NODE_ENV$|NODE_OPTIONS$|PORT$)/i;
+
+export function isFrameworkKnob(key) {
+  return FRAMEWORK_KNOBS.test(String(key));
+}
+
 export function loadProjectEnv(cwd, target = process.env, mode = process.env.NODE_ENV || 'production') {
   // Merged in precedence order; a later file wins for the same key.
   const vars = {};
@@ -119,6 +145,7 @@ export function loadProjectEnv(cwd, target = process.env, mode = process.env.NOD
   // Nothing to read (found === 0) is fine: the `FROM_FILE` cleanup below still
   // runs, so a key this process applied earlier does not outlive its file.
   const applied = [];
+  const refusedKeys = [];
   const owned = (k) => FROM_FILE.has(`${cwd}\u0000${k}`);
 
   // A key that vanished from the file goes with it, but only one this process
@@ -126,12 +153,19 @@ export function loadProjectEnv(cwd, target = process.env, mode = process.env.NOD
   for (const entry of [...FROM_FILE]) {
     const [dir, key] = entry.split('\u0000');
     if (dir !== cwd) continue;
-    if (!(key in vars)) {
+    if (!(key in vars) || isFrameworkKnob(key)) {
       delete target[key];
       FROM_FILE.delete(entry);
     }
   }
   for (const [k, v] of Object.entries(vars)) {
+    // A framework knob in a project's `.env` is refused, not silently applied:
+    // two of them name an executable for the build to load. Reported once per key
+    // so the project owner sees why their `HYDRA_*` had no effect.
+    if (isFrameworkKnob(k)) {
+      refusedKeys.push(k);
+      continue;
+    }
     // A real environment variable wins. The deploy's secrets live there, and a
     // `.env` that shipped inside a tarball must not silently override them. A
     // key this process already took from the file is ours to update.
@@ -140,6 +174,12 @@ export function loadProjectEnv(cwd, target = process.env, mode = process.env.NOD
     FROM_FILE.add(`${cwd}\u0000${k}`);
     applied.push(k);
   }
+  if (refusedKeys.length > 0) {
+    console.error(
+      `[hydra] .env: ignoring ${refusedKeys.join(', ')} — framework settings ` +
+        `(HYDRA_*, NODE_ENV, PORT) are read from the real environment only, never from a project file`,
+    );
+  }
   // `file` is kept in the return shape for callers that log it; with several
   // files the base name is the honest one to name.
   return {
@@ -147,6 +187,7 @@ export function loadProjectEnv(cwd, target = process.env, mode = process.env.NOD
     files: envFileNames(mode).filter((n) => fs.existsSync(path.join(cwd, n))),
     vars,
     applied,
+    refused: refusedKeys,
   };
 }
 

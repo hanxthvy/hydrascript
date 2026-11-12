@@ -9,6 +9,7 @@
 //! is hand-rolled the same way `main.rs` hand-rolls its `{code, map}` output.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -718,6 +719,32 @@ fn render(template: &str, name: &str) -> String {
     template.replace("__NAME__", &json_escape(name))
 }
 
+/// Escape a value for HTML text or an attribute.
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Render a template whose substitution lands in MARKUP.
+///
+/// `json_escape` leaves `<` alone — it is correct inside JSON and wrong inside
+/// HTML — so a directory named `<script>alert(1)</script>` produced a scaffolded
+/// `index.html` that ran script the moment the new project was opened. Stored
+/// XSS in the file every app starts from, from a name the archive gets to choose.
+fn render_html(template: &str, name: &str) -> String {
+    template.replace("__NAME__", &html_escape(name))
+}
+
 // ---------------------------------------------------------------------------
 // `hydra init` — the choices it can make on the user's behalf
 // ---------------------------------------------------------------------------
@@ -1383,7 +1410,10 @@ pub fn init(args: &[String]) -> ExitCode {
             root.join("package.json"),
             render_package_json(&name, &opts),
         ),
-        (root.join("index.html"), render(INDEX_HTML_TEMPLATE, &name)),
+        (
+            root.join("index.html"),
+            render_html(INDEX_HTML_TEMPLATE, &name),
+        ),
         (root.join("README.md"), render_readme(&name, &opts)),
         (
             root.join("src").join("main.hyx"),
@@ -1451,11 +1481,65 @@ pub fn init(args: &[String]) -> ExitCode {
         ));
     }
 
+    // Refuse BEFORE writing anything.
+    //
+    // Running `init` in an existing or half-set-up project used to overwrite
+    // package.json, README.md and src/main.hyx without asking — `--force` existed
+    // but was not required. That is an unrecoverable loss from a plausible
+    // mistake, so every collision is named and the run stops. The same policy the
+    // config file already had.
+    let mut collisions: Vec<PathBuf> = Vec::new();
+    for (path, _) in &files {
+        if fs::symlink_metadata(path).is_ok() {
+            collisions.push(path.clone());
+        }
+    }
+    if !collisions.is_empty() && !force {
+        eprintln!(
+            "hydra: {} file(s) already exist; refusing to overwrite them (use --force)",
+            collisions.len()
+        );
+        for path in &collisions {
+            eprintln!("  exists {}", path.display());
+        }
+        return ExitCode::from(1);
+    }
+
     let mut written: Vec<PathBuf> = Vec::with_capacity(files.len());
     for (path, content) in files {
-        if let Err(e) = fs::write(&path, content) {
-            eprintln!("hydra: cannot write {}: {}", path.display(), e);
-            return ExitCode::from(1);
+        // `fs::write` FOLLOWS a symlink and truncates whatever it points at, so a
+        // `package.json -> ../victim.txt` link in the target directory made `init`
+        // destroy an unrelated file outside the project. A symlink is never a file
+        // this command may write, with or without --force.
+        if let Ok(meta) = fs::symlink_metadata(&path) {
+            if meta.file_type().is_symlink() {
+                eprintln!(
+                    "hydra: refusing to write through the symlink {} (it points outside the file this command owns)",
+                    path.display()
+                );
+                return ExitCode::from(1);
+            }
+        }
+        let mut options = fs::OpenOptions::new();
+        options.write(true).truncate(true);
+        // `create_new` under no --force closes the window between the collision
+        // check above and this write: two runs racing cannot both create the file.
+        if force {
+            options.create(true);
+        } else {
+            options.create_new(true);
+        }
+        match options.open(&path) {
+            Ok(mut file) => {
+                if let Err(e) = file.write_all(content.as_bytes()) {
+                    eprintln!("hydra: cannot write {}: {}", path.display(), e);
+                    return ExitCode::from(1);
+                }
+            }
+            Err(e) => {
+                eprintln!("hydra: cannot write {}: {}", path.display(), e);
+                return ExitCode::from(1);
+            }
         }
         written.push(path);
     }
@@ -2382,5 +2466,23 @@ export component Badge(label: str):
             init(&[target_str, "--ssg".to_string()]),
             ExitCode::from(2)
         );
+    }
+}
+
+#[cfg(test)]
+mod html_tests {
+    use super::{render_html, INDEX_HTML_TEMPLATE};
+
+    #[test]
+    fn a_name_never_becomes_markup() {
+        // `json_escape` is correct inside JSON and wrong inside HTML: it leaves
+        // `<` alone. A directory named `<script>alert(1)</script>` produced a
+        // scaffolded index.html that ran that script on open.
+        let out = render_html(INDEX_HTML_TEMPLATE, "<script>alert(1)</script>");
+        assert!(!out.contains("<script>alert(1)</script>"), "raw markup in {out}");
+        assert!(out.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        // Quote in the attribute position too.
+        let quoted = render_html(INDEX_HTML_TEMPLATE, "a\" onload=\"x");
+        assert!(!quoted.contains("onload=\"x"));
     }
 }

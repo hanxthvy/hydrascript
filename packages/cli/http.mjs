@@ -50,13 +50,62 @@ export function httpIntent(out) {
 export function sendHttpIntent(res, intent, extraHeaders = {}) {
   if (!intent) return false;
   if (intent.kind === 'redirect') {
-    res.writeHead(intent.status, { ...extraHeaders, Location: intent.location });
+    // `writeHead` throws `ERR_INVALID_CHAR` on a header value containing CRLF or
+    // NUL, and it throws it OUT of the caller — which, for a loader or action,
+    // meant an unhandled rejection and `exit 1`. The canonical login idiom
+    // `redirect('?next=' + query.next)` is enough to produce one, so this is a
+    // reachable input, not a theoretical one. It is also a header-injection
+    // attempt whenever it is not the app's own bug: either way it cannot be
+    // written, and the answer is a framework error rather than a dead process.
+    // STRICTLY a redirect status. `redirect('/login', 200)` answered `200` with
+    // a `Location` header, and the browser does not follow that: the form POST
+    // "succeeded", the user stayed on a blank body, and the login never
+    // happened. A `status: 500` on a redirect is the mirror image — an error
+    // status carrying a destination that is never visited. Anything outside
+    // 3xx (or the two odd 304/305 members) is a mistake in the handler, and 303
+    // is what the helper means when it is called without a status.
+    const REDIRECT_STATUSES = new Set([300, 301, 302, 303, 307, 308]);
+    const status =
+      Number.isInteger(intent.status) && REDIRECT_STATUSES.has(intent.status)
+        ? intent.status
+        : 303;
+    const location = String(intent.location === undefined || intent.location === null ? '' : intent.location);
+    if (/[\r\n\0]/.test(location)) {
+      sendError(
+        res,
+        500,
+        'invalid_redirect',
+        'redirect target contains CR/LF or NUL, which cannot be a Location header',
+        { hint: 'encode the value with encodeURIComponent before redirecting' },
+        extraHeaders,
+      );
+      return true;
+    }
+    res.writeHead(status, { ...extraHeaders, Location: location });
     res.end();
+    return true;
+  }
+  // Serialize BEFORE the status line. A `fail()` whose data is circular or holds a
+  // BigInt (an ORM row with a back-reference, a driver's BigInt count) used to
+  // write the header first and then throw out of `JSON.stringify`, leaving the
+  // error handler to throw `ERR_HTTP_HEADERS_SENT` on top of it.
+  let body;
+  try {
+    body = JSON.stringify(intent.data === null ? null : intent.data);
+  } catch (e) {
+    sendError(
+      res,
+      500,
+      'intent_unserializable',
+      `the returned value is not JSON-serializable: ${e && e.message ? e.message : e}`,
+      null,
+      extraHeaders,
+    );
     return true;
   }
   const head = { 'Content-Type': 'application/json; charset=utf-8', ...extraHeaders };
   res.writeHead(intent.status, head);
-  res.end(JSON.stringify(intent.data === null ? null : intent.data));
+  res.end(body);
   return true;
 }
 
@@ -93,6 +142,15 @@ function bolehBocorDetail() {
   return process.env.NODE_ENV !== 'production';
 }
 
+/**
+ * Apakah detail internal boleh keluar ke klien. Diekspor supaya jalur yang
+ * menulis pesannya sendiri (halaman error SSR) memakai kebijakan yang SAMA,
+ * bukan kebijakan kedua yang lebih longgar.
+ */
+export function detailAllowed() {
+  return bolehBocorDetail();
+}
+
 /** ID korelasi pendek: menyambungkan respons ke baris log tanpa membocorkan isi. */
 function idKorelasi() {
   return Math.random().toString(36).slice(2, 10);
@@ -120,10 +178,18 @@ export function errorBody(code, message, detail = null, status = 500) {
 
 /** Write a framework error. Returns nothing; the response is finished. */
 export function sendError(res, status, code, message, detail = null, headers = {}) {
+  // Serialize first: an error body that cannot be stringified must still leave a
+  // valid response, and the writeHead below cannot be undone.
+  let body;
+  try {
+    body = JSON.stringify(errorBody(code, message, detail, status));
+  } catch {
+    body = '{"error":"internal error","code":"unserializable_error_body"}';
+  }
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     ...headers,
   });
-  res.end(JSON.stringify(errorBody(code, message, detail, status)));
+  res.end(body);
 }
 

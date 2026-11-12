@@ -65,7 +65,20 @@ function targetTriple() {
 function resolveBinary() {
   const override = process.env.HYDRA_BINARY;
   if (override) {
-    return fs.existsSync(override) ? { path: override, source: 'HYDRA_BINARY' } : null;
+    // An explicit path that is not there is a MISCONFIGURATION, not a request to
+    // look elsewhere. Returning null here fell through to `failNoBinary()` (or,
+    // in the meta-command path, to whatever platform package was installed), so
+    // a typo silently compiled with a DIFFERENT compiler than the one named —
+    // the kind of difference that shows up as a version-specific bug report
+    // nobody can reproduce.
+    if (!fs.existsSync(override)) {
+      console.error(
+        `[hydra] HYDRA_BINARY points at ${override}, which does not exist. ` +
+          'Unset it to use the installed compiler, or fix the path.',
+      );
+      process.exit(1);
+    }
+    return { path: override, source: 'HYDRA_BINARY' };
   }
 
   const triple = targetTriple();

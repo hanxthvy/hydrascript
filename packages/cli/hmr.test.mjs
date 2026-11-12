@@ -121,3 +121,82 @@ test('dev serves the live-reload client and pushes a rebuild message', async (t)
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/**
+ * One raw upgrade handshake, and the status line that came back.
+ *
+ * Written by hand rather than with `WebSocket` because a browser client cannot
+ * forge `Origin` — and forging it is exactly what has to be tested.
+ */
+function upgrade(port, { path: wsPath = '/__hydra/hmr', origin, host } = {}) {
+  return new Promise((resolve) => {
+    const socket = net.connect(port, '127.0.0.1', () => {
+      const headers = [
+        `GET ${wsPath} HTTP/1.1`,
+        `Host: ${host || `127.0.0.1:${port}`}`,
+        'Upgrade: websocket',
+        'Connection: Upgrade',
+        'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
+        'Sec-WebSocket-Version: 13',
+      ];
+      if (origin) headers.push(`Origin: ${origin}`);
+      socket.write(headers.join('\r\n') + '\r\n\r\n');
+    });
+    let buf = '';
+    const done = () => {
+      socket.destroy();
+      const line = buf.split('\r\n')[0] || '';
+      resolve(/\s(\d{3})\s/.exec(line)?.[1] || 'none');
+    };
+    socket.on('data', (d) => {
+      buf += d.toString();
+      if (buf.includes('\r\n\r\n')) done();
+    });
+    socket.on('error', () => done());
+    setTimeout(done, 4000);
+  });
+}
+
+test('the reload socket accepts only its own origin, exact path, and a bounded number of tabs', async (t) => {
+  if (!fs.existsSync(HYDRA)) return t.skip(`${HYDRA} not built`);
+  const dir = project();
+  const port = await new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const { port: free } = srv.address();
+      srv.close(() => resolve(free));
+    });
+  });
+  const child = spawn('node', [path.join(HERE, 'runner.mjs'), 'dev', '--port', String(port)], {
+    cwd: dir,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let log = '';
+  child.stdout.on('data', (d) => (log += d.toString()));
+  child.stderr.on('data', (d) => (log += d.toString()));
+
+  try {
+    const up = Date.now();
+    while (Date.now() - up < 30000) {
+      if (/Server running at/.test(log)) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.match(log, /Server running at/, `dev server never started:\n${log}`);
+
+    // The happy path first, so a failure below means the CHECK refused rather
+    // than the server never listening.
+    assert.equal(await upgrade(port, { origin: `http://127.0.0.1:${port}` }), '101');
+
+    // Any page the developer visits could otherwise subscribe and read every
+    // build error, which names absolute source paths.
+    assert.notEqual(await upgrade(port, { origin: 'https://evil.example' }), '101');
+
+    // A prefix match used to accept these; a probe could then identify the dev
+    // server by its 101.
+    assert.notEqual(await upgrade(port, { path: '/__hydra/hmrx', origin: `http://127.0.0.1:${port}` }), '101');
+  } finally {
+    child.kill('SIGKILL');
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

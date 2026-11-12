@@ -60,6 +60,22 @@ permissions:
 jobs:
   publish:
     name: build, verify, publish
+    # ONLY a tag push may start this automatically.
+    #
+    # `workflow_run` fires for every completed `binaries` run, including one a
+    # person dispatched by hand — and `inputs.dry_run` is EMPTY on a
+    # `workflow_run` event, so `if: !inputs.dry_run` was true and a DRY RUN of the
+    # platform build published `hydrascript@latest`. The event that triggered the
+    # upstream run is part of this context, so it is checked directly. A manual
+    # `workflow_dispatch` here is a person deciding, and is still allowed.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion == 'success')
+    # Required reviewers on this environment are the human gate between "tests
+    # are green" and "a version exists that cannot be unpublished". Configure it
+    # in repo Settings -> Environments -> npm-release.
+    environment: npm-release
     # NOT ubuntu-latest, and this is load-bearing.
     #
     # `ubuntu-latest` tracks 24.04, whose glibc is 2.39. A binary linked there
@@ -75,7 +91,17 @@ jobs:
     # from source, which README documents.
     runs-on: ubuntu-22.04
     steps:
+      # The COMMIT THAT WAS BUILT, not the default branch HEAD.
+      #
+      # On `workflow_run` a bare checkout materialises main, while the platform
+      # packages came from tag `vY`. The version is read from that checkout, so a
+      # commit pushed to main after the tag would publish its number under the
+      # tag's binaries — and `--provenance` would attest "built from commit X on
+      # main", which is not the tagged object at all.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0 # `git describe` needs the tag that points at this commit
 
       - uses: actions/setup-node@v4
         with:
@@ -95,7 +121,7 @@ jobs:
           # trusted publishing, and `npm install -g` hits EACCES on the system
           # prefix. `GITHUB_PATH` carries the override into later steps, which a
           # plain `export` cannot do across steps.
-          npm install --prefix "$RUNNER_TEMP/npm11" --no-audit --no-fund npm@^11.5.1
+          npm install --prefix "$RUNNER_TEMP/npm11" --no-audit --no-fund npm@11.5.1
           echo "$RUNNER_TEMP/npm11/node_modules/.bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/npm11/node_modules/.bin/npm" --version
           node -e '
@@ -110,7 +136,7 @@ jobs:
             console.log(`npm ${v} supports trusted publishing`);
           '
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.90.0
 
       # The tarball ships prebuilt binaries, so they must be built here and must
       # be the ones the tests below exercised.
@@ -122,10 +148,12 @@ jobs:
           # plain `libhydra.so` no longer contains the Node-API export, so
           # copying it to `hydra.node` publishes an addon Node cannot use.
           cargo build --release --locked --bin hydra
-          cargo rustc --release --locked --lib --features node-addon --crate-type cdylib
+          # `addon` = release + `panic = "unwind"`, because this library is loaded
+          # into Node and a panic there must not abort the host process.
+          cargo rustc --profile addon --locked --lib --features node-addon --crate-type cdylib
           mkdir -p ../bin
           cp target/release/hydra ../bin/hydra
-          cp target/release/libhydra.so ../bin/hydra.node
+          cp target/addon/libhydra.so ../bin/hydra.node
           chmod +x ../bin/hydra
           node -e 'if (!require("../bin/hydra.node").compile) { console.error("bin/hydra.node has no compile export"); process.exit(1) }'
 
@@ -264,6 +292,23 @@ jobs:
             fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
             console.log(`optionalDependencies: ${targets.length} targets at ${version}`);
           '
+
+      # The tag and the manifest must agree, and the tag must point at the
+      # commit that was checked out. `--provenance` attests "this tarball came
+      # from this commit"; without this line the version could be 0.15.1 while
+      # the tag says v0.15.0, and the attestation would be true about the commit
+      # and false about the release.
+      - name: The tag must point at this commit, and its number must match
+        if: ${{ github.event_name == 'workflow_run' }}
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          DESCRIBED="$(git describe --tags --exact-match 2>/dev/null || true)"
+          echo "checkout is at $(git rev-parse --short HEAD), package version is $VERSION, tag is '${DESCRIBED:-none}'"
+          if [ "$DESCRIBED" != "v$VERSION" ]; then
+            echo "::error::HEAD is not exactly tag v$VERSION (got '${DESCRIBED:-no tag}'). Publishing would put $VERSION on npm from an untagged commit."
+            exit 1
+          fi
 
       - name: Publish
         if: ${{ !inputs.dry_run }}

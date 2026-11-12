@@ -122,6 +122,21 @@ export function redirect(path: string, status = 303): ActionResult {
   if (typeof path !== 'string' || path === '') {
     throw new Error('hydra/server: redirect() needs a path')
   }
+  // A redirect status, checked where the value is MADE. The runtime already
+  // refuses to write a non-3xx as a redirect, but that happens after the action
+  // has run: the page sees a 303 to nowhere and there is no line to blame. `200`
+  // here is the common typo (`redirect('/login', 200)` reads as "it worked"),
+  // and answering it as a redirect at all is the wrong fix.
+  if (![300, 301, 302, 303, 307, 308].includes(status)) {
+    throw new Error(
+      `hydra/server: redirect() status must be 301, 302, 303, 307 or 308, not ${status}`,
+    )
+  }
+  // A reload loop is the usual cause of an empty or `/`-only target in a real
+  // app, and the browser spins instead of the developer seeing why.
+  if (/[\r\n\0]/.test(path)) {
+    throw new Error('hydra/server: redirect() target contains CR/LF or NUL')
+  }
   return { redirect: path, status }
 }
 

@@ -12,9 +12,117 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
-## Unreleased
+## 0.15.1 — 2026-11-12
+
+Hardening only. No public API changed: every fix below either stops one request
+from killing the process, closes a way to read or write where the framework should
+not, or makes a rebuild/publish step tell the truth about what it did.
 
 ### Fixed
+
+- **One request could end the process.** Every response path now runs behind a
+  single failure boundary (`failRequest`), so a thrown error inside a handler, a
+  closed socket mid-write, or a circular value being serialised answers a real
+  status instead of taking the server down with it. A stream that errors after the
+  status line is destroyed rather than thrown. (SEC-01)
+- **A render could read another request's data.** The render runs inside
+  `withRequest`, so the AsyncLocalStorage binding wraps `handle.pipe()` and not
+  only the loader. (SEC-02)
+- **Production leaked stack traces.** Error bodies pass one policy — `errorBody` /
+  `detailAllowed` — and details appear only when explicitly enabled, never because
+  `NODE_ENV` happened to be unset. (SEC-03)
+- **`dist/` was served through symlinks.** Every static path is resolved to its
+  real path and must stay inside the served root, so a symlink in a built site
+  cannot publish `/etc` or the project's `.env`. (SEC-04)
+- **The compiler could be made quadratic, and then OOM.** Diagnostics share one
+  `Arc<[String]>` instead of cloning the source per error, capped at 100 plus a
+  sentinel: a 280 KB file of errors used to exhaust memory, and now costs a linear
+  pass. Expression chains are counted (`MAX_CHAIN`) rather than recursed.
+  (SEC-05, SEC-10, SEC-27)
+- **A project `.env` could choose the compiler binary.** `HYDRA_NATIVE`,
+  `HYDRA_COMPILER`, `HYDRA_EXPOSE_ERRORS` and `NODE_ENV` are refused from a project
+  file: a `.env` is configuration for the app, not authority over the framework.
+  (SEC-06, SEC-35)
+- **`hydra init` overwrote whatever was there.** Existing files are refused
+  (checked with `symlink_metadata`, so a symlink is not followed) unless `--force`
+  is given, and the project name is escaped for HTML and JSON separately in the
+  templates it generates. (SEC-22, L-20)
+- **Generated files and `hydra clean` could leave the project.** `output_paths`
+  accepts only normal path components, and `run_clean` refuses an `outputDir` that
+  names a source directory. (SEC-23, SEC-24)
+- **Imports could read any file on the machine.** `import` specifiers resolve
+  inside the source tree and must name a regular file, so `/etc/passwd` and
+  `/dev/zero` are compile errors instead of a hang or a leak. (SEC-25)
+- **The N-API boundary aborted on a panic.** The addon is built with
+  `panic = "unwind"` and every entry point catches, returning an error to Node
+  instead of `SIGABRT`. (SEC-26)
+- **`hydraconfig.json` was never validated.** A dependency-free validator rejects
+  unknown keys, wrong types, and bad byte-size strings with `exit 2` and a message
+  naming the key, instead of silently ignoring the file or building on defaults.
+  (SEC-28)
+- **Compile cache entries were trusted as code.** An entry is only reused when its
+  stored `src` hashes to its own key, so writing into `.hydra/cache` cannot inject
+  a compiled result. (SEC-29)
+- **`vite-plugin` resolved the compiler to `node_modules/bin/hydra`.** It resolves
+  through the `hydrascript` package instead, which is where the binary actually
+  lives on a standalone install. (SEC-30)
+- **The dev server answered non-GET verbs with static content.** (SEC-32)
+- **Static files carried no validator.** Served files now send an ETag and answer
+  `If-None-Match` with a `304` that repeats the validators and the caching policy,
+  and byte ranges are supported (`206` / `416` with `Content-Range`), which is what
+  makes video seek at all. (SEC-33, L-09, L-10)
+- **HMR accepted any origin and any number of clients.** The upgrade requires the
+  exact client path and a same-origin request, and is capped at `maxClients`.
+  (SEC-19)
+- **An SSR stream kept rendering for a client that left.** The pipe is closed and
+  the render handle aborted on disconnect, so a cancelled navigation stops the work
+  instead of finishing into a socket nobody reads. (L-08)
+- **Shutdown cut in-flight requests and kept claiming to be healthy.** The server
+  drains first — `/__hydra/healthz` answers `503 draining` while the socket is
+  still open, new connections are refused only after that, and the grace period is
+  spent on requests that were already accepted. (L-11)
+- **Bundles were swapped under in-flight renders.** A rebuild landing mid-request
+  used to pair the old loader's data with the new renderer; the reload now waits
+  for the last render to finish, and each render holds the module it started with.
+  (L-07)
+- **`redirect()` accepted any status.** A `200` with a `Location` is a redirect no
+  browser follows and an error status carrying a destination nobody visits; only
+  `301/302/303/307/308` are answered as redirects now, and `hydra/server:redirect`
+  rejects the rest where the value is made. (L-05)
+- **A `[__proto__]` route param silently vanished.** Params are written through a
+  setter, so a reserved name is an ordinary key instead of mutating the object's
+  prototype. (L-06)
+- **A caret pointed at the wrong character on a non-ASCII line.** Diagnostic
+  columns are byte offsets; the caret is now drawn at the character column, so the
+  message underlines what it is talking about. (L-13)
+- **`hydra check <dir>` followed directory symlinks.** An `up -> ..` link in a
+  project made the compiler report the same file once per path level; directory
+  traversal now records visited real paths and never enters a symlinked directory.
+  (L-14)
+- **The npm OTP travelled in `argv` and reached `npm view`.** It is passed in the
+  child's environment (`NPM_CONFIG_OTP`) and only to the calls that write, so the
+  value is never in `/proc/<pid>/cmdline` and never sent to a read-only command.
+  (SEC-34)
+- **CI and release workflows pinned nothing and asked for everything.** `npm` and
+  `rust-toolchain` are pinned to exact versions inside the job that holds
+  `id-token: write`, CI declares `permissions: contents: read`, and the publish job
+  runs only from a tag push with an `npm-release` environment gate and a
+  tag-equals-version check. (L-15, L-16)
+- **`prepublishOnly` published packages that could not install.** The repo's
+  `optionalDependencies` is empty and only `release.yml` wires the seven platform
+  packages, so `npm publish` from a laptop produced a version whose installer
+  resolves nothing — and a published version is immutable. A guard now refuses it
+  unless `HYDRA_ALLOW_UNWIRED_PUBLISH=1` is set deliberately. (L-17)
+- **Bootstrap verification checked magic bytes and architecture only.** The local
+  publish script performs pure reads before executing anything and passes
+  `--provenance` when running in CI. (L-18)
+
+### Changed
+
+- The documented test counts were stale (README, README.id.md, docs/ROADMAP.md,
+  docs/BENCHMARKS.md quoted 413/197; the trees now hold 291 unit + 137 integration
+  Rust tests and 255 Node tests in 31 suites). Both suites pass.
+
 
 - **The documented test counts were stale.** README, README.id.md, docs/ROADMAP.md
   and docs/BENCHMARKS.md quoted 413 Rust tests (276 unit) and 197 Node tests in 27

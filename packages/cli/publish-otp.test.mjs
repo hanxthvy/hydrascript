@@ -56,7 +56,10 @@ function stubNpm(behaviour) {
       // that nothing was published twice. The OTP VALUE is recorded, never
       // printed, so the test can assert on it without leaking to the console.
       "const log = process.env.NPM_STUB_LOG;",
-      "if (log) fs.appendFileSync(log, JSON.stringify({ cmd, argv: a }) + '\\n');",
+      // `otpEnv` records whether the code arrived through the ENVIRONMENT, the
+      // only channel allowed — argv is world-readable in /proc/<pid>/cmdline.
+      // The value itself is never written.
+      "if (log) fs.appendFileSync(log, JSON.stringify({ cmd, argv: a, otpEnv: !!process.env.NPM_CONFIG_OTP }) + '\\n');",
       'if (cmd === "view") {',
       '  const spec = a[1];',
       '  const name = spec.startsWith("@") ? spec.slice(0, spec.lastIndexOf("@")) : spec.split("@")[0];',
@@ -131,7 +134,7 @@ test('a real 404 still proceeds to publish', () => {
   assert.equal(calls.filter((c) => c.cmd === 'publish').length, 1, 'expected exactly one publish');
 });
 
-test('--otp is forwarded to both view and publish, and never printed', () => {
+test('--otp never travels in argv, and never reaches npm view', () => {
   const dir = artifacts(['linux-x64']);
   const log = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'l-')), 'npm.log');
   const stub = stubNpm({});
@@ -149,8 +152,19 @@ test('--otp is forwarded to both view and publish, and never printed', () => {
   const publish = calls.find((c) => c.cmd === 'publish');
   assert.ok(view, 'no npm view call');
   assert.ok(publish, 'no npm publish call');
-  assert.ok(view.argv.some((a) => a.includes(OTP)), 'the OTP was not passed to npm view');
-  assert.ok(publish.argv.some((a) => a.includes(OTP)), 'the OTP was not passed to npm publish');
+
+  // SEC-34. It was an argv element, which is world-readable in
+  // /proc/<pid>/cmdline for the life of the process — and it was passed to
+  // `npm view` too, a read-only call that never needs a one-time password, so
+  // the exposure covered fourteen invocations instead of one.
+  for (const call of calls) {
+    assert.ok(
+      !call.argv.some((a) => a.includes(OTP)),
+      `the OTP appeared in the argv of npm ${call.cmd}`,
+    );
+  }
+  assert.equal(view.otpEnv, false, 'the OTP was handed to the read-only npm view');
+  assert.equal(publish.otpEnv, true, 'the OTP never reached npm publish');
 });
 
 test('an empty or malformed --otp is refused before any npm call', () => {

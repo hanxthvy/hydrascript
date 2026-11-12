@@ -78,10 +78,42 @@ function project() {
 }
 
 /** A Chrome, enough to load a page and read the DOM after it settles. */
+/** First browser found, in the same order the runtime gate prefers. */
+function findChrome() {
+  const candidates = [
+    process.env.HYDRA_CHROME,
+    'google-chrome',
+    'google-chrome-stable',
+    'chromium',
+    'chromium-browser',
+    'chrome',
+  ].filter(Boolean);
+  for (const name of candidates) {
+    if (name.includes('/')) {
+      if (fs.existsSync(name)) return name;
+      continue;
+    }
+    for (const dir of (process.env.PATH || '').split(':')) {
+      const full = path.join(dir, name);
+      try {
+        fs.accessSync(full, fs.constants.X_OK);
+        return full;
+      } catch {}
+    }
+  }
+  return null;
+}
+
 async function withChrome(fn) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hydra-static-chrome-'));
+  // Not a hardcoded path: this box has `chromium`, CI images often have
+  // `google-chrome`, and a developer may only have one of them on PATH.
+  const browser = findChrome();
+  if (!browser) {
+    throw new Error('no Chrome/Chromium on PATH (set HYDRA_CHROME)');
+  }
   const child = spawn(
-    '/usr/bin/google-chrome',
+    browser,
     [
       `--user-data-dir=${profile}`,
       '--headless=new',

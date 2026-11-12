@@ -162,6 +162,15 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
 /// That is why `compile` still goes through `lex` and only `parse_errors` uses
 /// this.
 pub fn lex_collect(src: &str) -> (Vec<Token>, Vec<CompileError>) {
+    // ONE shared copy for every diagnostic this pass produces. Building it here
+    // (rather than `lines.iter().map(to_string).collect()` at each error site)
+    // is what makes the error path linear instead of quadratic: N bad lines used
+    // to own N full copies of the file.
+    let shared: std::sync::Arc<[String]> = src
+        .split('\n')
+        .map(|s| s.to_string())
+        .collect::<Vec<String>>()
+        .into();
     let lines: Vec<&str> = src.split('\n').collect();
     let mut out: Vec<Token> = Vec::new();
     let mut errors: Vec<CompileError> = Vec::new();
@@ -189,7 +198,7 @@ pub fn lex_collect(src: &str) -> (Vec<Token>, Vec<CompileError>) {
                     "tab indentation is not allowed",
                     line_no,
                     tab_pos,
-                    lines.iter().map(|s| s.to_string()).collect(),
+                    shared.clone(),
                 )
                 .with_hint("use spaces for indentation"),
             );
@@ -228,7 +237,7 @@ pub fn lex_collect(src: &str) -> (Vec<Token>, Vec<CompileError>) {
                         ),
                         line_no,
                         0,
-                        lines.iter().map(|s| s.to_string()).collect(),
+                        shared.clone(),
                     )
                     .with_hint("keep one indent width across the file"));
                     continue;
@@ -275,7 +284,7 @@ pub fn lex_collect(src: &str) -> (Vec<Token>, Vec<CompileError>) {
                             "unterminated template literal",
                             line_no,
                             start,
-                            lines.iter().map(|s| s.to_string()).collect(),
+                            shared.clone(),
                         )
                         .with_hint("close the backtick"),
                     );
@@ -307,7 +316,7 @@ pub fn lex_collect(src: &str) -> (Vec<Token>, Vec<CompileError>) {
                                 "unterminated string literal",
                                 line_no,
                                 start,
-                                lines.iter().map(|s| s.to_string()).collect(),
+                                shared.clone(),
                             )
                             .with_hint("close the quote, or escape it with a backslash"),
                         );
@@ -503,7 +512,7 @@ pub fn lex_collect(src: &str) -> (Vec<Token>, Vec<CompileError>) {
                             ),
                             line_no,
                             start,
-                            lines.iter().map(|s| s.to_string()).collect(),
+                            shared.clone(),
                         ));
                         // One bad character does not invalidate the rest of the
                         // line: advance past it and keep tokenising, so a stray
