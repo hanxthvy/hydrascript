@@ -252,36 +252,6 @@ jobs:
             fs.writeFileSync("pkg/package.json", JSON.stringify(pkg, null, 2));
           '
 
-      - name: Publish the platform package
-        if: ${{ !inputs.dry_run }}
-        shell: bash
-        working-directory: pkg
-        run: |
-          set -euo pipefail
-          # Trusted publishing needs npm >= 11.5.1, and the runner image is not a
-          # fixed thing: `node-version: '22'` resolves to whatever 22.x the image
-          # ships, and the npm bundled with it has been 10.9.x on the ubuntu-22.04
-          # image — which failed here with "npm 10.9.9 is too old".
-          #
-          # `npm install -g npm@11.5.1` is NOT the fix: it writes to the system
-          # prefix (`/usr/local/share/man`) and dies with EACCES on macOS runners.
-          # Neither is `npx npm@11`, which cannot publish with provenance because
-          # the OIDC token is minted for the running npm process.
-          #
-          # So the version is installed into a PRIVATE prefix and put on PATH:
-          # writable on every runner, no sudo, and `npm` is genuinely npm 11 from
-          # then on. The check below proves it, and names the path it found.
-          #
-          # `GITHUB_PATH` is written for LATER steps, not this one — GitHub reads
-          # the file between steps. The install and the publish used to share a
-          # step, so writing GITHUB_PATH and then calling bare `npm` published
-          # with the image's 10.9.9 and failed with "too old for trusted
-          # publishing" seven times. Two things are needed, and both are here:
-          #
-          #   1. GITHUB_PATH, so any later step inherits npm 11 (the split this
-          #      file will eventually want);
-          #   2. an explicit NPM_BIN used by this step, because GITHUB_PATH does
-          #      not apply to the shell that wrote it.
       - uses: actions/upload-artifact@v4
         # Artifact is saved immediately after package assembly so the binaries
         # are always available for hplat, even if npm publish throws.
@@ -332,6 +302,52 @@ jobs:
             console.log(`npm ${v} supports trusted publishing`);
           '
           "$NPM_BIN" publish --provenance --access public
+
+      # `continue-on-error` on the step above exists so one platform's publish
+      # cannot abort the other six targets — but on its own it made a total
+      # failure invisible: from 0.13.2 through 0.15.1 every run showed seven
+      # green "Publish the platform package" steps while the registry still had
+      # the PREVIOUS version, and the only reason anything shipped was a manual
+      # `hplat` from the VPS. The step's conclusion reads `success` on a
+      # swallowed error, so the workflow cannot simply trust it.
+      #
+      # So the outcome is read back from the registry instead of from the step.
+      # Publishing is asynchronous on npm ("Your package is being processed and
+      # may take a few minutes"), hence the retries — and no auth is involved,
+      # the version endpoint is public.
+      - name: Verify the platform package is on npm
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        working-directory: pkg
+        run: |
+          set -uo pipefail
+          node -e '
+            const { readFileSync } = require("fs");
+            const { name, version } = JSON.parse(readFileSync("package.json", "utf8"));
+            const url = `https://registry.npmjs.org/${name.replace("/", "%2F")}/${version}`;
+            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+            (async () => {
+              for (let i = 0; i < 12; i++) {
+                try {
+                  const res = await fetch(url, { headers: { accept: "application/json" } });
+                  if (res.ok) {
+                    console.log(`${name}@${version} is on npm`);
+                    return;
+                  }
+                } catch {}
+                await sleep(15000);
+              }
+              console.error(
+                `::error::${name}@${version} never reached the registry. ` +
+                `The publish step above swallows its error (continue-on-error), and the ` +
+                `usual cause is ENEEDAUTH: npm has no trusted publisher configured for this package, ` +
+                `so it never mints an OIDC token. Fix it either way — ` +
+                `configure it on npmjs.com (package Settings -> Trusted publishing: GitHub Actions, ` +
+                `repo hanxthvy/hydrascript, workflow binaries.yml), or publish the artifact with hplat.`
+              );
+              process.exit(1);
+            })();
+          '
 
   # The ROOT manifest (`optionalDependencies`) is wired by `release.yml`, not
   # here. Two workflows writing the same field is how they drift: this job used
