@@ -1,0 +1,20 @@
+# [xihanzu-NR]
+from hydra import Link
+
+meta = {
+    "title": "404 — HydraScript",
+    "description": "No route matched.",
+}
+
+
+component NotFound(path: str = "/"):
+    div(className="wrap"):
+        div(className="not-found"):
+            div(className="code"): "404"
+            h1(): "That URL is not a page."
+            p(className="lede"):
+                f"{path} did not match anything in src/pages. Which is the whole routing model, "
+                "really: if there is no file, there is no route."
+            div(className="hero-actions"):
+                Link(to="/", className="btn btn-primary"): "Home"
+                Link(to="/docs", className="btn"): "Documentation"

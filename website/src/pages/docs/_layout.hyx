@@ -1,0 +1,46 @@
+# [xihanzu-NR]
+from hydra import Link, use_path
+from "../../lib/nav.hys" import active_href, nav_class
+
+DOCS_NAV = [
+    ("/docs", "Getting started"),
+    ("/docs/syntax", "Syntax"),
+    ("/docs/routing", "Routing & rendering"),
+    ("/docs/cli", "CLI & config"),
+]
+
+DOC_HREFS = [item[0] for item in DOCS_NAV]
+
+REPO = "https://github.com/hanxthvy/hydrascript/blob/main/"
+
+RAIL = [
+    ("SPEC.md", "the language contract"),
+    ("MIGRATING.md", "every breaking change"),
+    ("CHANGELOG.md", "why the number moved"),
+    ("docs/GUIDE.md", "the long guide"),
+    ("docs/BENCHMARKS.md", "and what they do not claim"),
+]
+
+
+component DocsLayout():
+    path = use_path()
+    here = active_href(path, DOC_HREFS)
+
+    div(className="wrap"):
+        div(className="docs"):
+            aside(className="docs-side"):
+                div(className="docs-side-title"): "Documentation"
+                nav(className="docs-nav"):
+                    for item in DOCS_NAV:
+                        Link(to=item[0], className=nav_class(item[0], here), key=item[0]): item[1]
+            article(className="prose"):
+                slot
+            aside(className="docs-rail"):
+                div(className="docs-side-title"): "In the repository"
+                for item in RAIL:
+                    div(key=item[0]):
+                        a(href=REPO + item[0], target="_blank", rel="noopener"):
+                            item[0]
+                        span(className="rail-note"): item[1]
+                div(className="rail-note"):
+                    "This site is a HydraScript project. Its source is in website/, next to the compiler."

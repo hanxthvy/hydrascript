@@ -1,0 +1,44 @@
+# [xihanzu-NR]
+from hydra import Link, use_path
+from "../lib/nav.hys" import active_href, nav_class
+
+NAV = [
+    ("/docs", "Docs"),
+    ("/docs/syntax", "Syntax"),
+    ("/docs/routing", "Router"),
+    ("/docs/cli", "CLI"),
+]
+
+HREFS = [item[0] for item in NAV]
+
+
+component SiteLayout():
+    path = use_path()
+    active = active_href(path, HREFS)
+
+    div(className="shell"):
+        header(className="site-header"):
+            div(className="site-header-inner"):
+                Link(to="/", className="brand"):
+                    span(className="brand-mark"): "H"
+                    span(className="brand-name"): "HydraScript"
+                span(className="brand-ver"): "0.15.1"
+                nav(className="site-nav"):
+                    for item in NAV:
+                        Link(to=item[0], className=nav_class(item[0], active), key=item[0]): item[1]
+                    a(
+                        href="https://github.com/hanxthvy/hydrascript",
+                        target="_blank",
+                        rel="noopener",
+                        className="nav-link",
+                    ): "GitHub"
+
+        main(className="site-main"):
+            slot
+
+        footer(className="site-footer"):
+            div(className="site-footer-inner"):
+                span(): "MIT licensed. Pre-1.0, and honest about it."
+                a(href="https://github.com/hanxthvy/hydrascript"): "github.com/hanxthvy/hydrascript"
+                a(href="https://www.npmjs.com/package/hydrascript"): "npm"
+                span(): "This site is built with HydraScript."

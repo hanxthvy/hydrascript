@@ -1,0 +1,7 @@
+# [xihanzu-NR]
+from hydra import mount
+from "./App.hyx" import App
+import "./index.css"
+
+root_element = document.getElementById("root")
+mount(App, root_element)

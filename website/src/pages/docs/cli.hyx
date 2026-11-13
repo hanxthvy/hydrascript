@@ -1,0 +1,121 @@
+# [xihanzu-NR]
+from hydra import Link
+from "../../components/Code.hyx" import Code
+
+meta = {
+    "title": "CLI and configuration — HydraScript",
+    "description": "Every hydra command, the hydraconfig.json keys that are actually read, and the ones the schema marks as not used yet.",
+}
+
+COMMANDS = [
+    ("hydra dev", "Build, serve, rebuild on change, live-reload. HMR over a websocket, with Fast Refresh when the module can be swapped."),
+    ("hydra build", "Bundle to dist/, pre-render static routes, run the runtime gate. --target=node|static."),
+    ("hydra preview", "Serve a finished dist/ as a host would. Reads .hydra/build.json to decide whether the API half is mounted."),
+    ("hydra serve / start", "Serve a built project for deployment."),
+    ("hydra routes", "The route table, static and dynamic, with layout chains. --json for tooling."),
+    ("hydra check", "Parse and validate without emitting. Exit 1 on error."),
+    ("hydra run <file>", "Execute a .hys directly, in memory, with arguments."),
+    ("hydra repl", "An interactive Pythonic REPL."),
+    ("hydra fmt", "Format .hyx/.hys sources. --check to verify without writing."),
+    ("hydra stats", "Code statistics for a project."),
+    ("hydra doctor", "Check the local toolchain: compiler binary, addon, node version."),
+    ("hydra analyze", "Bundle size report from the last build."),
+    ("hydra clean", "Remove build output; --all also clears node_modules."),
+    ("hydra <file.hyx>", "Compile one file to stdout. --json for {code, map}, --stdin to pipe."),
+]
+
+CONFIG = [
+    "{",
+    "  \"$schema\": \"https://raw.githubusercontent.com/hanxthvy/hydrascript/main/schema.json\",",
+    "  \"name\": \"my-site\",",
+    "  \"base\": \"/\",",
+    "  \"outputDir\": \"./dist\",",
+    "  \"routes\": \"./src/pages\",",
+    "  \"rendering\": { \"ssg\": true, \"ssr\": true },",
+    "  \"build\": { \"target\": \"static\", \"sourcemap\": false, \"clean\": true },",
+    "  \"server\": {",
+    "    \"port\": 5173,",
+    "    \"host\": \"127.0.0.1\",",
+    "    \"allowedOrigins\": [],",
+    "    \"headers\": {}",
+    "  },",
+    "  \"styling\": \"plain\"",
+    "}",
+]
+
+STYLING = [
+    ("plain", "src/index.css is the final stylesheet. No processor, nothing to configure."),
+    ("postcss", "Your postcss.config.js runs. Plugin list optional."),
+    ("tailwind", "Tailwind is on, with the tailwind key merged into its config. Not a hard dependency: a project without it builds without it."),
+]
+
+
+component Cli():
+    h1(): "CLI and configuration"
+    p(className="lede"):
+        "One binary and one config file. Everything below is printed by hydra --help, so this page is a "
+        "transcript, not a promise."
+
+    h2(): "Commands"
+    div(className="table-wrap"):
+        table():
+            thead():
+                tr():
+                    th(): "Command"
+                    th(): "Does"
+            tbody():
+                for item in COMMANDS:
+                    tr(key=item[0]):
+                        td():
+                            code(): item[0]
+                        td(): item[1]
+
+    h2(): "hydraconfig.json"
+    Code(file="hydraconfig.json", lang="json", lines=CONFIG)
+    p():
+        "Only the keys the runner reads are shown. The schema is the authority on the rest, and it is "
+        "explicit where it matters: root, entries, compiler.target and compiler.strict are accepted "
+        "and validated but marked not used yet, because the runner always reads src/ and always "
+        "compiles for React. A config key that silently does nothing would be worse than one that says so."
+
+    h2(): "Styling is the project's choice"
+    div(className="table-wrap"):
+        table():
+            thead():
+                tr():
+                    th(): "styling"
+                    th(): "What happens"
+            tbody():
+                for item in STYLING:
+                    tr(key=item[0]):
+                        td():
+                            code(): item[0]
+                        td(): item[1]
+
+    h2(): "Keys that change production behaviour"
+    ul():
+        li():
+            code(): "server.allowedOrigins"
+            " — which Origins may POST to an action or an API route. This CSRF gate is on by default, not opt-in."
+        li():
+            code(): "server.trustProxy"
+            " — off by default. Set it only to the peers you actually run behind, because X-Forwarded-For is written by the client otherwise."
+        li():
+            code(): "server.rateLimit"
+            " — per-IP, sliding window, built in. No dependency, no external store."
+        li():
+            code(): "build.sourcemap"
+            " — off by default, because a map carries your source."
+        li():
+            code(): "build.clean"
+            " — on by default, so a deleted route stops being served."
+
+    h2(): "Checks worth running"
+    p():
+        "hydra check is the fast one that belongs in a commit hook. hydra doctor answers why a build "
+        "cannot find its compiler. hydra analyze answers why the bundle grew. And every build ends with "
+        "the runtime gate: it loads every index.html it produced and fails if a page throws on mount."
+
+    div(className="pager"):
+        Link(to="/docs/routing"): "← Routing & rendering"
+        Link(to="/docs"): "Getting started →"

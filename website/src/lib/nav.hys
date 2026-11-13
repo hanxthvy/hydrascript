@@ -1,0 +1,15 @@
+# [xihanzu-NR]
+export def active_href(path: str, hrefs):
+    best = ""
+    for href in hrefs:
+        hit = path == href or path.startswith(href + "/")
+        if hit:
+            if len(href) > len(best):
+                best = href
+    return best
+
+
+export def nav_class(href: str, active: str, base: str = "nav-link"):
+    if href == active:
+        return base + " is-active"
+    return base

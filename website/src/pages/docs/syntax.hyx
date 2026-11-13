@@ -1,0 +1,203 @@
+# [xihanzu-NR]
+from hydra import Link
+from "../../components/Code.hyx" import Code
+
+meta = {
+    "title": "Syntax — HydraScript",
+    "description": "Indentation, components, state, control flow, f-strings, and the Python builtins the compiler actually honours.",
+}
+
+NEST = [
+    "div(className=\"container\"):",
+    "    header(className=\"header\"):",
+    "        h1: \"System Status\"",
+    "        p: \"All telemetry nodes online.\"",
+]
+
+COMPONENT = [
+    "$ cat Counter.hyx",
+    "from hydra import state",
+    "",
+    "component Counter(start: int = 0):",
+    "    count, set_count = state(start)",
+    "",
+    "    div(className=\"counter\"):",
+    "        h2: f\"Value: {count}\"",
+    "        button(onClick=lambda: set_count(count + 1)): \"Add\"",
+    "",
+    "$ hydra Counter.hyx",
+    "export function Counter({ start = 0 }: CounterProps) {",
+    "  let [count, set_count] = state(start);",
+    "  return (",
+    "    <div className=\"counter\">",
+    "      <h2>{`Value: ${count}`}</h2>",
+    "      <button onClick={(() => set_count((count + 1)))}>Add</button>",
+    "    </div>",
+    "  );",
+    "}",
+    "",
+    "export interface CounterProps {",
+    "  start?: number;",
+    "}",
+]
+
+BRANCH = [
+    "# one element, or a block",
+    "if user:",
+    "    span(className=\"badge\"): user[\"name\"]",
+    "elif pending:",
+    "    span: \"loading\"",
+    "else:",
+    "    span: \"anonymous\"",
+    "",
+    "# a list, with a key",
+    "ul():",
+    "    for index, item in enumerate(items):",
+    "        li(key=index): item",
+]
+
+CLASSES = [
+    "# a dict of class -> condition, emitted as cx(...)",
+    "button(cls={\"btn\": True, \"btn-primary\": primary, \"is-disabled\": disabled}): \"Save\"",
+    "",
+    "# events can carry their own preventDefault/stopPropagation",
+    "form(on_submit_prevent_stop=submit): ...",
+    "",
+    "# multiple roots wrap in a fragment automatically",
+    "component Pair(label: str):",
+    "    span(className=\"label\"): label",
+    "    span(className=\"value\"): \"42\"",
+]
+
+PYTHON = [
+    "def tax(amount):",
+    "    return amount * 0.11",
+    "",
+    "@dataclass",
+    "class Point:",
+    "    x: float",
+    "    y: float",
+    "",
+    "class ValidationError(Exception):",
+    "    pass",
+    "",
+    "def check(x):",
+    "    if x < 0:",
+    "        raise ValidationError(\"negative\")",
+    "",
+    "def counts(xs):",
+    "    for x in xs:",
+    "        yield x",
+]
+
+HYS = [
+    "from \"node:fs/promises\" import readFile",
+    "",
+    "async def count_lines(path: str):",
+    "    raw = await readFile(path, \"utf8\")",
+    "    return len(raw.split(\"\\n\"))",
+]
+
+SPECIFIERS = [
+    ("hydra", "Universal helpers: state, Router, Link, fetch_json, mount", "any module"),
+    ("hydra/server", "env, read_text, write_text, redirect, action_flow", "a .server.hys only"),
+    ("hydra/client", "window helpers, storage, prefers_dark", "a .hyx or .tsx only"),
+]
+
+BUILTINS = [
+    ("len(xs) / len(d)", "xs.length, or a dict-aware runtime call"),
+    ("max / min / abs / round", "Math.max, Math.min, Math.abs, tie-to-even rounding"),
+    ("sorted(xs) / reversed(xs)", "non-mutating copies; numbers compare numerically"),
+    ("str / int / float / bool", "String, runtime int/float, Python truthiness"),
+    ("sum / pow / divmod / ord / chr", "lowered or runtime helper"),
+    ("enumerate / range / zip", "imported from the runtime for you"),
+    ("any / all / getattr / hasattr / repr", "imported from the runtime for you"),
+]
+
+
+component Syntax():
+    h1(): "Syntax"
+    p(className="lede"):
+        "HydraScript is Python's shape with JSX's semantics. This page only covers what the compiler "
+        "guarantees; SPEC.md is the contract, and where the two disagree the spec wins."
+
+    h2(): "Indentation is the block"
+    Code(file="nesting", lang="hydrascript", lines=NEST)
+    p():
+        "A line ending in a colon opens a block. One child can sit inline after the colon. A component "
+        "can have several roots at the top level, and they wrap in a fragment for you."
+
+    h2(): "Components compile to React"
+    Code(file="compile", lang="shell", lines=COMPONENT)
+    p():
+        "Annotations on the component's arguments become the Props interface, defaults become "
+        "destructuring defaults, and the body becomes ordinary JSX. There is no framework object in "
+        "the output."
+
+    h2(): "Control flow, not ternaries"
+    Code(file="branches", lang="hydrascript", lines=BRANCH)
+    p():
+        "if / elif / else and for inside an element body are compiled into the JSX tree. A for loop "
+        "wants key= on the element it returns, the same way .map() does."
+
+    h2(): "Classes, events, fragments"
+    Code(file="attributes", lang="hydrascript", lines=CLASSES)
+    p():
+        "cls= takes a dict of class name to condition and emits a cx(...) call, so no import is added "
+        "to your bundle. on_submit_prevent_stop= and on_click_prevent_stop= call preventDefault and "
+        "stopPropagation before your handler runs."
+
+    h2(): "The Python half"
+    Code(file="python-side", lang="hydrascript", lines=PYTHON)
+    p():
+        "def, class with __init__, @dataclass, @decorator, generators from yield, raise with real Exception classes, augmented assignment, comprehensions with tuple targets, chained comparisons, // as floor division, and new for browser constructors are all part of the language."
+
+    div(className="note"):
+        strong(): "Not every builtin is honoured. "
+        "A bare Python builtin compiles only when it is lowered to JavaScript or imported from the "
+        "runtime. Everything else is emitted verbatim and throws ReferenceError, and the checker "
+        "reports it as an unbound name. set, dict, tuple and next are on the not-honoured list."
+
+    h2(): "Which builtins work"
+    div(className="table-wrap"):
+        table():
+            thead():
+                tr():
+                    th(): "Call"
+                    th(): "What it becomes"
+            tbody():
+                for item in BUILTINS:
+                    tr(key=item[0]):
+                        td():
+                            code(): item[0]
+                        td(): item[1]
+
+    h2(): ".hys: JavaScript without JSX"
+    Code(file="scripts/lines.hys", lang="hydrascript", lines=HYS)
+    p():
+        "A .hys file compiles to plain JavaScript: no React, no JSX. Run one directly with "
+        "hydra run scripts/lines.hys, or import it from a component like any other module."
+
+    h2(): "Three specifiers, enforced"
+    div(className="table-wrap"):
+        table():
+            thead():
+                tr():
+                    th(): "Import from"
+                    th(): "Holds"
+                    th(): "Allowed in"
+            tbody():
+                for item in SPECIFIERS:
+                    tr(key=item[0]):
+                        td():
+                            code(): item[0]
+                        td(): item[1]
+                        td(): item[2]
+    p():
+        "Importing hydra/server from a page is a build error that names the file and says why, because "
+        "a page is bundled for the browser. The reverse is checked too: hydra/client in a .server.hys "
+        "fails, because there is no window there."
+
+    div(className="pager"):
+        Link(to="/docs"): "← Getting started"
+        Link(to="/docs/routing"): "Routing & rendering →"

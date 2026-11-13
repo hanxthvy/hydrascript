@@ -1,0 +1,128 @@
+# [xihanzu-NR]
+from hydra import Link
+from "../../components/Code.hyx" import Code
+
+meta = {
+    "title": "Getting started — HydraScript",
+    "description": "Install HydraScript, scaffold a project, and understand what hydra dev and hydra build actually do.",
+}
+
+TREE = [
+    "my-site/",
+    "├─ hydraconfig.json      project config: name, ports, ssg, styling",
+    "├─ index.html            the mount point, #root",
+    "├─ src/",
+    "│  ├─ main.hyx           entry: mount(App, element)",
+    "│  ├─ App.hyx            renders Router()",
+    "│  ├─ index.css          your stylesheet, processed however you chose",
+    "│  └─ pages/",
+    "│     ├─ index.hyx       -> /",
+    "│     ├─ _layout.hyx     wraps every route",
+    "│     └─ _404.hyx        rendered when nothing matches",
+    "└─ dist/                 build output, one HTML file per static route",
+]
+
+INIT = [
+    "npx hydra init my-site",
+    "",
+    "# or answer nothing and take the defaults",
+    "npx hydra init my-site --yes",
+    "",
+    "# every interactive choice has a flag",
+    "npx hydra init my-site --template=app --styling=plain \\",
+    "    --layout=pages --ssg=true --types=false",
+]
+
+COMMANDS = [
+    ("hydra dev", "Build, serve on port 5173, rebuild on change, live-reload the browser."),
+    ("hydra build", "Production bundle into dist/, one HTML file per static route, then the runtime gate."),
+    ("hydra preview", "Serve a finished dist/ exactly as a host would, including the API half on a node build."),
+    ("hydra routes", "Print the route table: URL, file, params, static or dynamic. --json for tooling."),
+    ("hydra check", "Parse and validate without emitting anything. Exit 1 on error."),
+]
+
+FIRST_PAGE = [
+    "from hydra import state",
+    "",
+    "meta = {\"title\": \"Home\", \"description\": \"A page that is a file.\"}",
+    "",
+    "component Home():",
+    "    count, set_count = state(0)",
+    "",
+    "    main(className=\"page\"):",
+    "        h1: f\"Clicked {count} times\"",
+    "        button(onClick=lambda: set_count(count + 1)): \"Again\"",
+]
+
+BUILD_LOG = [
+    "[hydra] 4 route(s) from src/pages, 1 dynamic (/blog/:slug)",
+    "[hydra] SSG: pre-rendered 3/3 static route(s) into dist/",
+    "[hydra] SSG: 1 dynamic route(s) left as the client shell (/blog/:slug) —",
+    "        a URL with a parameter has no single page to build",
+    "[hydra] runtime gate passed: no uncaught exceptions [3/3 page(s)]",
+]
+
+
+component GettingStarted():
+    h1(): "Getting started"
+    p(className="lede"):
+        "HydraScript is one npm package and one binary. There is no plugin to add to a "
+        "bundler config, because the runner already is the bundler: it drives esbuild, the CSS "
+        "pipeline and the dev server itself."
+
+    h2(): "Requirements"
+    ul():
+        li(): "Node 22 or newer, and npm."
+        li(): "Nothing else. A prebuilt compiler ships for linux-x64 (glibc and musl), linux-arm64 (glibc and musl), darwin-x64, darwin-arm64 and win32-x64-msvc. Cargo is only needed if none of those match your machine."
+
+    h2(): "Scaffold a project"
+    p():
+        "hydra init asks what to generate when it has a terminal, and takes the defaults when it does "
+        "not, so the same command works in CI. Each question has a flag equivalent."
+    Code(file="shell", lang="sh", lines=INIT)
+
+    h2(): "What the scaffold gives you"
+    Code(file="project", lang="tree", lines=TREE)
+    p():
+        "src/pages is the route table. The filename decides the URL, so there is no separate router "
+        "config to keep in sync with the folder."
+
+    h2(): "A page is a file"
+    Code(file="src/pages/index.hyx", lang="hydrascript", lines=FIRST_PAGE)
+    p():
+        "The meta dict is read from the source at build time and becomes the page's title and "
+        "description, both in the pre-rendered HTML and on client-side navigation. Two keys only: "
+        "title and description. A third is a build error naming it, not a value that silently reaches no page."
+
+    h2(): "The three commands that matter"
+    div(className="table-wrap"):
+        table():
+            thead():
+                tr():
+                    th(): "Command"
+                    th(): "What it does"
+            tbody():
+                for item in COMMANDS:
+                    tr(key=item[0]):
+                        td():
+                            code(): item[0]
+                        td(): item[1]
+
+    h2(): "What a build tells you"
+    p():
+        "A build is not silent about what it skipped. Dynamic routes are named, not quietly left as "
+        "an empty shell:"
+    Code(file="hydra build", lang="output", lines=BUILD_LOG)
+    p():
+        "After the pages are written, the runtime gate loads every index.html the build produced and "
+        "fails the build if a page throws on mount. Checking one page would leave every other route "
+        "unchecked, which is exactly where a route bug lives."
+
+    div(className="note"):
+        strong(): "Next: "
+        Link(to="/docs/syntax"): "the syntax"
+        " — indentation, components, state, control flow, and the parts of Python that are deliberately absent."
+
+    div(className="pager"):
+        Link(to="/"): "← Home"
+        Link(to="/docs/syntax"): "Syntax →"
