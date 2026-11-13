@@ -16,10 +16,10 @@ HydraScript compiles indentation-based `.hyx` files to React TSX and `.hys` file
 to plain JavaScript. The compiler is a Rust binary; a small Node runner wraps
 esbuild, PostCSS and Tailwind to produce a site.
 
-**Status: 0.15.0, pre-1.0.** The compiler, file-based router, prerendering,
+**Status: 0.15.1, pre-1.0.** The compiler, file-based router, prerendering,
 server rendering, language server, Fast Refresh, and test runner are implemented
 and covered by 428 Rust tests (291 unit + 137 integration) and 255 Node tests
-across 30 suites. The language syntax is frozen (see below); what ships between
+across 33 suites. The language syntax is frozen (see below); what ships between
 now and 1.0 is polish and production hardening, not new constructs.
 
 All roadmap targets are shipped — see [Roadmap](#roadmap).
@@ -748,7 +748,7 @@ and wiring both would double every squiggle.
 ## Testing
 
 ```bash
-cd compiler-rs && cargo test          # 418 tests: 281 unit + 137 integration
+cd compiler-rs && cargo test          # 428 tests: 291 unit + 137 integration
 node --test packages/cli/*.test.mjs   # 255 CLI/runtime tests, some against a real browser
 node benchmarks/measure.mjs           # the numbers quoted above
 node benchmarks/compile.mjs           # what the compile cache and the pool buy
@@ -916,6 +916,7 @@ dates; the version numbers are targets and the order is the honest part.
 | 0.13.3 | Built-in per-IP rate limiting, SSG for single-page apps, and community standards | shipped |
 | 0.14.0 | Security release: trusted-proxy rate limiting, origin checks on API routes, per-segment dotfile guard, generic 5xx bodies, lexical dynamic-import rewrite | shipped |
 | 0.15.0 | Interactive `hydra init`, and Fast Refresh completed (live markup swap into mounted tree while preserving hook state) | shipped |
+| 0.15.1 | Hardening, no API change: one failure boundary per request, render inside the request context, no stack traces in production, symlink-safe static serving, linear-time diagnostics | shipped |
 
 ### Streaming, precisely
 

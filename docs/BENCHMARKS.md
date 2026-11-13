@@ -10,10 +10,10 @@ believing any of it.
 | `hydra --check` latency | ~1.8–2.1 ms median | 20 runs, process spawn included |
 | `hydra <file>` latency | ~1.9–2.0 ms median | 20 runs, process spawn included |
 | In-process compile (`hydra.node`) | ~0.063–0.067 ms median | 2000 warm iterations, no spawn |
-| Test suite | 418 Rust tests, all passing | `cargo test` (281 unit + 137 integration) |
+| Test suite | 428 Rust tests, all passing | `cargo test` (291 unit + 137 integration) |
 | Node suite | 255 tests, all passing | `node --test packages/cli/*.test.mjs` |
-| CLI binary | 1.4 MB (1,434,384 bytes) | `bin/hydra`, stripped |
-| N-API addon | 975 KB (998,584 bytes) | `bin/hydra.node` |
+| CLI binary | 1.4 MB (1,459,144 bytes) | `bin/hydra`, stripped |
+| N-API addon | 1.1 MB (1,139,280 bytes) | `bin/hydra.node` |
 | Runtime cost of the `hydra` import | ~200 bytes | Built an identical app with and without it |
 | Token count, one component | 130 vs 188 (−30.9%) | `benchmarks/tokens.py`, `cl100k_base` |
 | SSG output, small page | 3.6 KB HTML | `examples/blog` with `ssg: true` |

@@ -16,8 +16,8 @@ HydraScript mengompilasi berkas `.hyx` berbasis indentasi menjadi React TSX, dan
 berkas `.hys` menjadi JavaScript biasa. Compiler-nya biner Rust; runner Node
 kecil membungkus esbuild, PostCSS dan Tailwind untuk menghasilkan situs.
 
-**Status: 0.15.0, pra-1.0.** Compiler, file-based router, prerender, server
-rendering, language server, Fast Refresh, dan test runner sudah jadi dan ditutup 418 tes Rust
+**Status: 0.15.1, pra-1.0.** Compiler, file-based router, prerender, server
+rendering, language server, Fast Refresh, dan test runner sudah jadi dan ditutup 428 tes Rust
 (291 unit + 137 integrasi) serta 255 tes Node di 33 suite. Sintaks bahasanya
 dibekukan (lihat di bawah); yang dirilis sampai 1.0 adalah perkakas dan pematangan, bukan
 konstruksi baru.
@@ -600,7 +600,7 @@ memanggil biner `hydra` untuk diagnostik; tidak ada language server terpisah.
 ## Pengujian
 
 ```bash
-cd compiler-rs && cargo test          # 418 tes: 281 unit + 137 integrasi
+cd compiler-rs && cargo test          # 428 tes: 291 unit + 137 integrasi
 node --test packages/cli/*.test.mjs   # 255 tes CLI/runtime, sebagian terhadap browser nyata
 node benchmarks/measure.mjs           # angka yang dikutip di atas
 bash scripts/hx-examples-check.sh     # build semua proyek examples/
@@ -703,6 +703,7 @@ versinya target, dan urutannya bagian yang jujur.
 | 0.13.3 | Rate limiting per-IP bawaan, SSG landing page satu-halaman, dan standar komunitas | rilis |
 | 0.14.0 | Rilis keamanan: rate limit dengan trusted proxy, cek origin di API route, penjaga dotfile per segmen, body 5xx generik, rewrite dynamic import leksikal | rilis |
 | 0.15.0 | `hydra init` interaktif, dan Fast Refresh selesai tuntas (markup hasil edit masuk ke pohon hidup dengan state hook utuh) | rilis |
+| 0.15.1 | Pengerasan, tanpa perubahan API: satu batas kegagalan per request, render di dalam konteks request, tanpa stack trace di produksi, static serving aman dari symlink, diagnostik linear | rilis |
 
 ### Streaming, tepatnya
 
