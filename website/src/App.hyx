@@ -1,7 +1,0 @@
-# [xihanzu-NR]
-from hydra import Router
-
-
-component App():
-    div(className="shell"):
-        Router()
