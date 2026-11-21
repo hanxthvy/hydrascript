@@ -2,7 +2,7 @@
 # HydraScript 
 
 **A Pythonic syntax for React, compiled by a native Rust binary.**
-
+ 
 [![npm](https://img.shields.io/npm/v/hydrascript.svg)](https://www.npmjs.com/package/hydrascript)
 [![license](https://img.shields.io/npm/l/hydrascript.svg)](LICENSE)
 
