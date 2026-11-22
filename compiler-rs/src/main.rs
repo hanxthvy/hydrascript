@@ -41,8 +41,12 @@ fn usage() -> String {
          \x20 hydra list                  show declared vs installed dependencies\n\
          \x20 hydra clean [--all]         remove build output (and node_modules)\n\
          \x20 hydra analyze [dir]         bundle size report from the last build\n\
+         \x20 hydra test [--routes]       run tests; --routes calls every loader\n\
+         \x20 hydra explain <url>        why a route rendered the way it did\n\
+         \x20 hydra migrate [from] [to]  codemods between versions (--list, --dry-run)\n\
+         \x20 hydra lsp                   language server on stdio, for editors\n\
          \x20 hydra --version\n\
-         \x20 hydra dev|build|preview|routes|run|watch|repl|check|init|fmt|stats|doctor|add|remove|list|clean|analyze  project commands\n"
+         \x20 hydra dev|build|preview|serve|routes|run|watch|repl|check|init|fmt|stats|doctor|add|remove|list|clean|analyze|test|explain|migrate|lsp  project commands\n"
     )
 }
 
