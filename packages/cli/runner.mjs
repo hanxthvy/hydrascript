@@ -28,11 +28,14 @@ import {
   missingMethodExports,
   middlewarePath,
   handleApiRequest,
+  handlePageMiddleware,
+  isPageRequest,
   droppedForStatic,
 } from './api-routes.mjs';
 import { attachSocketServer, injectHmrClient } from './hmr.mjs';
 import { CompileCache, CompilePool, cacheDirFor, shouldPool, sourceFilesUnder } from './compile-cache.mjs';
 import { handleDataRequest, createRenderer, SERVER_BUNDLE } from './ssr.mjs';
+import { newHeaderBag, flushHeaderBag } from './headers-out.mjs';
 import {
   findTestFiles,
   testRoot,
@@ -2586,6 +2589,10 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
       }
 
         let renderedCount = 0;
+        // Routes a loader refused at build time. Collected so the build can say
+        // which pages are served per request instead of shipping a static copy
+        // of something that was never static.
+        const leftByLoader = [];
         if (sourceHtml && routesTable && expandedRoutes.length > 0 && typeof ssgMod.renderFor === 'function') {
           for (const route of expandedRoutes) {
             try {
@@ -2604,6 +2611,22 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
               // params; a plain static route is the pattern with an empty map.
               const renderUrl = route.url || route.pattern;
               const out = await ssgMod.renderFor(route.pattern, route.params || {}, renderUrl);
+              // A loader that REDIRECTS or REFUSES at build time is saying this
+              // URL belongs to a visitor, not to a file. Writing the HTML anyway
+              // shipped a static copy of a guarded page that then bypassed its
+              // own loader: `/dashboard` was readable from dist/ by anyone,
+              // logged in or not, while the same route refused the request by
+              // hand. A page that wants a static shell for the logged-out case
+              // renders it itself; a redirect is not a page.
+              const buildIntent = httpIntent(out && out.data);
+              if (buildIntent) {
+                leftByLoader.push(
+                  `${route.pattern} (${
+                    buildIntent.kind === 'redirect' ? `redirect ${buildIntent.location}` : `status ${buildIntent.status}`
+                  })`,
+                );
+                continue;
+              }
               if (!out || typeof out.withRequest !== 'function') {
                 console.warn(`[hydra] SSG: ${route.pattern} (src/pages/${route.file}) exports no component; skipped`);
                 continue;
@@ -2674,6 +2697,15 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
             // WHY, and the fix (export static_params) named where they will look.
             console.log(
               `[hydra] SSG: left dynamic (no static_params export): ${dynamicWithoutParams.join(', ')}`,
+            );
+          }
+          if (leftByLoader.length > 0) {
+            // Not a warning, and not silence: this is the one case where the
+            // build deliberately writes NO file for a route it scanned, and the
+            // consequence (served per request; 404 on a static host) has to be
+            // readable in the log rather than discovered by a visitor.
+            console.log(
+              `[hydra] SSG: not pre-rendered, loader refuses at build time: ${leftByLoader.join(', ')}`,
             );
           }
           // A STATIC host has no router: Netlify, Cloudflare Pages, GitHub
@@ -3183,6 +3215,10 @@ export async function runServe(cwd = process.cwd(), opts = {}) {
     allowedOrigins: config.server?.allowedOrigins,
     rateLimit: config.server?.rateLimit,
     trustProxy: config.server?.trustProxy,
+    // Off by default: middleware used to see `/api` only, and turning it on
+    // for pages silently would change what an existing project answers.
+    // `server.middlewarePages: true` is the one-line opt-in.
+    pageMiddleware: config.server?.middlewarePages === true,
     headers: config.server?.headers,
     version: opts.version,
     sha: opts.sha,
@@ -3346,14 +3382,24 @@ async function handleAction(req, res, reqPath, rawUrl, bundlePath, opts = {}) {
   }
 
   try {
+    // The action's response headers, collected during the call and written
+    // once the answer is known — a 5xx drops the cookies (see headers-out.mjs).
+    const hdrs = newHeaderBag();
     const out = await hit.fn({
       params: hit.params,
       url: reqPath,
+      headers: req.headers,
+      _headers: hdrs,
       request: requestFor(req, rawUrl, rawBody),
     });
     // The same two helpers every other path reads, so an action and an API
     // route cannot disagree about what `redirect()` means.
-    if (sendHttpIntent(res, httpIntent(out))) return;
+    const intent = httpIntent(out);
+    if (intent) {
+      flushHeaderBag(res, hdrs, intent.status);
+      sendHttpIntent(res, intent);
+      return;
+    }
     const status = out && typeof out === 'object' && out.status ? out.status : 200;
     // Serialize first, then commit the status line. Writing the header and then
     // running `JSON.stringify` is how a returned ORM row killed the process: the
@@ -3372,6 +3418,7 @@ async function handleAction(req, res, reqPath, rawUrl, bundlePath, opts = {}) {
       );
       return;
     }
+    flushHeaderBag(res, hdrs, status);
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(body);
   } catch (e) {
@@ -3686,6 +3733,24 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
       return;
     }
 
+    // `src/middleware.hys` for pages, when `server.middlewarePages` is on.
+    //
+    // Before the API layer, the proxy and every static lookup, because its whole
+    // job is to answer a request that would otherwise reach a page — a redirect
+    // to /login has to happen before the page it guards is rendered, and before
+    // a proxy gets a chance to answer for it.
+    //
+    // The headers a passing middleware set ride along on `pageHeaders` and are
+    // flushed with whatever page answer is finally written, so a session
+    // refresh from middleware is not lost, and a page that then fails with a 5xx
+    // still drops the cookies.
+    let pageHeaders = [];
+    if (opts.pageMiddleware && isPageRequest(req.method, reqPath)) {
+      const mw = await handlePageMiddleware(req, res, rawUrl, opts.api, {});
+      if (mw.answered) return;
+      pageHeaders = mw.headers || [];
+    }
+
     // The API layer first: `src/api` is part of the project, and the SPA
     // fallback below would otherwise answer `/api/hello` with index.html and a
     // 200 — a JSON endpoint that answers HTML is worse than one that is
@@ -3795,12 +3860,18 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
     // would otherwise hand it index.html with a 200 — a JSON endpoint that
     // answers HTML is worse than one that is missing.
     if (reqPath === '/__hydra/data' && opts.ssr) {
+      // The bag rides on the request object, which is the same object the
+      // generated `__event` copies onto the loader's event — so a loader that
+      // refreshes a session cookie during a client-side navigation writes it
+      // onto THIS response.
+      const reqData = requestFor(req, rawUrl, '');
+      reqData._headers = newHeaderBag();
       handleDataRequest(req, res, opts.ssr, rawUrl, {
         // The same request object the render path builds. Without it a loader
         // reading `cookie`/`authorization` saw the real value on first paint and
         // an EMPTY headers object on client navigation, so a header-based guard
         // either denied wrongly or served the public branch.
-        request: requestFor(req, rawUrl, ''),
+        request: reqData,
       }).catch((err) => {
         const message = err && err.message ? err.message : String(err);
         if (res.headersSent) {
@@ -3938,12 +4009,18 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
           // The FULL url, query included: a loader that reads `?tab=info` and
           // the client that reads the same must be given the same string, or
           // the server renders one value and hydration uses another.
-          const out = await opts.ssr.renderPage(rawUrl, {
-            request: requestFor(req, rawUrl, ''),
-          });
+          // One header bag per attempt: a loader that sets a cookie appends to
+          // it, and only the attempt that ANSWERS gets flushed. The three
+          // attempts below (buffered probe, stream, buffered fallback) each get
+          // their own, because a discarded render must not send its cookies.
+          const hdrsA = newHeaderBag();
+          const reqA = requestFor(req, rawUrl, '');
+          reqA._headers = hdrsA;
+          const out = await opts.ssr.renderPage(rawUrl, { request: reqA });
           if (out && out.intent) {
             // A loader redirected or refused. That is an HTTP answer, not a
             // page: sending the page instead produced a 200 with a blank body.
+            flushHeaderBag(res, hdrsA, out.intent.status);
             sendHttpIntent(res, out.intent);
             return;
           }
@@ -3953,16 +4030,19 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
           // (no renderToPipeableStream, or a shell with no root element), and
           // `renderPage` is then the answer — never both, because two flushes
           // would append one document to another.
+          const hdrsB = newHeaderBag();
+          const reqB = requestFor(req, rawUrl, '');
+          reqB._headers = hdrsB;
           const streamed = opts.ssr.renderPageStream
-            ? await opts.ssr.renderPageStream(rawUrl, {
-                request: requestFor(req, rawUrl, ''),
-              })
+            ? await opts.ssr.renderPageStream(rawUrl, { request: reqB })
             : null;
           if (streamed && streamed.intent) {
+            flushHeaderBag(res, hdrsB, streamed.intent.status);
             sendHttpIntent(res, streamed.intent);
             return;
           }
           if (streamed && streamed.stream) {
+            flushHeaderBag(res, pageHeaders.concat(hdrsB), 200);
             res.writeHead(200, {
               'Content-Type': 'text/html; charset=utf-8',
               ...baseHeaders(),
@@ -3984,10 +4064,12 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
             });
             return;
           }
-          const out2 = streamed ? null : await opts.ssr.renderPage(rawUrl, {
-            request: requestFor(req, rawUrl, ''),
-          });
+          const hdrsC = newHeaderBag();
+          const reqC = requestFor(req, rawUrl, '');
+          reqC._headers = hdrsC;
+          const out2 = streamed ? null : await opts.ssr.renderPage(rawUrl, { request: reqC });
           if (out2 && out2.intent) {
+            flushHeaderBag(res, hdrsC, out2.intent.status);
             sendHttpIntent(res, out2.intent);
             return;
           }
@@ -3995,6 +4077,7 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
             const body = opts.injectHtml ? opts.injectHtml(out2.document) : out2.document;
             // Rendered per request, so it must never be cached: the same URL can
             // answer differently for two visitors.
+            flushHeaderBag(res, pageHeaders.concat(hdrsC), 200);
             res.writeHead(200, {
               'Content-Type': 'text/html; charset=utf-8',
               ...baseHeaders(),
@@ -4009,6 +4092,7 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
           const notFound = await opts.ssr.renderNotFound(rawUrl);
           if (notFound) {
             const body = opts.injectHtml ? opts.injectHtml(notFound.document) : notFound.document;
+            flushHeaderBag(res, pageHeaders, 404);
             res.writeHead(404, {
               'Content-Type': 'text/html; charset=utf-8',
               ...baseHeaders(),
@@ -4103,6 +4187,11 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
 
     const ext = path.extname(filePath).toLowerCase();
     const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+
+    // Headers a passing page middleware set, written before the file-server
+    // branch commits its status line. Empty for a static asset (middleware
+    // never runs for one), so this is a no-op on the asset path.
+    flushHeaderBag(res, pageHeaders, 200);
 
     // Conditional GET for static files.
     //
@@ -4488,6 +4577,10 @@ export async function runPreview(cwd = process.cwd(), opts = {}) {
     bodyLimit: config.server?.bodyLimit,
     rateLimit: config.server?.rateLimit,
     trustProxy: config.server?.trustProxy,
+    // Off by default: middleware used to see `/api` only, and turning it on
+    // for pages silently would change what an existing project answers.
+    // `server.middlewarePages: true` is the one-line opt-in.
+    pageMiddleware: config.server?.middlewarePages === true,
     version: opts.version,
     sha: opts.sha,
     configPath: path.join(cwd, 'hydraconfig.json'),
@@ -4539,6 +4632,10 @@ export async function runDev(cwd = process.cwd(), opts = {}) {
     bodyLimit: config.server?.bodyLimit,
     rateLimit: config.server?.rateLimit,
     trustProxy: config.server?.trustProxy,
+    // Off by default: middleware used to see `/api` only, and turning it on
+    // for pages silently would change what an existing project answers.
+    // `server.middlewarePages: true` is the one-line opt-in.
+    pageMiddleware: config.server?.middlewarePages === true,
     // The dev server injects the HMR client into every HTML response, because
     // the build wrote the file and the page has to reach the browser with it.
     injectHtml: (html) => injectHmrClient(html),

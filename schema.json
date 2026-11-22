@@ -76,6 +76,11 @@
           "default": "127.0.0.1",
           "description": "Bind address. Defaults to loopback; `--host 0.0.0.0` or this key makes the server reachable from the network."
         },
+        "middlewarePages": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run `src/middleware.hys` for page requests too, not only for `/api`. Off by default: turning it on changes what an existing middleware sees, so it is opt-in rather than silent. When on, middleware runs before any page render and before the proxy, for a GET/HEAD whose last segment has no file extension. A redirect from middleware answers the request; a passing middleware may set response headers and cookies through the event."
+        },
         "proxy": {
           "type": "object",
           "description": "Path-prefix to backend mapping, matched like Vite's server.proxy. A backend that is down returns 502, not a crash.",

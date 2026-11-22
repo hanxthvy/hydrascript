@@ -12,6 +12,47 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
+## 0.16.0 — unreleased
+
+The request layer gains an identity. Until now a project could not write a login:
+`Set-Cookie` appeared nowhere in the package, middleware saw `/api` only, and a
+guarded page was pre-rendered into a static file that anyone could read. No
+language syntax changed.
+
+### Added
+
+- **`cookies(event)`, `session(event, secret)`, `set_header(event, name, value)`**
+  in `hydra/server` — usable from a loader, an action, an API route and
+  middleware. The session is a signed (HMAC-SHA256), `HttpOnly`, `SameSite=Lax`
+  cookie holding a small dict: no store, no server memory, works across
+  instances. A tampered value reads as an empty session rather than throwing.
+  The MAC is hand-written (no `node:crypto` import, so the runtime stays
+  dependency-free) and compared against `node:crypto` in
+  `packages/cli/cookies.test.mjs`.
+- **`event.headers`** — the request's headers, on the event a loader already
+  receives. Before it existed, `cookies(event)` had nothing to read.
+- **`server.middlewarePages`** (default `false`) — `src/middleware.hys` runs for
+  page requests too, before the page is rendered and before the dev proxy. Off by
+  default because widening what an existing middleware sees is a behaviour change.
+
+### Fixed
+
+- **A guarded page was pre-rendered, and then served statically.** A loader that
+  returned `redirect()` at build time still produced `dist/dashboard/index.html`
+  from the logged-out branch, and `hydra serve` answered `/dashboard` from that
+  file — a static copy of a page that refused the request by hand. A route whose
+  loader refuses at build time is now skipped, and the build names it.
+- **Response headers from a handler were impossible.** There was no path from
+  `Set-Cookie` in a loader to the response at all. Headers now travel on a
+  per-request bag and are flushed immediately before `writeHead`, in one place,
+  with two rules: `Set-Cookie` repeats as an array (a second `setHeader` would have
+  replaced the first), and a 5xx sends none.
+- **Two cookies with the same name** in one response are collapsed to one header
+  (the later value), instead of stacking headers whose order a browser does not
+  promise.
+
+---
+
 ## 0.15.1 — 2026-11-12
 
 Hardening only. No public API changed: every fix below either stops one request

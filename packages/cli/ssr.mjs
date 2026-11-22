@@ -28,6 +28,7 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
 import { matchRoute } from '../../runtime/router-core.js';
+import { flushHeaderBag } from './headers-out.mjs';
 import { applyMeta } from './meta.mjs';
 import { readBody, requestFor } from './actions.mjs';
 import { httpIntent, errorBody } from './http.mjs';
@@ -605,6 +606,10 @@ export async function handleDataRequest(req, res, renderer, url, opts = {}) {
     // loader reads the request), so a shared cache storing one visitor's JSON is
     // a cross-user leak. `nosniff` because this is JSON a browser must never
     // execute as a document.
+    // Cookies a loader set while this ran (`cookies(event).set(...)`) ride the
+    // bag on the request object and are written here, once, before the status
+    // line — a 5xx drops them, which is the rule in headers-out.mjs.
+    flushHeaderBag(res, opts.request && opts.request._headers, status);
     res.writeHead(status, {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'no-store',

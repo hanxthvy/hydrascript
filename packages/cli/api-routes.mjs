@@ -42,6 +42,7 @@ import { createRequire } from 'node:module';
 
 import { readBody, requestFor } from './actions.mjs';
 import { httpIntent, sendHttpIntent, sendError } from './http.mjs';
+import { newHeaderBag, flushHeaderBag } from './headers-out.mjs';
 import { routesEsbuildPlugin } from './router.mjs';
 
 const require = createRequire(import.meta.url);
@@ -599,6 +600,7 @@ export async function handleApiRequest(req, res, url, bundlePath, options = {}) 
   const request = {
     ...requestFor(req, url, rawBody),
     path: reqPath,
+    _headers: newHeaderBag(),
   };
 
   const hit = mod.match(reqPath);
@@ -620,8 +622,15 @@ export async function handleApiRequest(req, res, url, bundlePath, options = {}) 
     if (verdict !== undefined && verdict !== null && verdict !== false) {
       // A middleware that redirects or refuses says so through the same two
       // helpers a handler uses, so it is read the same way.
-      if (sendHttpIntent(res, httpIntent(verdict))) return true;
-      sendResult(res, apiResult(verdict));
+      const mwIntent = httpIntent(verdict);
+      if (mwIntent) {
+        flushHeaderBag(res, request._headers, mwIntent.status);
+        sendHttpIntent(res, mwIntent);
+        return true;
+      }
+      const mwResult = apiResult(verdict);
+      flushHeaderBag(res, request._headers, mwResult.status);
+      sendResult(res, mwResult);
       return true;
     }
   }
@@ -663,10 +672,14 @@ export async function handleApiRequest(req, res, url, bundlePath, options = {}) 
     // value. Reading it here is what makes `fail(401)` answer 401.
     const intent = httpIntent(out);
     if (intent) {
+      flushHeaderBag(res, request._headers, intent.status);
       sendHttpIntent(res, intent);
       return true;
     }
-    sendResult(res, apiResult(out), method === 'head');
+    const result = apiResult(out);
+    // Cookies a handler set (`cookies(request)`) go out with its own answer.
+    flushHeaderBag(res, request._headers, result.status);
+    sendResult(res, result, method === 'head');
   } catch (e) {
     // A handler that throws is a bug in the handler, and the answer says which
     // file, because a bare 500 leaves the author reading server logs for a path.
@@ -678,6 +691,83 @@ export async function handleApiRequest(req, res, url, bundlePath, options = {}) 
     });
   }
   return true;
+}
+
+/**
+ * `src/middleware.hys` for PAGE requests, not just `/api`.
+ *
+ * Middleware ran only for requests that reached the API layer, which meant the
+ * one thing everyone writes it for — guarding `/dashboard` — was the one thing
+ * it could not do. The file, the `handle(request)` contract and the meaning of
+ * the return value are the same; only the set of requests it sees is wider.
+ *
+ * Scope, stated rather than implied: a page request is a GET/HEAD whose last
+ * segment has no file extension, and not `/api` or `/__hydra/…`. Static files
+ * are excluded on purpose — a static host has no middleware, so a build that
+ * put `hydra serve` in front of `dist/` and had middleware rewrite
+ * `/assets/app.js` would behave differently from the same `dist/` on a CDN.
+ *
+ * Returns `{ answered, headers }`. `headers` is the bag the middleware filled;
+ * the caller flushes it with the page response so a middleware that refreshes a
+ * session cookie writes it onto the page, and a page that then fails with a 5xx
+ * still drops it (`flushHeaderBag`).
+ */
+export async function handlePageMiddleware(req, res, url, bundlePath, options = {}) {
+  if (!bundlePath) return { answered: false, headers: [] };
+  const mod = loadApi(bundlePath);
+  if (!mod || typeof mod.middleware !== 'function') return { answered: false, headers: [] };
+
+  let reqPath;
+  try {
+    reqPath = decodeURIComponent(url.split('?')[0]);
+  } catch {
+    // A path that is not valid percent-encoding is answered later by the static
+    // layer, which already has a 400 for it. Middleware is not a second opinion.
+    return { answered: false, headers: [] };
+  }
+
+  const request = {
+    ...requestFor(req, url, ''),
+    path: reqPath,
+    params: {},
+    _headers: newHeaderBag(),
+  };
+  if (options.params && typeof options.params === 'object') request.params = options.params;
+
+  let verdict;
+  try {
+    verdict = await mod.middleware(request);
+  } catch (e) {
+    sendError(res, 500, 'middleware_threw', `middleware threw: ${e && e.message ? e.message : e}`);
+    return { answered: true, headers: request._headers };
+  }
+  if (verdict === undefined || verdict === null || verdict === false) {
+    return { answered: false, headers: request._headers };
+  }
+  const intent = httpIntent(verdict);
+  if (intent) {
+    flushHeaderBag(res, request._headers, intent.status);
+    sendHttpIntent(res, intent);
+    return { answered: true, headers: request._headers };
+  }
+  const result = apiResult(verdict);
+  flushHeaderBag(res, request._headers, result.status);
+  sendResult(res, result);
+  return { answered: true, headers: request._headers };
+}
+
+/**
+ * Is this request a page, as far as middleware is concerned?
+ *
+ * One definition, exported, so the runner and the docs cannot disagree about
+ * which requests middleware sees.
+ */
+export function isPageRequest(method, reqPath) {
+  if (method !== 'GET' && method !== 'HEAD') return false;
+  if (reqPath.startsWith('/api/') || reqPath === '/api') return false;
+  if (reqPath === '/__hydra' || reqPath.startsWith('/__hydra/')) return false;
+  const last = reqPath.split('/').pop() || '';
+  return !last.includes('.');
 }
 
 /**

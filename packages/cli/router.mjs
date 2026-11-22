@@ -853,6 +853,18 @@ function identFor(file) {
   lines.push('    url: full,');
   lines.push('    path: qAt === -1 ? full : full.slice(0, qAt),');
   lines.push('    query,');
+  // The request headers are on the EVENT as well as on `event.request`,
+  // because every helper that reads a cookie (`cookies(event)`,
+  // `session(event)`) is written against the event — the one argument a
+  // loader is documented to receive.
+  //
+  // `_headers` is the response-header bag: a loader cannot write a response,
+  // so `cookies(event).set()` appends here and the runner flushes it right
+  // before `writeHead`. The array is the SAME object the caller created (it
+  // comes in on the request object), which is what lets the runner read it
+  // back after the loader returns.
+  lines.push('    headers: (request && request.headers) || {},');
+  lines.push('    _headers: (request && request._headers) || [],');
   lines.push('    request: request || {');
   lines.push('      method: "GET", url: full, headers: {}, body: {},');
   lines.push('      json: async () => ({}), text: async () => "",');

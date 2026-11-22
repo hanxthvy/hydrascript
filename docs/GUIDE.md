@@ -332,6 +332,116 @@ running it for `/about` would make `dev` and production disagree about a page.
 Returning `None` (or `undefined`, or `false`) continues; anything else is
 treated as the response.
 
+### Middleware for pages: `server.middlewarePages`
+
+The same file can guard pages, and the reason it is opt-in is in the name of the
+thing it changes: a project that already had middleware saw `/api` only, and a
+release that quietly widened that would start answering requests it answered
+before.
+
+```json
+{ "server": { "middlewarePages": true } }
+```
+
+With it on, middleware runs for a **page request** — a `GET`/`HEAD` whose last
+segment has no file extension, and not `/api` or `/__hydra/…` — before the page
+is rendered and before the dev proxy:
+
+```python
+# src/middleware.hys
+from "hydra/server" import env_require, redirect, session
+
+export def handle(req):
+    if req.path.startswith("/dashboard"):
+        if not session(req, env_require("SESSION_SECRET")).get("user"):
+            return redirect("/login")     # 303, and the page is never rendered
+    return None
+```
+
+Static files are excluded on purpose: a static host has no middleware, so a
+`dist/` served by `hydra serve` must not behave differently from the same
+`dist/` on a CDN.
+
+## Cookies, sessions, and a login
+
+Three functions in `hydra/server`, available in a loader, an action, an API
+route and middleware — the four places that receive the request `event`:
+
+| Call | Does |
+|---|---|
+| `cookies(event)` | read the request's cookies, write the response's |
+| `session(event, secret)` | a signed, `HttpOnly` cookie carrying a small dict |
+| `set_header(event, name, value)` | any response header |
+
+```python
+# src/pages/login.server.hys — the action
+from "hydra/server" import env_require, redirect, session
+
+export def action(event):
+    form = event.request.body
+    user = form.get("user", "")
+    if not user:
+        return {"error": "nama kosong"}          # rendered as the action's data
+    session(event, env_require("SESSION_SECRET")).set("user", user)
+    return redirect("/dashboard")                # 303 + Set-Cookie
+```
+
+```python
+# src/pages/dashboard.server.hys — the guard, in the loader
+from "hydra/server" import env_require, redirect, session
+
+export def loader(event):
+    s = session(event, env_require("SESSION_SECRET"))
+    if not s.get("user"):
+        return redirect("/login")
+    return {"user": s.get("user")}
+```
+
+What this is, precisely:
+
+- **A signed cookie, not a store.** The data is base64 in the cookie and the
+  signature is HMAC-SHA256. No server memory, no id, survives a restart, works
+  across instances. It is **not encrypted** — put an id, a role, a username in
+  it, never a password or anything you would not hand to the visitor.
+- **`HttpOnly`, `SameSite=Lax`, `Path=/` by default.** `Secure` is off so dev
+  over plain HTTP works; set `{"secure": True}` in production.
+- **A tampered cookie reads as an empty session, never a throw.** An attacker
+  gets the logged-out branch, not a 500.
+- **`secret` must be at least 16 characters**, and a short one is refused at the
+  call. Read it from `.env`; a literal in the source is a secret in the repo.
+- **A 5xx sends no `Set-Cookie`.** A handler that throws after calling `set`
+  does not rewrite the visitor's session.
+- Calling `set` twice for one session name produces ONE `Set-Cookie` (the later
+  value), because two headers with the same name are not two cookies.
+
+`cookies(event)` on its own, for anything outside a session:
+
+```python
+jar = cookies(event)
+theme = jar.get("theme", "light")     # or jar["theme"] — same thing
+jar.set("theme", "dark", {"maxAge": 31536000})
+jar.delete("legacy")
+```
+
+`event.params`, `event.query`, `event.headers` and `event.request` are unchanged;
+`event.headers` is new, and is the request's headers — the same object as
+`event.request.headers`.
+
+### `hydra build` and a guarded page
+
+A route whose loader redirects **at build time** is not pre-rendered, and the
+build says so:
+
+```
+[hydra] SSG: not pre-rendered, loader refuses at build time: /dashboard (redirect /login)
+```
+
+Before this rule, the build wrote `dist/dashboard/index.html` from the
+logged-out branch, and `hydra serve` then answered `/dashboard` from that file —
+a static copy of a guarded page, readable by anyone. A loader that returns
+`redirect()` or `fail()` was never describing a page.
+
+
 ## `.env`, and the `PUBLIC_` split
 
 `.env` in the project root, `KEY=VALUE`, `#` comments, no interpolation and no
