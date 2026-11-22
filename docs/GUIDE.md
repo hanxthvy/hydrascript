@@ -474,6 +474,33 @@ DATABASE_URL=postgres://...           # server only
 - A variable already set in the real environment wins over `.env`, so a deploy's
   secrets are never overridden by a file that shipped in the tarball.
 
+## `sitemap.xml` and `robots.txt`
+
+Declare the site's absolute URL and the build writes both:
+
+```json
+{ "site": "https://example.com" }
+```
+
+```
+[hydra] sitemap: 12 URL(s) from 12 written page(s)
+```
+
+- The list is **what the build actually wrote**, not what the route table
+  contains. A dynamic route without `static_params`, a `csr` route, and a guarded
+  page whose loader redirected at build time are all absent, because none of them
+  is a file a crawler can fetch.
+- `robots.txt` is written only when the project has not written one. A project
+  that blocked a path on purpose keeps its file.
+- No `site`, no files. A sitemap full of `http://localhost/...` is worse than
+  none, because a crawler believes it.
+
+One caveat that belongs here rather than in a footnote: with
+`server.middlewarePages` on and `--target static`, the middleware is **dropped**
+(the build says so). A page that only middleware was guarding is therefore
+readable on a static host. Mark such a page `rendering = "ssr"` for the route, or
+deploy with `--target node`.
+
 ## `hydra build --target node|static`
 
 Two targets, and the list is closed.

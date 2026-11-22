@@ -22,6 +22,10 @@
       "type": "string",
       "description": "Asset URL prefix. \"sub\", \"/sub\" and \"/sub/\" are equivalent. An absolute URL (a CDN) is kept verbatim."
     },
+    "site": {
+      "type": "string",
+      "description": "Absolute site URL, e.g. \"https://example.com\". Used for exactly two files: `dist/sitemap.xml`, listing every route the build actually wrote, and `dist/robots.txt` with a `Sitemap:` line when the project has not written its own. Absent means neither is written — a sitemap full of `http://localhost/...` is worse than no sitemap."
+    },
     "outputDir": {
       "type": "string",
       "default": "./dist",

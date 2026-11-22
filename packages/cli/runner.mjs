@@ -2593,6 +2593,10 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
         // which pages are served per request instead of shipping a static copy
         // of something that was never static.
         const leftByLoader = [];
+        // Every URL the build actually wrote a file for. The sitemap is built
+        // from this and not from the route table, so it cannot list a page that
+        // was skipped.
+        const writtenUrls = [];
         if (sourceHtml && routesTable && expandedRoutes.length > 0 && typeof ssgMod.renderFor === 'function') {
           for (const route of expandedRoutes) {
             try {
@@ -2682,6 +2686,7 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
                 routeMeta,
               );
               fs.writeFileSync(htmlPathForPattern(renderUrl), html, 'utf8');
+              writtenUrls.push(renderUrl);
               renderedCount += 1;
             } catch (err) {
               // One page that throws must not cost the other pages their HTML.
@@ -2734,6 +2739,17 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
               `[hydra] render: ${csrRoutes.length} route(s) marked csr and left to the client ` +
                 `(${csrRoutes.map((r) => r.pattern).join(', ')})`,
             );
+          }
+          // `site` is the one input a sitemap needs and the one thing the build
+          // cannot guess. Present, the two files are written from what was
+          // actually produced; absent, neither is — a sitemap of
+          // `http://localhost/...` is worse than nothing, because a crawler
+          // believes it.
+          if (config.site) {
+            const count = writeSitemapAndRobots(outDir, config.site, writtenUrls);
+            if (count > 0) {
+              console.log(`[hydra] sitemap: ${count} URL(s) from ${writtenUrls.length} written page(s)`);
+            }
           }
           if (ssrRoutes.length > 0) {
             console.log(
@@ -2966,6 +2982,44 @@ function cacheHeaders(ext, hasHash) {
   }
   if (ext === '.html') return { 'Cache-Control': 'no-cache' };
   return { 'Cache-Control': 'public, max-age=3600' };
+}
+
+/**
+ * `sitemap.xml` and `robots.txt`, for a project that declares `site`.
+ *
+ * Only the routes the build actually WROTE go in, which is what makes the list
+ * true: a guarded page whose loader refused, a `csr` route, and a dynamic route
+ * with no `static_params` are all absent, because none of them is a file a
+ * crawler can fetch. A sitemap is an assertion about URLs that exist, and the
+ * build is the only place that knows which ones it made.
+ *
+ * `robots.txt` is written only when the project has not written one: a project
+ * that blocked a path on purpose must not have that file replaced.
+ */
+export function writeSitemapAndRobots(outDir, site, urls) {
+  const base = String(site).replace(/\/+$/, '');
+  const escapeXml = (s) =>
+    String(s).replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[c]);
+  const seen = new Set();
+  const entries = [];
+  for (const u of urls) {
+    const pathOnly = String(u).split('#')[0].split('?')[0];
+    if (seen.has(pathOnly)) continue;
+    seen.add(pathOnly);
+    entries.push(`  <url><loc>${escapeXml(base + pathOnly)}</loc></url>`);
+  }
+  if (entries.length === 0) return 0;
+  const xml =
+    '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +
+    entries.join('\n') +
+    '\n</urlset>\n';
+  fs.writeFileSync(path.join(outDir, 'sitemap.xml'), xml, 'utf8');
+  const robotsPath = path.join(outDir, 'robots.txt');
+  if (!fs.existsSync(robotsPath)) {
+    fs.writeFileSync(robotsPath, `User-agent: *\nAllow: /\nSitemap: ${base}/sitemap.xml\n`, 'utf8');
+  }
+  return entries.length;
 }
 
 const MIME_TYPES = {

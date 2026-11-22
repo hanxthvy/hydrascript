@@ -34,6 +34,10 @@ language syntax changed.
 - **`server.middlewarePages`** (default `false`) — `src/middleware.hys` runs for
   page requests too, before the page is rendered and before the dev proxy. Off by
   default because widening what an existing middleware sees is a behaviour change.
+- **`site`** — an absolute URL in `hydraconfig.json` makes the build write
+  `dist/sitemap.xml` from the pages it actually wrote, plus a `robots.txt` with a
+  `Sitemap:` line when the project has not written its own. Absent, neither file
+  is written.
 
 ### Fixed
 
