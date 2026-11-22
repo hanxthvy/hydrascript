@@ -203,6 +203,30 @@ its own verifiable statement.
 
 ## Data: `loader` and `action`
 
+### After an action, the loader runs again — by construction
+
+An `action` is answered by the server and returns `redirect()` or data. The
+browser is not left on a page holding stale data, because **the action is a form
+POST, not a function call**: the response is a 303, the browser navigates, and the
+target route's `loader` runs as part of serving that navigation. There is no
+client-side cache to invalidate and no "revalidate" call to remember.
+
+That is the reason `handle_submit` exists on `form_state`: it is for a form that
+talks to an API route with `fetch`, where nothing navigates. In that case call
+`refresh()` (below) or navigate.
+
+### `refresh()` — re-run the current route's loader
+
+```python
+from "hydra" import refresh
+
+button(onClick=lambda: refresh()): "Muat ulang data"
+```
+
+`refresh()` drops the inlined payload for the current URL and re-fetches
+`/__hydra/data`, so a page that changed something out of band can re-render
+without a reload. It is the manual counterpart to the automatic behaviour above.
+
 A page can have a **server half** in a file beside it — same name, `.server.hys`
 instead of `.hyx`:
 

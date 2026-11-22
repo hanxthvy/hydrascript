@@ -52,6 +52,9 @@ language syntax changed.
   again), sends `s-maxage`/`stale-while-revalidate`, and answers `If-None-Match`
   with `304`. Only for requests without a `Cookie`, which is the framework's check
   and not the author's.
+- **`refresh()`** — re-run the current route's loader through `/__hydra/data`
+  without a reload, for a page that changed something out of band. (An action
+  already re-runs the loader: it is a form POST and the response navigates.)
 - **`architecture`** — `layers` + `rules` (`"ui -/-> data"`), enforced by the
   build before compilation, naming both files.
 - **`t()` and `i18n.catalog`** — every `t("key")` is extracted to

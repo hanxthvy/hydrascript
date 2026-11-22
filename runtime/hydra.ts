@@ -1144,6 +1144,32 @@ export interface LoaderState {
  *   3. A route with no loader at all is `absent`, not `loading`: nothing will
  *      ever arrive, and a spinner for it would spin forever.
  */
+/* ------------------------------------------------------------- refresh
+ *
+ * `refresh()` re-runs the CURRENT route's loader. Under the hood it is one
+ * counter: the inlined payload is only trusted while the counter is at the value
+ * it had when the component mounted, so bumping it makes every mounted page treat
+ * its server-rendered data as stale and go back to `/__hydra/data`.
+ *
+ * An action does not need this. An action is a form POST and its 303 navigates,
+ * which re-runs the loader on the server. This is for the other case: something
+ * changed out of band and the page has to be told.
+ */
+let refresh_generation = 0
+const refresh_listeners = new Set<() => void>()
+
+export function refresh(): void {
+  refresh_generation += 1
+  for (const fn of refresh_listeners) {
+    try {
+      fn()
+    } catch {
+      /* one broken listener must not stop the others */
+    }
+  }
+  if (typeof window !== 'undefined') window.dispatchEvent(new PopStateEvent('popstate'))
+}
+
 export function use_loader(pattern: string | null, url: string): LoaderState {
   const table = use_route_table()
   const has_loader = useMemo(() => {
@@ -1159,7 +1185,19 @@ export function use_loader(pattern: string | null, url: string): LoaderState {
   const [fetched, set_fetched] = useState<{ url: string; data: any } | null>(null)
   const [failed, set_failed] = useState<string | null>(null)
 
+  // The generation at which this component mounted. A `refresh()` after that
+  // makes the inlined payload stale, which is the whole mechanism.
+  const [gen, set_gen] = useState(refresh_generation)
+  useEffect(() => {
+    const bump = () => set_gen(refresh_generation)
+    refresh_listeners.add(bump)
+    return () => {
+      refresh_listeners.delete(bump)
+    }
+  }, [])
+
   const inlined_matches =
+    gen === refresh_generation &&
     !!inlined &&
     !!pattern &&
     inlined.pattern === pattern &&
@@ -1198,7 +1236,7 @@ export function use_loader(pattern: string | null, url: string): LoaderState {
       cancelled = true
       if (controller) controller.abort()
     }
-  }, [has_loader, inlined_matches, pattern, url])
+  }, [has_loader, inlined_matches, pattern, url, gen])
 
   if (!has_loader) return { data: null, status: 'absent', error: null }
   if (inlined_matches) return { data: inlined!.data || null, status: 'ready', error: null }
