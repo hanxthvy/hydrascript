@@ -515,6 +515,7 @@ hydra stats [dir]            file/line/definition counts
 hydra doctor                 report toolchain and project health
 hydra routes [--json]        print the file-based route table
 hydra test [path]            run *.test.hys (component, route, snapshot)
+hydra test --routes [route]  run every loader's contract test in process
 hydra lsp                    run the language server on stdio
 hydra init [dir]             scaffold a project (asks what to generate)
 hydra add <pkg> [--dev]      install a dependency

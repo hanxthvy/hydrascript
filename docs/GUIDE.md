@@ -572,6 +572,38 @@ Two limits, stated rather than discovered:
 `rendering.ssg` still governs files: with `{"ssg": false}` nothing is pre-rendered
 and every route goes through the path above.
 
+## Testing routes: `hydra test --routes`
+
+Every route with a loader gets five assertions nobody writes by hand:
+
+```
+$ hydra test --routes
+  ok   /about                       0 ms
+  ok   /dashboard                   1 ms
+  FAIL /blog/[slug]                 threw: post not found
+[hydra] route tests: 2/3 loader(s) ok
+```
+
+For each loader: it does not throw, its result is JSON-serializable, a
+`redirect()` has a destination and a 3xx status, and a `fail()` carries a real
+status. `.env` is loaded first, exactly as a build or a server would, so a loader
+that needs a secret fails here for the reason it would fail in production.
+
+`hydra test --routes /dashboard` runs one route. This does not render anything —
+a loader whose shape the page cannot render passes here and is caught by the
+runtime gate, which is the other half.
+
+## End-to-end smoke test
+
+`node scripts/e2e-smoke.mjs <project-dir>` builds the project twice (static and
+node), serves it, and asks for 28 things over HTTP: routing, a login that sets a
+session and a guard that reads it, the cache (s-maxage, ETag, 304, and a request
+with a cookie never being cached), page middleware, the `on_request` header, a
+throwing handler answering 500 with `on_error` firing, CORS with a disallowed
+origin, `robots.txt`/`sitemap.xml`, and one access-log line per request. It needs
+a project with `react` installed; the expectations are listed at the top of the
+script.
+
 ## Why is this page like this: `hydra explain`
 
 ```

@@ -9,6 +9,7 @@ import { createRequire } from 'node:module';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { migrationsFor, describeMigrations } from './migrations.mjs';
+import { runRouteTests } from './route-tests.mjs';
 import net from 'node:net';
 import zlib from 'node:zlib';
 
@@ -5307,6 +5308,37 @@ export async function runMigrate(cwd = process.cwd(), opts = {}) {
  */
 export async function runTests(cwd = process.cwd(), opts = {}) {
   const config = readConfig(cwd);
+
+  // `hydra test --routes [route]` — the contract tests that exist for every
+  // route without anybody writing them. Deliberately a separate mode from the
+  // `*.test.hys` runner: one runs the project's own tests, the other runs the
+  // framework's checks against the project.
+  if (opts.routes) {
+    // `.env` first, exactly like a build and a server: a loader that needs
+    // SESSION_SECRET or DATABASE_URL must fail here for the same reason it would
+    // fail in production, and pass here for the same reason it would pass there.
+    const envLoad = loadProjectEnv(cwd);
+    if (envLoad.applied.length > 0) {
+      console.log(`[hydra] .env: ${envLoad.applied.length} variable(s) loaded`);
+    }
+    const report = await runRouteTests(cwd, { route: opts.route || null });
+    if (report.error) {
+      console.error(`[hydra] route tests: ${report.error}`);
+      return 1;
+    }
+    for (const r of report.results) {
+      if (r.ok) {
+        console.log(`  ok   ${r.pattern.padEnd(28)} ${r.ms} ms`);
+      } else {
+        console.error(`  FAIL ${r.pattern.padEnd(28)} ${r.problems.join('; ')}`);
+      }
+    }
+    const failed = report.results.filter((r) => !r.ok).length;
+    console.log(
+      `[hydra] route tests: ${report.results.length - failed}/${report.results.length} loader(s) ok`,
+    );
+    return failed === 0 ? 0 : 1;
+  }
   const pkgRoot = path.resolve(HERE, '../..');
 
   let files;
@@ -5653,8 +5685,15 @@ if (!invokedDirectly) {
       process.exit(1);
     });
 } else if (cmd === 'test') {
-  const pattern = argv.slice(1).find((a) => !a.startsWith('-'));
-  runTests(cwd, { pattern })
+  const rest = argv.slice(1);
+  const routes = rest.includes('--routes');
+  const afterRoutes = routes ? rest[rest.indexOf('--routes') + 1] : undefined;
+  const pattern = rest.find((a) => !a.startsWith('-') && a !== afterRoutes);
+  runTests(cwd, {
+    pattern,
+    routes,
+    route: afterRoutes && !afterRoutes.startsWith('-') ? afterRoutes : null,
+  })
     .then((code) => process.exit(code))
     .catch((err) => {
       console.error(err && err.message ? err.message : String(err));

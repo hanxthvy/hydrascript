@@ -52,6 +52,12 @@ language syntax changed.
   again), sends `s-maxage`/`stale-while-revalidate`, and answers `If-None-Match`
   with `304`. Only for requests without a `Cookie`, which is the framework's check
   and not the author's.
+- **`hydra test --routes [route]`** — every loader in the build is called in
+  process with the params its pattern implies, and checked for: no throw, a
+  JSON-serializable result, a real status on `redirect()`/`fail()`. `.env` is
+  loaded first, like a server.
+- **`scripts/e2e-smoke.mjs`** — builds twice, serves, and checks 28 promises over
+  HTTP (auth, cache/ETag/304, middleware, hooks, CORS, sitemap, access log).
 - **`hydra explain [route]`** — the rendering decision per route (`ssg`/`ssr`/`csr`),
   the params, the cache policy and the chunk size, from the route table and the
   last build's metafile.
