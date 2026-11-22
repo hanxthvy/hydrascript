@@ -15,7 +15,7 @@ const selfRequire = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 import { writeActionBundle, bundleActions, loadActions, readBody, requestFor } from './actions.mjs';
-import { httpIntent, sendHttpIntent, sendError, errorBody, detailAllowed } from './http.mjs';
+import { httpIntent, sendHttpIntent, sendError, errorBody, detailAllowed, corsHeaders } from './http.mjs';
 import { loadProjectEnv, publicEnvValues, clientEnvViolations, describeClientEnvViolation } from './env.mjs';
 import {
   API_BUNDLE,
@@ -29,6 +29,8 @@ import {
   middlewarePath,
   handleApiRequest,
   handlePageMiddleware,
+  hooksFor,
+  reportError,
   isPageRequest,
   droppedForStatic,
 } from './api-routes.mjs';
@@ -3273,6 +3275,8 @@ export async function runServe(cwd = process.cwd(), opts = {}) {
     // for pages silently would change what an existing project answers.
     // `server.middlewarePages: true` is the one-line opt-in.
     pageMiddleware: config.server?.middlewarePages === true,
+    accessLog: config.server?.accessLog === true,
+    cors: config.server?.cors,
     headers: config.server?.headers,
     version: opts.version,
     sha: opts.sha,
@@ -3478,6 +3482,12 @@ async function handleAction(req, res, reqPath, rawUrl, bundlePath, opts = {}) {
   } catch (e) {
     // An action that throws is a bug in the action, and the browser deserves to
     // know rather than receiving a 200 with an empty body.
+    reportError(opts.api, {
+      id: res.getHeader ? res.getHeader('X-Request-Id') || null : null,
+      path: reqPath,
+      method: req.method || 'POST',
+      headers: req.headers || {},
+    }, e);
     sendError(res, 500, 'action_threw', e && e.message ? e.message : String(e));
   }
 }
@@ -3671,6 +3681,31 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
    */
   function failRequest(req, res, err) {
     const message = err && err.message ? err.message : String(err);
+    // `on_error(event, err)` — the only place a project can hear about a request
+    // that died outside its own handler. Fire-and-forget on purpose: a reporter
+    // that hangs must not hold the response, and a reporter that throws must not
+    // become the second failure.
+    if (opts.api) {
+      const hooks = hooksFor(opts.api);
+      if (hooks && typeof hooks.on_error === 'function') {
+        try {
+          const out = hooks.on_error(
+            {
+              id: res.getHeader ? res.getHeader('X-Request-Id') || null : null,
+              path: String(req.url || '/').split('?')[0],
+              method: req.method || 'GET',
+              url: req.url || '/',
+              headers: req.headers || {},
+              headers_sent: res.headersSent === true,
+            },
+            err,
+          );
+          if (out && typeof out.then === 'function') out.then(null, () => {});
+        } catch {
+          /* a broken reporter is not a request failure */
+        }
+      }
+    }
     try {
       console.error(`[hydra] request failed: ${req.method || 'GET'} ${req.url || '/'}: ${message}`);
     } catch {
@@ -3735,6 +3770,53 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
       res.setHeader(name, value.replaceAll('{nonce}', nonce));
     }
 
+    // One id per request, echoed to the client and written in the access log, so
+    // "the page failed at 14:02" can be matched to exactly one line. It is also
+    // what a hook gets as `event.id` — the alternative is every project inventing
+    // its own correlation header, and none of them agreeing.
+    const reqId = randomBytes(8).toString('hex');
+    res.setHeader('X-Request-Id', reqId);
+
+    // The access log, opt-in via `server.accessLog`. One JSON line per request on
+    // `finish`, which is the only event that knows the status the response
+    // actually got — logging at handler exit misses errors written by the failure
+    // boundary and statuses set later by a stream.
+    if (opts.accessLog) {
+      const startedAt = process.hrtime.bigint();
+      res.on('finish', () => {
+        try {
+          const ms = Number(process.hrtime.bigint() - startedAt) / 1e6;
+          console.log(
+            JSON.stringify({
+              t: new Date().toISOString(),
+              id: reqId,
+              method: req.method || 'GET',
+              path: String(req.url || '/').split('?')[0],
+              status: res.statusCode,
+              ms: Math.round(ms * 10) / 10,
+            }),
+          );
+        } catch {
+          /* logging must never be the second failure */
+        }
+      });
+    }
+
+    // CORS, for the browser's benefit only: a request with no Origin is not a
+    // browser request and gets nothing (see corsHeaders).
+    if (opts.cors) {
+      const cors = corsHeaders(opts.cors, req.headers.origin);
+      for (const [name, value] of Object.entries(cors)) res.setHeader(name, value);
+      // The preflight is answered HERE, before routing: a browser sends OPTIONS
+      // to a path that may have no handler at all, and an `Allow` computed from
+      // the API table would refuse a route the page is about to call.
+      if (req.method === 'OPTIONS' && Object.keys(cors).length > 0) {
+        res.writeHead(204, { 'Content-Length': '0' });
+        res.end();
+        return;
+      }
+    }
+
     if (rateLimitCfg && rateLimitState) {
       const clientIp = clientIpOf(req);
       const now = Date.now();
@@ -3785,6 +3867,51 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
       res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Bad Request');
       return;
+    }
+
+    // `src/hooks.hys` — `on_request(event)` runs for EVERY request, before the
+    // middleware and before routing. It exists for the things every app writes
+    // the same way once and then copies forever: a request log with its own
+    // fields, a correlation id passed to a logger, an authorisation gate.
+    //
+    // The contract is deliberately narrow: return `redirect()` or `fail()` to
+    // answer, return nothing to continue. Anything else is ignored with a line
+    // in the log rather than quietly becoming the response, because a hook that
+    // returns "the thing I logged" is the most likely accident here.
+    if (opts.api) {
+      const hooks = hooksFor(opts.api);
+      if (hooks && typeof hooks.on_request === 'function') {
+        const hookBag = newHeaderBag();
+        const event = {
+          id: reqId,
+          path: reqPath,
+          method: req.method || 'GET',
+          url: rawUrl,
+          headers: req.headers,
+          _headers: hookBag,
+        };
+        let verdict;
+        try {
+          verdict = await hooks.on_request(event);
+        } catch (e) {
+          console.error(`[hydra] on_request threw for ${req.method} ${reqPath}: ${e && e.message ? e.message : e}`);
+          verdict = null;
+        }
+        if (verdict !== undefined && verdict !== null && verdict !== false) {
+          const intent = httpIntent(verdict);
+          flushHeaderBag(res, hookBag, intent ? intent.status : 200);
+          if (intent) {
+            sendHttpIntent(res, intent);
+            return;
+          }
+          console.error(
+            `[hydra] on_request returned a value that is not redirect()/fail(); ignored. ` +
+              `Return None to continue, or a redirect/fail to answer.`,
+          );
+        } else {
+          flushHeaderBag(res, hookBag, 200);
+        }
+      }
     }
 
     // `src/middleware.hys` for pages, when `server.middlewarePages` is on.
@@ -4171,6 +4298,17 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
           const message = err && err.message ? err.message : String(err);
           const fullDetail = err && err.loaderStack ? `${message}\n\n${err.loaderStack}` : message;
           const ref = Math.random().toString(36).slice(2, 10);
+          // A page that throws server-side is the failure a project most wants
+          // reported, and it never reaches `failRequest`: the SSR path answers it
+          // with an error page, deliberately.
+          reportError(opts.api, {
+            id: res.getHeader ? res.getHeader('X-Request-Id') || null : null,
+            path: reqPath,
+            method: req.method || 'GET',
+            url: rawUrl,
+            headers: req.headers || {},
+            loaderStack: err && err.loaderStack ? err.loaderStack : null,
+          }, err);
           console.error(`[hydra] SSR failed for ${reqPath} [${ref}]: ${message}`);
           const shownDetail = detailAllowed()
             ? fullDetail
@@ -4635,6 +4773,8 @@ export async function runPreview(cwd = process.cwd(), opts = {}) {
     // for pages silently would change what an existing project answers.
     // `server.middlewarePages: true` is the one-line opt-in.
     pageMiddleware: config.server?.middlewarePages === true,
+    accessLog: config.server?.accessLog === true,
+    cors: config.server?.cors,
     version: opts.version,
     sha: opts.sha,
     configPath: path.join(cwd, 'hydraconfig.json'),
@@ -4690,6 +4830,8 @@ export async function runDev(cwd = process.cwd(), opts = {}) {
     // for pages silently would change what an existing project answers.
     // `server.middlewarePages: true` is the one-line opt-in.
     pageMiddleware: config.server?.middlewarePages === true,
+    accessLog: config.server?.accessLog === true,
+    cors: config.server?.cors,
     // The dev server injects the HMR client into every HTML response, because
     // the build wrote the file and the page has to reach the browser with it.
     injectHtml: (html) => injectHmrClient(html),

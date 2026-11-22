@@ -161,6 +161,55 @@
           ],
           "default": false,
           "description": "Which peers may set X-Forwarded-For. OFF by default: the header is written by the client, so trusting it unconditionally lets a caller pick its own rate-limit bucket (and grow the limiter’s memory without bound). Set true (or list the proxy addresses) only when the server really runs behind a proxy that overwrites the header."
+        },
+        "accessLog": {
+          "type": "boolean",
+          "default": false,
+          "description": "Write one JSON line per request to stdout on response finish: `{t, id, method, path, status, ms}`. Off by default — a framework that logs every request without being asked is a framework whose logs are turned off."
+        },
+        "cors": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "origins": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Exact origins. `[\"*\"]` allows any origin WITHOUT credentials."
+                },
+                "credentials": {
+                  "type": "boolean",
+                  "description": "Send `Access-Control-Allow-Credentials`. Cannot be combined with `*`, so the request origin is echoed and `Vary: Origin` is set."
+                },
+                "methods": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "headers": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "maxAge": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          ],
+          "description": "CORS for browser clients. `true` = `*`, a string = that one origin, an object = an allowlist. A request whose Origin is not allowed gets no `Access-Control-*` header at all, which is what makes a browser refuse it; `OPTIONS` is answered 204 before routing."
         }
       }
     },

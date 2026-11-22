@@ -176,6 +176,61 @@ export function errorBody(code, message, detail = null, status = 500) {
   return { error: 'internal error', code, ref };
 }
 
+/**
+ * CORS headers for one request, from `server.cors`.
+ *
+ * `true` sends `Access-Control-Allow-Origin: *`; a string is that exact origin
+ * (or `*`); an object takes `origins` (a list, or `["*"]`), `credentials`,
+ * `methods`, `headers` and `maxAge`.
+ *
+ * Two rules this exists to keep in one place:
+ *
+ *   - A request whose `Origin` is not in the list gets NO `Access-Control-*`
+ *     header at all, which is what makes a browser refuse it. Echoing the origin
+ *     back because it was present is the bug that turns an allowlist into a
+ *     welcome mat.
+ *   - `credentials: true` cannot be combined with `*`. A browser refuses that
+ *     pairing outright, so the origin is echoed instead and `Vary: Origin` is
+ *     set, or a cache would serve one visitor's `Allow-Origin` to another.
+ *
+ * Returns an empty object when CORS is off or the origin is not allowed.
+ */
+export function corsHeaders(config, origin) {
+  if (!config) return {};
+  const cfg = config === true ? { origins: ['*'] } : typeof config === 'string' ? { origins: [config] } : config;
+  if (!cfg || typeof cfg !== 'object') return {};
+  const origins = Array.isArray(cfg.origins) ? cfg.origins.map(String) : ['*'];
+  const wildcard = origins.includes('*');
+  const credentials = cfg.credentials === true;
+
+  const headers = {};
+  if (wildcard && !credentials) {
+    headers['Access-Control-Allow-Origin'] = '*';
+  } else if (typeof origin === 'string' && origin !== '') {
+    // The exact origin, echoed only when it is allowed. A wildcard list with
+    // credentials has to echo, because `*` and credentials cannot be combined.
+    // Exact match only: a wildcard inside an origin (`https://*.example.com`) is
+    // not a thing CORS can express, and pretending to match one would deny the
+    // request while looking like it was allowed.
+    if (!(wildcard || origins.includes(origin))) return {};
+    headers['Access-Control-Allow-Origin'] = origin;
+    headers.Vary = 'Origin';
+  } else {
+    // No Origin header: a non-browser client (curl, a test). CORS is a browser
+    // rule, so there is nothing to answer and nothing to leak.
+    return {};
+  }
+  if (credentials) headers['Access-Control-Allow-Credentials'] = 'true';
+  const methods = Array.isArray(cfg.methods) ? cfg.methods : ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
+  headers['Access-Control-Allow-Methods'] = methods.join(', ');
+  const allowHeaders = Array.isArray(cfg.headers)
+    ? cfg.headers
+    : ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'];
+  headers['Access-Control-Allow-Headers'] = allowHeaders.join(', ');
+  if (Number.isInteger(cfg.maxAge)) headers['Access-Control-Max-Age'] = String(cfg.maxAge);
+  return headers;
+}
+
 /** Write a framework error. Returns nothing; the response is finished. */
 export function sendError(res, status, code, message, detail = null, headers = {}) {
   // Serialize first: an error body that cannot be stringified must still leave a

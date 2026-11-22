@@ -34,6 +34,14 @@ language syntax changed.
 - **`server.middlewarePages`** (default `false`) — `src/middleware.hys` runs for
   page requests too, before the page is rendered and before the dev proxy. Off by
   default because widening what an existing middleware sees is a behaviour change.
+- **`src/hooks.hys`** — `on_request(event)` (before middleware and routing; may
+  answer with `redirect()`/`fail()`) and `on_error(event, err)` (any 5xx a handler
+  answered itself, plus anything that reached the failure boundary).
+- **`server.accessLog`** — one JSON line per request on `finish`:
+  `{t, id, method, path, status, ms}`. Every answer also carries `X-Request-Id`.
+- **`server.cors`** — `true`, one origin, or an allowlist with `credentials`,
+  `methods`, `headers`, `maxAge`. A disallowed origin gets no `Access-Control-*`
+  header at all; `OPTIONS` is answered before routing.
 - **`site`** — an absolute URL in `hydraconfig.json` makes the build write
   `dist/sitemap.xml` from the pages it actually wrote, plus a `robots.txt` with a
   `Sitemap:` line when the project has not written its own. Absent, neither file

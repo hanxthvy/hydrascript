@@ -442,6 +442,63 @@ a static copy of a guarded page, readable by anyone. A loader that returns
 `redirect()` or `fail()` was never describing a page.
 
 
+## Hooks: `src/hooks.hys`
+
+Two functions, both optional, both running on the server for every request:
+
+```python
+# src/hooks.hys
+export def on_request(event):
+    print(event.id + " " + event.method + " " + event.path)   # see event.id below
+    if event.path == "/maintenance":
+        return redirect("/soon")
+    return None
+
+export def on_error(event, err):
+    print("failed " + event.path + ": " + str(err))
+    return None
+```
+
+- `on_request(event)` runs before the middleware and before routing. Its event is
+  `{id, path, method, url, headers, _headers}`. Returning `redirect()` or `fail()`
+  answers the request; returning nothing continues. Any other return value is
+  ignored **with a line in the log**, because the usual accident is returning the
+  thing you just logged.
+- `on_error(event, err)` runs for a failure a handler answered itself (an API
+  route, loader or action that threw) and for one that escaped to the framework's
+  failure boundary. It is fire-and-forget: an async reporter is not awaited, and
+  a reporter that throws is not a second failure.
+
+`event.id` is the `X-Request-Id` the server generated for that request and echoed
+to the client, so one report from a visitor maps to one line anywhere you log.
+
+## Access log: `server.accessLog`
+
+```json
+{ "server": { "accessLog": true } }
+```
+
+One line per request, written on response `finish` — the only moment that knows
+the status the response actually got:
+
+```json
+{"t":"2026-11-22T08:32:03.911Z","id":"53d37254b6e322ec","method":"GET","path":"/api/boom","status":500,"ms":2.1}
+```
+
+## CORS: `server.cors`
+
+```json
+{ "server": { "cors": { "origins": ["https://app.example.com"], "credentials": true, "maxAge": 600 } } }
+```
+
+`true` sends `*`, a string is one origin, an object is an allowlist with optional
+`methods`, `headers` and `maxAge`. Two rules: an origin that is not allowed gets
+**no** `Access-Control-*` header at all (which is what makes the browser refuse
+it — echoing back whatever `Origin` arrived is how an allowlist becomes a welcome
+mat), and `credentials: true` can never be combined with `*`, so the origin is
+echoed and `Vary: Origin` is set. `OPTIONS` is answered `204` before routing,
+because a browser sends it to a path that may have no handler yet.
+
 ## `.env`, and the `PUBLIC_` split
 
 `.env` in the project root, `KEY=VALUE`, `#` comments, no interpolation and no
