@@ -73,3 +73,23 @@ test('binaries.yml does not wire the root manifest', () => {
     'binaries.yml wires the root manifest too; only release.yml may',
   );
 });
+
+test('package.json and Cargo.toml agree on the version', () => {
+  // They are two manifests for one release, and only one of them is on the
+  // path a user sees. `binaries.yml` ships a binary whose `--version` is the
+  // CARGO version, while everything else — the tarball, the platform package
+  // names, `hplat` — reads package.json, and the publisher refuses a binary
+  // whose reported version differs. So bumping one and not the other does not
+  // produce a broken release, it produces SEVEN failed publishes and a tag
+  // that has to be moved. That is a one-line mistake with a ten-minute cost,
+  // which is exactly what a test is for.
+  const pkg = JSON.parse(read('package.json'));
+  const cargo = read('compiler-rs/Cargo.toml');
+  const match = cargo.match(/^version\s*=\s*"([^"]+)"/m);
+  assert.ok(match, 'compiler-rs/Cargo.toml has no version line');
+  assert.equal(
+    match[1],
+    pkg.version,
+    `package.json is ${pkg.version} but compiler-rs/Cargo.toml is ${match[1]}: the binaries would report the wrong version and every publish would be refused`,
+  );
+});
