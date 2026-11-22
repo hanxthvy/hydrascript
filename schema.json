@@ -334,6 +334,38 @@
     "tests": {
       "type": "string",
       "description": "Directory `hydra test` looks in. Default `tests/`."
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Fail the build when the client bundle outgrows these numbers. Checked during `hydra build`, because that is what CI already runs.",
+      "properties": {
+        "entry": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Largest entry chunk, in KB."
+        },
+        "total": {
+          "type": "number",
+          "minimum": 0,
+          "description": "All emitted JavaScript together, in KB."
+        },
+        "chunks": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many JavaScript files the build may emit."
+        }
+      }
+    },
+    "a11y": {
+      "type": "string",
+      "enum": [
+        "off",
+        "warn",
+        "error"
+      ],
+      "default": "warn",
+      "description": "Accessibility findings from the runtime gate. `warn` (default) prints them and passes; `error` fails the build; `off` skips the probe. Checked rules: html-lang, img-alt, control-name, input-label, duplicate-id, tabindex-positive — a floor chosen so that a finding is always certain, never a heuristic."
     }
   }
 }

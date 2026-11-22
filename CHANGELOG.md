@@ -52,6 +52,14 @@ language syntax changed.
   again), sends `s-maxage`/`stale-while-revalidate`, and answers `If-None-Match`
   with `304`. Only for requests without a `Cookie`, which is the framework's check
   and not the author's.
+- **`budget`** — `{entry, total, chunks}` in `hydraconfig.json` fails the build,
+  with the figure and the limit, when the client bundle outgrows it.
+- **`a11y`** — the runtime gate also collects `html-lang`, `img-alt`,
+  `control-name`, `input-label`, `duplicate-id` and `tabindex-positive`;
+  `"warn"` (default) prints them, `"error"` fails the build, `"off"` skips.
+- **`hydra migrate <from> <to>`** — codemod registry (`packages/cli/migrations.mjs`)
+  with `--list`, `--dry-run`, pure+idempotent transforms, and an empty registry
+  that says "nothing to rewrite" instead of failing.
 - **`ETag` on server-rendered HTML** — cheaper than it sounds and the only way a
   returning visitor can be told "unchanged" instead of being sent the page again.
 

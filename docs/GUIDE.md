@@ -572,6 +572,49 @@ Two limits, stated rather than discovered:
 `rendering.ssg` still governs files: with `{"ssg": false}` nothing is pre-rendered
 and every route goes through the path above.
 
+## Budgets, accessibility, and `hydra migrate`
+
+```json
+{
+  "budget": { "entry": 80, "total": 400, "chunks": 12 },
+  "a11y": "warn"
+}
+```
+
+**`budget`** fails the BUILD (not a separate command) when the client bundle
+outgrows the numbers, and prints the figure next to the limit:
+
+```
+[hydra] budget: entry 2 KB, js 235.5 KB across 10 chunk(s)
+Error: [hydra] bundle budget exceeded:
+  entry chunk is 2 KB, over the 1 KB budget
+  chunk count is 10, over the 1 budget
+```
+
+`entry` and `total` are KB, `chunks` is a count. A budget that only fails when
+someone remembers to run a second command is a budget that drifts.
+
+**`a11y`** runs a small, dependency-free set of accessibility rules in the same
+browser the runtime gate already opens: `html-lang`, `img-alt`, `control-name`,
+`input-label`, `duplicate-id`, `tabindex-positive`. `warn` (the default) prints
+them and passes; `error` fails the build; `off` skips the probe. The set is a
+floor chosen so a finding is always certain — there is no colour-contrast
+heuristic here, and the list is in `packages/cli/runtime-gate.mjs` next to the
+code that implements it.
+
+**`hydra migrate <from> <to>`** applies registered codemods to a project's `.hyx`
+and `.hys` files. The registry is empty today and the command says so:
+
+```
+[hydra] no codemods registered for 0.15 → 0.16 — nothing to rewrite
+```
+
+- `hydra migrate --list` prints what is registered.
+- `--dry-run` reports what would change without writing.
+- A version step compares `major.minor`; a patch release never carries a codemod.
+- Every codemod must be pure and idempotent, because the second run is what
+  happens when somebody is not sure whether they already ran it.
+
 ## `sitemap.xml` and `robots.txt`
 
 Declare the site's absolute URL and the build writes both:

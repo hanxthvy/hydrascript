@@ -509,6 +509,7 @@ hydra run <file.hys> [args]  execute a script
 hydra repl                   interactive REPL
 hydra watch [dir]            watch and recompile on change
 hydra fmt [--check] [files]  format sources (idempotent)
+hydra migrate <from> <to>    apply registered codemods (--list, --dry-run)
 hydra stats [dir]            file/line/definition counts
 hydra doctor                 report toolchain and project health
 hydra routes [--json]        print the file-based route table

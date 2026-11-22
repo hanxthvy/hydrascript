@@ -335,7 +335,61 @@ function builtPages(distDir, cap = Number(process.env.HYDRA_GATE_PAGES) || 25) {
  * @returns {Promise<{skipped?: string, ok: boolean, exceptions: string[],
  *                    warnings: string[]}>}
  */
-export async function runRuntimeGate({ distDir, serve }) {
+/**
+ * Accessibility findings for one page, from what the DOM actually is.
+ *
+ * A deliberately small, dependency-free set: the rules below are the ones that
+ * are BOTH certain (no heuristics, no colour maths) and common. axe-core would
+ * find more and costs a dependency in every user's `node_modules`, in a gate that
+ * exists to need nothing but a browser. What is checked is stated here so the
+ * absence of a rule is a decision rather than a gap:
+ *
+ *   html-lang        `<html>` has no `lang`
+ *   img-alt          `<img>` with no `alt` attribute (an empty alt is valid)
+ *   control-name     `<a>` / `<button>` with no text, `aria-label` or `title`
+ *   input-label      form control with no `<label>`, `aria-label` or `aria-labelledby`
+ *   duplicate-id     the same `id` twice, which breaks every `for=` and anchor
+ *   tabindex-positive  `tabindex` above 0, which reorders focus for the page
+ */
+const A11Y_PROBE = `(() => {
+  const out = [];
+  const add = (rule, detail) => { if (out.length < 40) out.push({ rule, detail: String(detail).slice(0, 90) }); };
+  if (!document.documentElement.getAttribute('lang')) add('html-lang', '<html>');
+  document.querySelectorAll('img').forEach((el) => {
+    if (!el.hasAttribute('alt')) add('img-alt', el.outerHTML);
+  });
+  document.querySelectorAll('a, button').forEach((el) => {
+    const name = (el.innerText || '').trim() || el.getAttribute('aria-label') || el.getAttribute('title');
+    if (!name) add('control-name', el.outerHTML);
+  });
+  document.querySelectorAll('input, select, textarea').forEach((el) => {
+    if (el.type === 'hidden') return;
+    const id = el.getAttribute('id');
+    const labelled = (id && document.querySelector('label[for="' + id + '"]')) || el.closest('label') || el.getAttribute('aria-label') || el.getAttribute('aria-labelledby');
+    if (!labelled) add('input-label', el.outerHTML);
+  });
+  const seen = new Set();
+  const dups = new Set();
+  document.querySelectorAll('[id]').forEach((el) => {
+    const id = el.getAttribute('id');
+    if (seen.has(id)) dups.add(id); else seen.add(id);
+  });
+  dups.forEach((id) => add('duplicate-id', '#' + id));
+  document.querySelectorAll('[tabindex]').forEach((el) => {
+    if (Number(el.getAttribute('tabindex')) > 0) add('tabindex-positive', el.outerHTML);
+  });
+  return JSON.stringify(out);
+})()`;
+
+/**
+ * `a11y` is `off`, `warn` or `error`.
+ *
+ * `warn` is the default and the honest one: this set of rules is a floor, and a
+ * gate that red-lights a build over a missing `lang` on a project that has never
+ * claimed to be accessible is a gate people turn off. `error` is opt-in for a
+ * project that wants the floor enforced.
+ */
+export async function runRuntimeGate({ distDir, serve, a11y = 'warn' }) {
   const indexPath = path.join(distDir, 'index.html');
   if (!fs.existsSync(indexPath)) {
     return { skipped: `no index.html in ${distDir}`, ok: true, exceptions: [], warnings: [] };
@@ -372,6 +426,9 @@ export async function runRuntimeGate({ distDir, serve }) {
   let server = null;
   const exceptions = [];
   const warnings = [];
+  // Accessibility findings, per page. Collected separately from `warnings`
+  // because the caller decides whether they are advisory or fatal (`a11y`).
+  const a11yFindings = [];
 
   const finish = async (result) => {
     if (child) {
@@ -538,13 +595,34 @@ export async function runRuntimeGate({ distDir, serve }) {
         // an empty page simply never ran. Say so.
         warnings.push(`${pagePath} — empty-shell check could not run: ${e.message}`);
       }
+
+      // Accessibility, same session and same loaded page. Advisory by default;
+      // the caller turns the same list into a failure when the project asked for
+      // that. A probe that cannot run is a warning, not a silent pass.
+      if (a11y !== 'off') {
+        try {
+          const res = await cdp.send('Runtime.evaluate', {
+            expression: A11Y_PROBE,
+            returnByValue: true,
+          });
+          const found = JSON.parse(res.result?.value || '[]');
+          for (const f of found) {
+            a11yFindings.push({ page: pagePath, rule: f.rule, detail: f.detail });
+          }
+        } catch (e) {
+          warnings.push(`${pagePath} — accessibility check could not run: ${e.message}`);
+        }
+      }
     }
 
     ws.close();
     return await finish({
-      ok: exceptions.length === 0,
+      // A11y findings are fatal only when the project asked for that; the count
+      // is reported either way so a project can see the floor it is standing on.
+      ok: exceptions.length === 0 && (a11y !== 'error' || a11yFindings.length === 0),
       exceptions,
       warnings,
+      a11y: a11yFindings,
       checked,
       total: builtTotal,
       cap,

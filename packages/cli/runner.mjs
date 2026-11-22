@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
+import { migrationsFor, describeMigrations } from './migrations.mjs';
 import net from 'node:net';
 import zlib from 'node:zlib';
 
@@ -2227,6 +2228,39 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     );
   }
 
+  // 4b. Bundle budget: `budget: {entry, chunks, total}` in hydraconfig.json.
+  //
+  // Checked in the BUILD, not in `hydra analyze`: the numbers exist here, the
+  // build is what CI already runs, and a budget that only fails when someone
+  // remembers to run a second command is a budget that drifts. An exceeded
+  // budget fails the build with the number and the limit, because "the bundle
+  // got bigger" without a figure is not actionable.
+  const budget = config.budget && typeof config.budget === 'object' ? config.budget : null;
+  if (budget) {
+    const jsOutputs = Object.entries(metafile.outputs).filter(([k]) => k.endsWith('.js'));
+    const kb = (bytes) => Math.round((bytes / 1024) * 10) / 10;
+    const entryKb = kb(metafile.outputs[entryOutKey].bytes);
+    const totalKb = kb(jsOutputs.reduce((sum, [, out]) => sum + (out.bytes || 0), 0));
+    const chunkCount = jsOutputs.length;
+    const over = [];
+    const check = (label, value, limit, unit) => {
+      const n = typeof limit === 'string' ? parseFloat(limit) : limit;
+      if (typeof n === 'number' && Number.isFinite(n) && value > n) {
+        over.push(`${label} is ${value}${unit}, over the ${n}${unit} budget`);
+      }
+    };
+    check('entry chunk', entryKb, budget.entry, ' KB');
+    check('javascript total', totalKb, budget.total, ' KB');
+    check('chunk count', chunkCount, budget.chunks, '');
+    console.log(`[hydra] budget: entry ${entryKb} KB, js ${totalKb} KB across ${chunkCount} chunk(s)`);
+    if (over.length > 0) {
+      throw new Error(
+        `[hydra] bundle budget exceeded:\n  ${over.join('\n  ')}\n` +
+          '  Raise the numbers in hydraconfig.json "budget" if the growth is intended.',
+      );
+    }
+  }
+
   // 5. One stylesheet out: Tailwind, then every stylesheet the module graph
   // imported, merged into assets/index.css.
   //
@@ -2895,6 +2929,9 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
       // exactly that reason — which is the gate doing its job, once the server
       // it uses agrees with the server the project will actually run on.
       serve: (dir) => serveDirectory(dir, 0, '127.0.0.1', { quiet: true, base }),
+      // `a11y: "off" | "warn" | "error"` — warn is the default: the rule set is a
+      // floor, and a red build over a missing `lang` is a gate people disable.
+      a11y: config.a11y === 'off' || config.a11y === 'error' ? config.a11y : 'warn',
     });
     if (gate.skipped) {
       console.log(`[hydra] runtime gate skipped: ${gate.skipped}`);
@@ -2902,6 +2939,7 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
       const extra = gate.warnings.length
         ? ` (${gate.warnings.length} console warning(s))`
         : '';
+      const a11yCount = Array.isArray(gate.a11y) ? gate.a11y.length : 0;
       // How many pages were actually checked. Without this number "gate passed"
       // reads as "every page works", and on a 61-route build it meant 25.
       const scope =
@@ -2912,7 +2950,28 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
       for (const w of gate.warnings.slice(0, 5)) {
         console.log(`  warning: ${w}`);
       }
+      if (a11yCount > 0) {
+        // Grouped by rule: 40 findings of one rule is one thing to fix, and a
+        // list of 40 lines reads as noise.
+        const byRule = new Map();
+        for (const f of gate.a11y) byRule.set(f.rule, (byRule.get(f.rule) || 0) + 1);
+        const summary = [...byRule].map(([rule, n]) => `${rule} ${n}`).join(', ');
+        console.log(`[hydra] a11y: ${a11yCount} finding(s) — ${summary}`);
+        for (const f of gate.a11y.slice(0, 5)) {
+          console.log(`  ${f.page}: ${f.rule} — ${f.detail}`);
+        }
+      }
     } else {
+      const a11yFailures = Array.isArray(gate.a11y) ? gate.a11y.length : 0;
+      if (gate.exceptions.length === 0 && a11yFailures > 0) {
+        console.error(`[hydra] runtime gate FAILED: ${a11yFailures} accessibility finding(s)`);
+        for (const f of gate.a11y.slice(0, 10)) {
+          console.error(`  ${f.page}: ${f.rule} — ${f.detail}`);
+        }
+        console.error('  = help: fix them, set "a11y": "warn" to make them advisory, or "off"');
+        process.exitCode = 1;
+        throw new Error('[hydra] runtime gate failed');
+      }
       console.error(
         `[hydra] runtime gate FAILED: the page threw ${gate.exceptions.length} exception(s)`,
       );
@@ -5069,6 +5128,88 @@ function scanRoutesSafe(cwd, config) {
 }
 
 /**
+ * `hydra migrate <from> <to>` — rewrite a project for a version step.
+ *
+ * With an empty registry this prints what it looked for and exits 0: a project
+ * running it after an upgrade should be told "nothing to do", not be given an
+ * error that reads like the command is broken. `--dry-run` reports what WOULD
+ * change; `--list` prints the registry.
+ */
+export async function runMigrate(cwd = process.cwd(), opts = {}) {
+  const { from, to, dryRun = false, list = false } = opts;
+
+  if (list) {
+    const lines = describeMigrations();
+    if (lines.length === 0) {
+      console.log('[hydra] no codemods registered yet');
+      return 0;
+    }
+    for (const line of lines) console.log(`  ${line}`);
+    return 0;
+  }
+
+  if (!from || !to) {
+    console.error('[hydra] migrate needs a version on both sides: hydra migrate 0.15 0.16');
+    console.error('       hydra migrate --list   prints what is registered');
+    return 2;
+  }
+
+  const changes = migrationsFor(from, to);
+  if (changes.length === 0) {
+    console.log(`[hydra] no codemods registered for ${from} → ${to} — nothing to rewrite`);
+    console.log(
+      '       (a release that breaks source is supposed to ship one; see MIGRATING.md)',
+    );
+    return 0;
+  }
+
+  // Every source file the project owns. `.hyx` and `.hys` only: a codemod that
+  // rewrote `.tsx` would be editing files this framework did not generate.
+  const files = [];
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name.startsWith('.')) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (/\.(hyx|hys)$/.test(entry.name)) files.push(full);
+    }
+  };
+  walk(path.join(cwd, 'src'));
+
+  let touched = 0;
+  let changedFiles = 0;
+  for (const file of files) {
+    const rel = path.relative(cwd, file);
+    let text = fs.readFileSync(file, 'utf8');
+    const before = text;
+    for (const change of changes) {
+      if (change.file && !change.file.test(rel)) continue;
+      text = change.apply(text, rel);
+      touched += 1;
+    }
+    if (text === before) continue;
+    changedFiles += 1;
+    if (dryRun) {
+      console.log(`  would rewrite ${rel}`);
+      continue;
+    }
+    fs.writeFileSync(file, text, 'utf8');
+    console.log(`  rewrote ${rel}`);
+  }
+  console.log(
+    `[hydra] migrate ${from} → ${to}: ${changedFiles} file(s) ${dryRun ? 'would change' : 'changed'} ` +
+      `(${changes.length} codemod(s), ${files.length} file(s) scanned)`,
+  );
+  return 0;
+}
+
+/**
  * `hydra test [path]` — run the project's component tests.
  *
  * Bundles each `*.test.hys` with the same resolver, plugins and compiler the
@@ -5398,6 +5539,17 @@ if (!invokedDirectly) {
   const at = argv.indexOf(file);
   const rest = argv.slice(at + 1);
   runScript(cwd, file, rest)
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      console.error(err && err.message ? err.message : String(err));
+      process.exit(1);
+    });
+} else if (cmd === 'migrate') {
+  const rest = argv.slice(1);
+  const dryRun = rest.includes('--dry-run');
+  const list = rest.includes('--list');
+  const versions = rest.filter((a) => !a.startsWith('-'));
+  runMigrate(cwd, { from: versions[0], to: versions[1], dryRun, list })
     .then((code) => process.exit(code))
     .catch((err) => {
       console.error(err && err.message ? err.message : String(err));
