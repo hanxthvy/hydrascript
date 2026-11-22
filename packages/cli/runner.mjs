@@ -4369,7 +4369,7 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
             return;
           }
           if (out2) {
-            const body = opts.injectHtml ? opts.injectHtml(out2.document) : out2.document;
+            const body = opts.injectHtml ? opts.injectHtml(out2.document, nonce) : out2.document;
             // Rendered per request, so by default it must never be cached: the
             // same URL can answer differently for two visitors. A page that said
             // `revalidate(event, seconds)` in its loader ASKS for a cache, and it
@@ -4418,7 +4418,7 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
           // the client sees the same thing the server rendered.
           const notFound = await opts.ssr.renderNotFound(rawUrl);
           if (notFound) {
-            const body = opts.injectHtml ? opts.injectHtml(notFound.document) : notFound.document;
+            const body = opts.injectHtml ? opts.injectHtml(notFound.document, nonce) : notFound.document;
             flushHeaderBag(res, pageHeaders, 404);
             res.writeHead(404, {
               'Content-Type': 'text/html; charset=utf-8',
@@ -4477,7 +4477,7 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
             // error document is the honest answer.
             let withNotice;
             const shell = fs.readFileSync(indexPath, 'utf8');
-            const shown = opts.injectHtml ? opts.injectHtml(shell) : shell;
+            const shown = opts.injectHtml ? opts.injectHtml(shell, nonce) : shell;
             if (shown.includes('<div id="root"></div>')) {
               // Function replacer: a replacement string would read `$&` in the
               // notice as "the match".
@@ -4599,7 +4599,7 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
     // `hydra dev` uses it for the live-reload client; `preview` does not, because
     // a preview should be what production serves.
     if (opts.injectHtml && ext === '.html') {
-      const html = opts.injectHtml(fs.readFileSync(filePath, 'utf8'));
+      const html = opts.injectHtml(fs.readFileSync(filePath, 'utf8'), nonce);
       res.writeHead(200, { 'Content-Type': contentType, ...fileHeaders });
       res.end(html);
       return;
@@ -4980,7 +4980,7 @@ export async function runDev(cwd = process.cwd(), opts = {}) {
     cors: config.server?.cors,
     // The dev server injects the HMR client into every HTML response, because
     // the build wrote the file and the page has to reach the browser with it.
-    injectHtml: (html) => injectHmrClient(html),
+    injectHtml: (html, nonce) => injectHmrClient(html, '/__hydra/hmr', nonce),
     // A dev server is meant to be reachable; a taken port is normal and the
     // right answer is the next one, not a dead terminal.
     portFallback: true,

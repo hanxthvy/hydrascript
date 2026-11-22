@@ -225,14 +225,18 @@ export const HMR_CLIENT = `// [xihanzu-NR]
  * Before `</body>` rather than `</head>` so the overlay's parent exists by the
  * time the script runs.
  */
-export function injectHmrClient(html, path = '/__hydra/hmr') {
+export function injectHmrClient(html, path = '/__hydra/hmr', nonce = null) {
+  // `nonce` is the per-request value `server.headers` can reference as
+  // `{nonce}`. Without it on THIS tag, a policy strict enough to require a nonce
+  // blocks the framework's own client and the page stops updating — a dev server
+  // that "works" only with a weak CSP.
   // Which module the client re-imports on a refresh. Read from the bundle tag the
   // page already carries, so the client never has to guess a hashed filename.
   const entry = /<script\b[^>]*\bsrc="([^"]*assets\/index-[^"]+\.js)"/.exec(html);
   if (entry && !html.includes('__hydra_entry')) {
     html = html.replace(
       '</body>',
-      `  <script>window.__hydra_entry = ${JSON.stringify(entry[1])};</script>\n  </body>`,
+      `  <script${nonce ? ` nonce="${nonce}"` : ''}>window.__hydra_entry = ${JSON.stringify(entry[1])};</script>\n  </body>`,
     );
   }
   if (html.includes(path)) return html;
