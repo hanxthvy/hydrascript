@@ -140,7 +140,10 @@ const isMetaCommand =
   cmd === 'lsp' ||
   // `migrate` rewrites a project for a version step. It needs the runner (it
   // walks sources and applies codemods), not the compiler binary.
-  cmd === 'migrate';
+  cmd === 'migrate' ||
+  // `explain` reads the route table and the last build's metafile, both of which
+  // the runner owns.
+  cmd === 'explain';
 
 const binary = resolveBinary();
 

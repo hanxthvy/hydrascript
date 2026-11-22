@@ -52,6 +52,13 @@ language syntax changed.
   again), sends `s-maxage`/`stale-while-revalidate`, and answers `If-None-Match`
   with `304`. Only for requests without a `Cookie`, which is the framework's check
   and not the author's.
+- **`hydra explain [route]`** — the rendering decision per route (`ssg`/`ssr`/`csr`),
+  the params, the cache policy and the chunk size, from the route table and the
+  last build's metafile.
+- **`Link` prefetches** the loader payload on hover and focus (`prefetch=False`
+  opts out); `prefetch_route(to)` does the same from a handler.
+- **Scroll memory** — a navigation records where you were and a return restores
+  it; a page you have not visited starts at the top.
 - **`budget`** — `{entry, total, chunks}` in `hydraconfig.json` fails the build,
   with the figure and the limit, when the client bundle outgrows it.
 - **`a11y`** — the runtime gate also collects `html-lang`, `img-alt`,

@@ -464,9 +464,107 @@ export function use_path(): string {
  */
 export function navigate(to: string): void {
   if (typeof window !== 'undefined') {
+    // Where the visitor was standing, before the DOM changes underneath them.
+    // Recording it inside the render instead would capture the position after
+    // React has already replaced the page, which is always 0.
+    save_scroll(window.location.pathname)
     window.history.pushState({}, '', with_base(to))
     window.dispatchEvent(new PopStateEvent('popstate'))
+    restore_scroll_soon()
   }
+}
+
+/**
+ * `prefetch_route(to)` — warm what a navigation to `to` would need.
+ *
+ * Two costs on a first visit to a route, and this addresses the expensive one:
+ * the route's chunk (a small JS file the browser fetches in parallel with
+ * everything else) and its loader payload (a round trip to `/__hydra/data`, which
+ * cannot start until the click). Only the payload is warmed here; the chunk is
+ * already covered by the bundle's own `<link rel="modulepreload">` and by the
+ * browser's prefetch of the module graph.
+ *
+ * Failure is silent on purpose: a prefetch that cannot happen is not an error the
+ * visitor can act on, and a rejected promise with no handler is worse.
+ */
+export function prefetch_route(to: string): void {
+  if (typeof window === 'undefined' || !to) return
+  if (/^[a-z]+:/i.test(to) || to.startsWith('#')) return // external or in-page
+  const base = (() => {
+    try {
+      return get_route_table_sync().base || '/'
+    } catch {
+      return '/'
+    }
+  })()
+  const endpoint = (base === '/' ? '' : base.replace(/\/$/, '')) + '/__hydra/data'
+  const url = with_base(to.split('#')[0])
+  try {
+    void fetch(`${endpoint}?url=${encodeURIComponent(url)}`, {
+      headers: { accept: 'application/json' },
+      // Not `no-store`: the endpoint answers `no-store` itself, and this is a
+      // warm-up, so letting the browser coalesce it with the real request is
+      // exactly what is wanted.
+    }).catch(() => {})
+  } catch {
+    /* no fetch (very old browser, or a test double): nothing to warm */
+  }
+}
+
+/* ------------------------------------------------------------- scroll memory
+ *
+ * Every client-side router has this and users only notice when it is missing:
+ * going back to a long list should land where you left it. Kept in
+ * `sessionStorage` (not memory) so a reload of the tab keeps it, and keyed by
+ * pathname only — a query string is the same page at a different address, and
+ * restoring a position across a filter change jumps into the middle of a list.
+ *
+ * Two frames after the navigation: `pushState` + `popstate` gives React one
+ * render, and the layout that decides the scroll height is the render's result.
+ */
+const SCROLL_KEY = '__hydra_scroll'
+
+function save_scroll(path: string): void {
+  try {
+    const raw = window.sessionStorage.getItem(SCROLL_KEY)
+    const map = raw ? JSON.parse(raw) : {}
+    map[path] = window.scrollY
+    window.sessionStorage.setItem(SCROLL_KEY, JSON.stringify(map))
+  } catch {
+    /* private mode, or a full quota: scroll memory is a nicety */
+  }
+}
+
+/** Where this path was last left, or `null`. */
+export function scroll_position(path: string): number | null {
+  try {
+    const raw = window.sessionStorage.getItem(SCROLL_KEY)
+    if (!raw) return null
+    const map = JSON.parse(raw)
+    return typeof map[path] === 'number' ? map[path] : null
+  } catch {
+    return null
+  }
+}
+
+function restore_scroll_soon(depth = 0): void {
+  if (typeof window === 'undefined') return
+  const raf: any = (window as any).requestAnimationFrame
+  const tick = () => {
+    if (depth < 2 && typeof raf === 'function') {
+      raf(() => restore_scroll_soon(depth + 1))
+      return
+    }
+    const saved = scroll_position(window.location.pathname)
+    // `0` for a page you have not visited: a navigation should start at the top,
+    // not wherever the previous page happened to be scrolled to.
+    try {
+      window.scrollTo({ top: saved === null ? 0 : saved, behavior: 'auto' as any })
+    } catch {
+      window.scrollTo(0, saved === null ? 0 : saved)
+    }
+  }
+  tick()
 }
 
 /**
@@ -503,8 +601,11 @@ export interface LinkProps extends React.AnchorHTMLAttributes<HTMLAnchorElement>
 /**
  * `Link`: component handling client-side transitions.
  */
-export function Link({ to, href, onClick, replace = false, children, ...rest }: LinkProps) {
+export function Link({ to, href, onClick, replace = false, prefetch = true, children, ...rest }: LinkProps) {
   const targetUrl = to ?? href ?? ''
+  const warm = () => {
+    if (prefetch) prefetch_route(targetUrl)
+  }
 
   const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     if (onClick) {
@@ -535,9 +636,21 @@ export function Link({ to, href, onClick, replace = false, children, ...rest }: 
     // The href gets the base too. Without it the link works with JavaScript
     // (the click handler navigates) and 404s without — which is exactly the
     // case `Link` exists to keep working.
+    ...rest,
+    // AFTER the spread: a project that passes its own `onMouseEnter` must not
+    // silently lose the prefetch. Both handlers run.
     href: with_base(targetUrl),
     onClick: handleClick,
-    ...rest,
+    // Hover and focus are the two moments a person has already decided. Warming
+    // there costs one request nobody waits for and saves the one they would.
+    onMouseEnter: (e: any) => {
+      rest.onMouseEnter?.(e)
+      warm()
+    },
+    onFocus: (e: any) => {
+      rest.onFocus?.(e)
+      warm()
+    },
   }, children)
 }
 

@@ -572,6 +572,35 @@ Two limits, stated rather than discovered:
 `rendering.ssg` still governs files: with `{"ssg": false}` nothing is pre-rendered
 and every route goes through the path above.
 
+## Why is this page like this: `hydra explain`
+
+```
+$ hydra explain /blog/hello
+/blog/hello
+  file      : src/pages/blog/[slug].hyx
+  server    : src/pages/blog/[slug].server.hys
+  rendering : server-rendered per request
+  params    : slug
+  cache     : decided by the loader at request time (revalidate(event, seconds))
+  chunk     : [slug]-GSKVRUUD.js (0.4 KB)
+```
+
+No argument prints every route. The answer comes from the route table and the
+last build's metafile, so it describes the build that exists rather than the one
+the documentation imagines.
+
+## Navigation: prefetch and scroll memory
+
+`Link` warms a route's loader payload on hover and on focus (`prefetch=False`
+turns that off), so the round trip to `/__hydra/data` has already happened by the
+time the click lands. `prefetch_route(to)` does the same thing from a handler.
+
+Going back to a page returns to where you left it. Each navigation records the
+scroll position in `sessionStorage`, keyed by pathname, and restores it two
+frames after the render; a page you have not visited starts at the top. Query
+strings are deliberately not part of the key: a filter change is the same page,
+and jumping into the middle of a new list is worse than starting at the top.
+
 ## Budgets, accessibility, and `hydra migrate`
 
 ```json

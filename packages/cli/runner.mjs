@@ -5135,6 +5135,95 @@ function scanRoutesSafe(cwd, config) {
  * error that reads like the command is broken. `--dry-run` reports what WOULD
  * change; `--list` prints the registry.
  */
+/**
+ * `hydra explain [route]` — answer "why is this page the way it is".
+ *
+ * Every meta-framework makes a rendering decision per route (SSG, SSR, CSR, and
+ * which chunk), and every one of them leaves the answer spread across a config
+ * file, a file-naming convention, a route table and a build log. This prints the
+ * decision and its reason from data the build already produced, because the
+ * build is the thing that made the decision.
+ *
+ * It never claims more than the artifact knows: a cache lifetime is decided by
+ * the loader at request time, so if a route has a loader the line says so rather
+ * than guessing a number.
+ */
+export async function runExplain(cwd = process.cwd(), opts = {}) {
+  const config = readConfig(cwd);
+  const dir = pagesDirectory(cwd, config);
+  if (!dir) {
+    console.log('file-based routing is disabled ("routes": false in hydraconfig.json)');
+    return 0;
+  }
+  const table = scanRoutes(dir);
+  const want = opts.route || null;
+  const rows = table.routes.filter((r) => !want || r.pattern === want || r.pattern === `/${want}`);
+
+  if (rows.length === 0) {
+    console.error(`[hydra] explain: no route matches ${want}`);
+    const all = table.routes.map((r) => r.pattern).join(', ');
+    if (all) console.error(`       routes: ${all}`);
+    return 2;
+  }
+
+  // What the last build wrote, if it wrote anything: chunk sizes per route are
+  // the number people actually want, and they only exist after a build.
+  let meta = null;
+  try {
+    meta = JSON.parse(fs.readFileSync(path.join(cwd, config.outputDir || './dist', '.hydra-build.json'), 'utf8'));
+  } catch {
+    meta = null;
+  }
+
+  for (const r of rows) {
+    const serverFile = r.serverFile || null;
+    const ssgOn = config.rendering?.ssg !== false;
+    const hasParams = Array.isArray(r.params) && r.params.length > 0;
+    // The decision, in the order the build makes it: an explicit `csr` wins, then
+    // a route with no parameters is pre-rendered when SSG is on — with or without
+    // a loader, and when it has one the loader ran ONCE, at build time. Anything
+    // with a parameter is rendered per request unless it exported static_params.
+    const rendering =
+      r.rendering === 'csr'
+        ? 'client only (rendering = "csr")'
+        : ssgOn && !hasParams
+          ? `pre-rendered at build (static)${serverFile ? ', loader ran at build time' : ''}`
+          : serverFile
+            ? 'server-rendered per request'
+            : 'client shell (no loader, no pre-rendering)';
+    console.log(`${r.pattern}`);
+    console.log(`  file      : src/pages/${r.file}`);
+    if (serverFile) console.log(`  server    : src/pages/${serverFile}`);
+    console.log(`  rendering : ${rendering}`);
+    console.log(`  params    : ${r.params && r.params.length ? r.params.join(', ') : '(none)'}`);
+    if (r.meta && typeof r.meta === 'object' && r.meta.title) {
+      console.log(`  title     : ${String(r.meta.title)}`);
+    }
+    if (ssgOn && !hasParams) {
+      console.log('  cache     : static file — revalidate() in a loader only matters for per-request routes');
+    } else if (serverFile) {
+      console.log('  cache     : decided by the loader at request time (revalidate(event, seconds))');
+    } else {
+      console.log('  cache     : no loader, so no revalidate() to honour');
+    }
+    if (meta) {
+      const chunk = Object.keys(meta.outputs || {}).find(
+        (k) => k.endsWith('.js') && r.file && k.includes(path.basename(r.file, path.extname(r.file))),
+      );
+      if (chunk) {
+        const kb = Math.round(((meta.outputs[chunk].bytes || 0) / 1024) * 10) / 10;
+        console.log(`  chunk     : ${path.basename(chunk)} (${kb} KB)`);
+      } else {
+        console.log('  chunk     : shared bundle (no route-specific chunk found in the last build)');
+      }
+    } else {
+      console.log('  chunk     : unknown until the next `hydra build`');
+    }
+    console.log('');
+  }
+  return 0;
+}
+
 export async function runMigrate(cwd = process.cwd(), opts = {}) {
   const { from, to, dryRun = false, list = false } = opts;
 
@@ -5539,6 +5628,14 @@ if (!invokedDirectly) {
   const at = argv.indexOf(file);
   const rest = argv.slice(at + 1);
   runScript(cwd, file, rest)
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      console.error(err && err.message ? err.message : String(err));
+      process.exit(1);
+    });
+} else if (cmd === 'explain') {
+  const route = argv.slice(1).find((a) => !a.startsWith('-'));
+  runExplain(cwd, { route })
     .then((code) => process.exit(code))
     .catch((err) => {
       console.error(err && err.message ? err.message : String(err));
