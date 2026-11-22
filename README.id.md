@@ -18,7 +18,7 @@ kecil membungkus esbuild, PostCSS dan Tailwind untuk menghasilkan situs.
 
 **Status: 0.16.0, pra-1.0.** Compiler, file-based router, prerender, server
 rendering, language server, Fast Refresh, dan test runner sudah jadi dan ditutup 428 tes Rust
-(291 unit + 137 integrasi) serta 255 tes Node di 33 suite. Sintaks bahasanya
+(291 unit + 137 integrasi) serta 271 tes Node di 35 suite. Sintaks bahasanya
 dibekukan (lihat di bawah); yang dirilis sampai 1.0 adalah perkakas dan pematangan, bukan
 konstruksi baru.
 
