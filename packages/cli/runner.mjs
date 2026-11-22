@@ -2599,7 +2599,12 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
         // from this and not from the route table, so it cannot list a page that
         // was skipped.
         const writtenUrls = [];
-        if (sourceHtml && routesTable && expandedRoutes.length > 0 && typeof ssgMod.renderFor === 'function') {
+        // `rendering.ssg: false` used to be documented and ignored: the SSG
+        // BUNDLE was gated on it, but the pre-render pass that USES the bundle
+        // was not, so a project that asked for no pre-rendering got a static
+        // HTML file for every route anyway. The bundle is still built when the
+        // server needs it; this is the pass that writes files.
+        if (projectWantsSsg && sourceHtml && routesTable && expandedRoutes.length > 0 && typeof ssgMod.renderFor === 'function') {
           for (const route of expandedRoutes) {
             try {
               // Always `{ render, withRequest, data }`. There is no fallback to
@@ -3497,6 +3502,22 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
   const proxy = opts.proxy && typeof opts.proxy === 'object' ? opts.proxy : {};
   const indexPath = path.join(dir, 'index.html');
   const rootDir = path.resolve(dir);
+
+  /**
+   * Rendered-HTML cache for the node target.
+   *
+   * Only pages that called `revalidate(event, seconds)` land here, and only when
+   * the request carried no `Cookie` header. That second condition is not a
+   * nicety: the same URL renders differently for two visitors the moment a
+   * session exists, and a cache keyed on the URL alone would hand one visitor's
+   * page to the next. "The loader remembered to check" is not something a cache
+   * can be built on, so the cookie check is the framework's, not the author's.
+   *
+   * Bounded, because an unbounded Map keyed by URL is a memory leak with a
+   * friendly name.
+   */
+  const pageCache = new Map();
+  const PAGE_CACHE_MAX_ENTRIES = 200;
   // `hydra preview` serves a frozen artifact: a busy port means the build is
   // still correct but there is nothing to serve it on. Silently staying up
   // holding no port is what let a process manager restart the whole thing
@@ -4187,6 +4208,30 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
       // and a crawler does not run JavaScript.
       if (isNavigation && opts.ssr && opts.ssr.available) {
         try {
+          // Before the renderer: a fresh entry means the loader does not run at
+          // all, which is the entire point of caching. `If-None-Match` is
+          // answered here too, so a returning visitor transfers headers only.
+          const cachedPage = pageCache.get(rawUrl);
+          if (cachedPage && cachedPage.expires > Date.now() && !req.headers.cookie) {
+            if (req.headers['if-none-match'] === cachedPage.etag) {
+              res.writeHead(304, {
+                ETag: cachedPage.etag,
+                'Cache-Control': cachedPage.cacheControl,
+                ...baseHeaders(),
+              });
+              res.end();
+              return;
+            }
+            flushHeaderBag(res, pageHeaders, 200);
+            res.writeHead(200, {
+              'Content-Type': 'text/html; charset=utf-8',
+              ...baseHeaders(),
+              ETag: cachedPage.etag,
+              'Cache-Control': cachedPage.cacheControl,
+            });
+            res.end(cachedPage.body);
+            return;
+          }
           // The FULL url, query included: a loader that reads `?tab=info` and
           // the client that reads the same must be given the same string, or
           // the server renders one value and hydration uses another.
@@ -4197,6 +4242,7 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
           const hdrsA = newHeaderBag();
           const reqA = requestFor(req, rawUrl, '');
           reqA._headers = hdrsA;
+          reqA.cache = { seconds: 0, tags: [] };
           const out = await opts.ssr.renderPage(rawUrl, { request: reqA });
           if (out && out.intent) {
             // A loader redirected or refused. That is an HTTP answer, not a
@@ -4211,10 +4257,17 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
           // (no renderToPipeableStream, or a shell with no root element), and
           // `renderPage` is then the answer — never both, because two flushes
           // would append one document to another.
+          // A page that asked to be cached cannot be streamed: streaming sends
+          // the document as it is produced, and a cache entry needs the whole
+          // body (and its ETag) before the first byte goes out. So the probe
+          // above decides — it is the same loader, on the same URL, with the
+          // same request, and `revalidate()` is a decision the loader makes, not
+          // a value it computes per render.
+          const wantCache = reqA.cache.seconds > 0 && !req.headers.cookie;
           const hdrsB = newHeaderBag();
           const reqB = requestFor(req, rawUrl, '');
           reqB._headers = hdrsB;
-          const streamed = opts.ssr.renderPageStream
+          const streamed = !wantCache && opts.ssr.renderPageStream
             ? await opts.ssr.renderPageStream(rawUrl, { request: reqB })
             : null;
           if (streamed && streamed.intent) {
@@ -4248,6 +4301,8 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
           const hdrsC = newHeaderBag();
           const reqC = requestFor(req, rawUrl, '');
           reqC._headers = hdrsC;
+          // What `revalidate(event, n)` writes into, read back after the render.
+          reqC.cache = { seconds: 0, tags: [] };
           const out2 = streamed ? null : await opts.ssr.renderPage(rawUrl, { request: reqC });
           if (out2 && out2.intent) {
             flushHeaderBag(res, hdrsC, out2.intent.status);
@@ -4256,13 +4311,45 @@ export async function serveDirectory(dir, port = 5173, host = '127.0.0.1', opts 
           }
           if (out2) {
             const body = opts.injectHtml ? opts.injectHtml(out2.document) : out2.document;
-            // Rendered per request, so it must never be cached: the same URL can
-            // answer differently for two visitors.
+            // Rendered per request, so by default it must never be cached: the
+            // same URL can answer differently for two visitors. A page that said
+            // `revalidate(event, seconds)` in its loader ASKS for a cache, and it
+            // is honoured only when the request carried no cookie — see
+            // `pageCache` above for why that check is the framework's.
+            const box = reqC.cache || { seconds: 0 };
+            const cacheable = box.seconds > 0 && !req.headers.cookie;
+            const etag = `W/"${createHash('sha1').update(body).digest('hex').slice(0, 20)}"`;
+            const cacheControl = cacheable
+              ? `public, max-age=0, s-maxage=${box.seconds}, stale-while-revalidate=${box.seconds}`
+              : 'no-store';
+            if (cacheable) {
+              if (pageCache.size >= PAGE_CACHE_MAX_ENTRIES) {
+                // Oldest first: `Map` keeps insertion order, and the entry added
+                // longest ago is the one least likely to still be warm.
+                const oldest = pageCache.keys().next().value;
+                if (oldest !== undefined) pageCache.delete(oldest);
+              }
+              pageCache.set(rawUrl, {
+                body,
+                etag,
+                cacheControl,
+                expires: Date.now() + box.seconds * 1000,
+              });
+            }
             flushHeaderBag(res, pageHeaders.concat(hdrsC), 200);
+            res.setHeader('ETag', etag);
+            // `If-None-Match` on a page rendered just now: the ETag is over the
+            // body we are about to send, so a match is a real "unchanged".
+            if (req.headers['if-none-match'] === etag) {
+              res.writeHead(304, { ...baseHeaders(), ETag: etag, 'Cache-Control': cacheControl });
+              res.end();
+              return;
+            }
             res.writeHead(200, {
               'Content-Type': 'text/html; charset=utf-8',
               ...baseHeaders(),
-              'Cache-Control': 'no-store',
+              ETag: etag,
+              'Cache-Control': cacheControl,
             });
             res.end(body);
             return;

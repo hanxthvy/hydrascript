@@ -47,8 +47,19 @@ language syntax changed.
   `Sitemap:` line when the project has not written its own. Absent, neither file
   is written.
 
+- **`revalidate(event, seconds)`** in `hydra/server` — a loader asks for a cache
+  lifetime; the server keeps the rendered HTML for that long (loader not run
+  again), sends `s-maxage`/`stale-while-revalidate`, and answers `If-None-Match`
+  with `304`. Only for requests without a `Cookie`, which is the framework's check
+  and not the author's.
+- **`ETag` on server-rendered HTML** — cheaper than it sounds and the only way a
+  returning visitor can be told "unchanged" instead of being sent the page again.
+
 ### Fixed
 
+- **`rendering.ssg: false` was documented and ignored.** The SSG *bundle* was
+  gated on it; the pre-render pass that uses the bundle was not, so a project that
+  asked for no pre-rendering still got a static HTML file for every route.
 - **A guarded page was pre-rendered, and then served statically.** A loader that
   returned `redirect()` at build time still produced `dist/dashboard/index.html`
   from the logged-out branch, and `hydra serve` answered `/dashboard` from that

@@ -111,6 +111,30 @@ function headerBag(event: any): any[] {
   return event._headers
 }
 
+/**
+ * `revalidate(event, seconds)` — let this page be cached for `seconds`.
+ *
+ * It is a REQUEST, not a command: the server decides, and it only obliges when
+ * the request carried no `Cookie` header. A page that was rendered for a
+ * signed-in visitor must never be handed to the next one, and "the loader
+ * remembered to check" is not a guarantee a framework can build a cache on.
+ *
+ * `seconds = 0` means "do not cache" and is the default for every page.
+ */
+export function revalidate(event: any, seconds: number, tags: string[] = []): void {
+  if (!event || typeof event !== 'object') {
+    throw new Error('hydra/server: revalidate() needs the event argument')
+  }
+  const box = event.cache
+  const n = Math.max(0, Math.trunc(Number(seconds)))
+  if (!Number.isFinite(n)) {
+    throw new Error(`hydra/server: revalidate() seconds must be a number, got ${JSON.stringify(seconds)}`)
+  }
+  if (!box || typeof box !== 'object') return
+  box.seconds = n
+  box.tags = Array.isArray(tags) ? tags.map(String) : []
+}
+
 /** `set_header(event, "X-Thing", "1")` — any response header, from a handler. */
 export function set_header(event: any, name: string, value: any): void {
   headerBag(event).push([String(name), String(value)])
@@ -546,7 +570,7 @@ export function session(event: any, options: SessionOptions | string): Session {
   return view as Session
 }
 
-export default { env, env_require, public_env, read_text, cookies, session, set_header, sign, unsign }
+export default { env, env_require, public_env, read_text, cookies, session, set_header, revalidate, sign, unsign }
 
 /* -------------------------------------------------------------- action flow
  *

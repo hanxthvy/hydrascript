@@ -531,6 +531,47 @@ DATABASE_URL=postgres://...           # server only
 - A variable already set in the real environment wins over `.env`, so a deploy's
   secrets are never overridden by a file that shipped in the tarball.
 
+## Caching: `revalidate(event, seconds)`
+
+A loader asks for a cache lifetime; the server decides whether to grant it:
+
+```python
+# src/pages/blog/[slug].server.hys
+from "hydra/server" import revalidate
+
+export def loader(event):
+    revalidate(event, 60)          # a minute
+    return {"post": find_post(event.params["slug"])}
+```
+
+What happens when it is granted (`--target node`):
+
+- The rendered HTML is kept in-process for that many seconds, so the **loader
+  does not run again** while the entry is fresh.
+- The answer carries
+  `Cache-Control: public, max-age=0, s-maxage=60, stale-while-revalidate=60`, so
+  a CDN in front of the server can serve it too.
+- An `ETag` over the body is sent, and `If-None-Match` is answered `304` with no
+  body. This is also true for a page that did NOT ask for caching: the tag is
+  cheap and a 304 saves the transfer.
+
+**The rule that makes it safe:** an entry is only stored when the request carried
+no `Cookie` header. A page rendered for a signed-in visitor must never be handed
+to the next one, and "the loader checked" is not a guarantee a cache can be built
+on — so the check is the framework's. `revalidate(event, 0)` is the default and
+means no caching.
+
+Two limits, stated rather than discovered:
+
+- A cached page is **not streamed** (a cache entry needs the whole body before
+  the first byte). A page that calls `revalidate()` therefore waits for its full
+  render; that is the trade for not running the loader again.
+- The cache is per process and bounded (200 entries). It is not shared between
+  instances — put a CDN in front, or a real store behind, when that matters.
+
+`rendering.ssg` still governs files: with `{"ssg": false}` nothing is pre-rendered
+and every route goes through the path above.
+
 ## `sitemap.xml` and `robots.txt`
 
 Declare the site's absolute URL and the build writes both:

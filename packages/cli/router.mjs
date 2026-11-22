@@ -865,6 +865,10 @@ function identFor(file) {
   // back after the loader returns.
   lines.push('    headers: (request && request.headers) || {},');
   lines.push('    _headers: (request && request._headers) || [],');
+  // The cache box is the runner's, handed in on the request object. `revalidate()`
+  // writes into it, so after the loader returns the runner can read what the page
+  // asked for — a loader cannot write a response header itself.
+  lines.push('    cache: (request && request.cache) || null,');
   lines.push('    request: request || {');
   lines.push('      method: "GET", url: full, headers: {}, body: {},');
   lines.push('      json: async () => ({}), text: async () => "",');
