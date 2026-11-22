@@ -16,8 +16,8 @@ HydraScript compiles indentation-based `.hyx` files to React TSX and `.hys` file
 to plain JavaScript. The compiler is a Rust binary; a small Node runner wraps
 esbuild, PostCSS and Tailwind to produce a site.
 
-**Status: 0.15.1, pre-1.0.** The compiler, file-based router, prerendering,
-server rendering, language server, Fast Refresh, and test runner are implemented
+**Status: 0.16.0, pre-1.0.** The compiler, file-based router, prerendering,
+server rendering, cookies and sessions, language server, Fast Refresh, and test runner are implemented
 and covered by 428 Rust tests (291 unit + 137 integration) and 255 Node tests
 across 33 suites. The language syntax is frozen (see below); what ships between
 now and 1.0 is polish and production hardening, not new constructs.
@@ -281,7 +281,7 @@ specifier, `hydra`, which resolves to `runtime/hydra.ts`.
 | import from | holds | allowed in |
 |---|---|---|
 | `hydra` | universal helpers (`state`, `fetch_json`, `mount`, `Router`) | any module |
-| `hydra/server` | `env`, `read_text`, `write_text`, `redirect`, `action_flow` | a `.server.hys` only |
+| `hydra/server` | `env`, `read_text`, `redirect`, `cookies`, `session`, `set_header` | a `.server.hys`, `src/api/*.hys`, `src/middleware.hys` |
 | `hydra/client` | `window_size`, `scroll_to`, `local_storage`, `clipboard` | a `.hyx`/`.tsx` only |
 
 Importing `hydra/server` from a page is a **build error that names the file and
@@ -403,6 +403,27 @@ esbuild directly — there is no `vite.config.ts`, and nothing needs one.
 A page is a file. `src/pages/about.hyx` is `/about`; `src/pages/blog/[slug].hyx`
 is `/blog/:slug`; `_layout.hyx`, `_404.hyx` and `_error.hyx` are picked up at
 every level.
+
+A login is three files and no library — the action sets a session, the loader
+reads it, middleware guards the rest:
+
+```python
+# src/pages/login.server.hys
+from "hydra/server" import env_require, redirect, session
+
+export def action(event):
+    user = event.request.body.get("user", "")
+    if not user:
+        return {"error": "kosong"}
+    session(event, env_require("SESSION_SECRET")).set("user", user)
+    return redirect("/dashboard")
+```
+
+`session()` is a signed, `HttpOnly`, `SameSite=Lax` cookie holding a small dict:
+no store, no server memory, survives a restart. `cookies(event)` is the general
+form, `set_header(event, name, value)` any response header. Set
+`server.middlewarePages` to have `src/middleware.hys` guard pages too, and
+`site` to have the build write `sitemap.xml` and `robots.txt`.
 
 ```python
 # src/pages/blog/[slug].hyx
@@ -917,6 +938,7 @@ dates; the version numbers are targets and the order is the honest part.
 | 0.14.0 | Security release: trusted-proxy rate limiting, origin checks on API routes, per-segment dotfile guard, generic 5xx bodies, lexical dynamic-import rewrite | shipped |
 | 0.15.0 | Interactive `hydra init`, and Fast Refresh completed (live markup swap into mounted tree while preserving hook state) | shipped |
 | 0.15.1 | Hardening, no API change: one failure boundary per request, render inside the request context, no stack traces in production, symlink-safe static serving, linear-time diagnostics | shipped |
+| 0.16.0 | `cookies`, `session` and `set_header` in `hydra/server`; middleware for page requests (`server.middlewarePages`); `sitemap.xml`/`robots.txt` from `site` | shipped |
 
 ### Streaming, precisely
 

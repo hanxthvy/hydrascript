@@ -450,7 +450,7 @@ lewat `scripts/fast-refresh-probe.mjs`:
 
 ## Status saat ini
 
-Versi: **0.15.1**.
+Versi: **0.16.0**.
 Seluruh target roadmap dari v0.6 sampai v0.15 telah selesai dirilis dan diverifikasi.
 Tidak ada target yang berstatus `open`, `next`, atau `unreleased`.
 Cakupan pengujian: **428 tes Rust** (291 unit + 137 integrasi) dan **255 tes

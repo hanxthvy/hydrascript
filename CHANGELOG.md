@@ -12,7 +12,7 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
-## 0.16.0 — unreleased
+## 0.16.0 — 2026-11-22
 
 The request layer gains an identity. Until now a project could not write a login:
 `Set-Cookie` appeared nowhere in the package, middleware saw `/api` only, and a
