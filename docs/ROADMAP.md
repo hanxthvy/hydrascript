@@ -1,6 +1,6 @@
 # Roadmap fitur HydraScript
 
-Lanjutan dari `RESEARCH-META-FRAMEWORK.md`. Ini yang akan dibangun, dalam urutan
+Ini yang akan dibangun, dalam urutan
 yang bisa dikerjakan, dengan konvensi yang sudah diputuskan.
 
 Aturan yang dipegang sepanjang dokumen ini, sesuai janji di README:

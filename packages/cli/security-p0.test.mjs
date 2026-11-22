@@ -1,6 +1,8 @@
 // [xihanzu-NR]
-// Regression tests for the request-layer findings in
-// docs/SECURITY-AUDIT-0.15.0.md — the P0 set ("server honesty").
+// Regression tests for the request-layer findings in the 0.15.0 security audit
+// (the P0 set, "server honesty"). The audit itself is a working document and is
+// deliberately not part of this repository; every finding it names is encoded
+// below as a test, which is the part that has to survive.
 //
 // Every one of these was a real, reproduced defect, and each test below fails
 // against the pre-fix code:
