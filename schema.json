@@ -366,6 +366,38 @@
       ],
       "default": "warn",
       "description": "Accessibility findings from the runtime gate. `warn` (default) prints them and passes; `error` fails the build; `off` skips the probe. Checked rules: html-lang, img-alt, control-name, input-label, duplicate-id, tabindex-positive — a floor chosen so that a finding is always certain, never a heuristic."
+    },
+    "architecture": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Import rules the BUILD enforces, before anything is compiled. Only forbidden edges are checked; an allowed list would need 'everything else is forbidden', which is a bigger promise than this makes.",
+      "properties": {
+        "layers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Layer name to directory, e.g. {\"ui\": \"./src/pages\", \"data\": \"./src/db\"}."
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "`\"ui -/-> data\"` forbids any import from the ui layer into the data layer; the build fails naming both files. `\"ui -> data\"` is documentation only."
+        }
+      }
+    },
+    "i18n": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "String extraction. Every `t(\"key\")` in `.hyx`/`.hys` is collected; with a catalog declared, a key used in source but absent from it fails the build.",
+      "properties": {
+        "catalog": {
+          "type": "string",
+          "description": "Path to a JSON catalog, relative to the project root. Without it the extracted keys are written to dist/.hydra-i18n.json."
+        }
+      }
     }
   }
 }

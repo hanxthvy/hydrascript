@@ -487,6 +487,37 @@ export function navigate(to: string): void {
  * Failure is silent on purpose: a prefetch that cannot happen is not an error the
  * visitor can act on, and a rejected promise with no handler is worse.
  */
+/* --------------------------------------------------------------------- i18n
+ *
+ * `t("nav.home")` is deliberately the whole API: one function name, one key
+ * shape, so extraction at build time is a scan rather than a parser feature.
+ *
+ * The catalog is whatever the project put in `globalThis.__hydra_i18n` (the
+ * shell can inline it, or a loader can call `set_i18n`) and a missing key falls
+ * back to the `default` argument and then to the key itself — a visitor seeing
+ * `nav.home` is a bug report, and a thrown error in the middle of a render is a
+ * blank page, which is worse.
+ */
+let i18n_catalog: Record<string, string> = {}
+
+/** Replace the catalog. Called with the parsed JSON (per locale, if wanted). */
+export function set_i18n(catalog: Record<string, string> | null): void {
+  i18n_catalog = catalog && typeof catalog === 'object' ? { ...catalog } : {}
+  if (typeof globalThis !== 'undefined') (globalThis as any).__hydra_i18n = i18n_catalog
+}
+
+/** `t("nav.home", default="Home", {name: "Hanz"})` — a translation, or the key. */
+export function t(key: string, fallback: string | null = null, vars: Record<string, any> | null = null): string {
+  if (typeof globalThis !== 'undefined' && (globalThis as any).__hydra_i18n && Object.keys(i18n_catalog).length === 0) {
+    i18n_catalog = (globalThis as any).__hydra_i18n || {}
+  }
+  let out = Object.prototype.hasOwnProperty.call(i18n_catalog, key) ? i18n_catalog[key] : fallback === null ? key : fallback
+  if (vars && typeof vars === 'object') {
+    out = String(out).replace(/\{(\w+)\}/g, (whole, name) => (Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : whole))
+  }
+  return out
+}
+
 export function prefetch_route(to: string): void {
   if (typeof window === 'undefined' || !to) return
   if (/^[a-z]+:/i.test(to) || to.startsWith('#')) return // external or in-page

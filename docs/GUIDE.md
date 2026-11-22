@@ -572,6 +572,68 @@ Two limits, stated rather than discovered:
 `rendering.ssg` still governs files: with `{"ssg": false}` nothing is pre-rendered
 and every route goes through the path above.
 
+## Architecture rules: `architecture`
+
+```json
+{ "architecture": {
+    "layers": { "ui": "./src/pages", "data": "./src/db" },
+    "rules": ["ui -/-> data"]
+} }
+```
+
+`-/->` is enforced by the BUILD, before anything is compiled, and fails it naming
+both files:
+
+```
+Error: [hydra] architecture rule violated (1):
+  src/pages/leak.hyx
+    imports src/db/db.hys
+    which the rule "ui -/-> data" forbids
+```
+
+`->` is documentation: only forbidden edges are checked, because an allowlist
+would have to mean "everything else is forbidden", which is a bigger promise
+than this makes. The import scan is line-based — an import is one line in this
+language — so a *computed* specifier is a false negative, never a false positive.
+
+## Strings: `t()` and `i18n.catalog`
+
+```python
+from "hydra" import t
+
+h1: t("nav.home", "Home")
+```
+
+Every `t("key")` in `.hyx`/`.hys` is extracted at build time and written to
+`dist/.hydra-i18n.json` (`{keys, usedIn}`). Declare a catalog and the missing
+side becomes a build error:
+
+```json
+{ "i18n": { "catalog": "./i18n/id.json" } }
+```
+
+```
+[hydra] i18n: 1 key(s) used in source are missing from ./i18n/id.json:
+  nav.home
+```
+
+At runtime the catalog is `globalThis.__hydra_i18n`, or whatever `set_i18n()`
+was given. A missing key renders the `default` argument, then the key itself —
+never a thrown error in the middle of a render.
+
+## Dead code and links
+
+Two more build-time checks, both warnings:
+
+```
+[hydra] links: 32 internal reference(s), all resolve
+[hydra] dead code: 1 component(s) nothing imports: src/components/Unused.hyx
+```
+
+An entry file and `_404`/`_error`/`_layout` are excluded by definition (the HTML
+and the router reach them, not an import), because one false positive is enough
+for a check to be switched off.
+
 ## Testing routes: `hydra test --routes`
 
 Every route with a loader gets five assertions nobody writes by hand:

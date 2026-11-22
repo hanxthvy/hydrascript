@@ -52,6 +52,14 @@ language syntax changed.
   again), sends `s-maxage`/`stale-while-revalidate`, and answers `If-None-Match`
   with `304`. Only for requests without a `Cookie`, which is the framework's check
   and not the author's.
+- **`architecture`** — `layers` + `rules` (`"ui -/-> data"`), enforced by the
+  build before compilation, naming both files.
+- **`t()` and `i18n.catalog`** — every `t("key")` is extracted to
+  `dist/.hydra-i18n.json`; with a catalog declared, a key used in source but
+  absent from it fails the build. `set_i18n()` replaces the catalog at runtime.
+- **Build-time link and dead-code checks** — internal `href`/`src` references that
+  resolve to nothing, and `.hyx` components nothing imports (entries and
+  `_404`/`_error`/`_layout` excluded).
 - **`hydra test --routes [route]`** — every loader in the build is called in
   process with the params its pattern implies, and checked for: no throw, a
   JSON-serializable result, a real status on `redirect()`/`fail()`. `.env` is

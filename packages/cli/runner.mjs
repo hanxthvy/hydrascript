@@ -10,6 +10,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { migrationsFor, describeMigrations } from './migrations.mjs';
 import { runRouteTests } from './route-tests.mjs';
+import { checkArchitecture, extractI18n, findDeadComponents, checkLinks } from './static-checks.mjs';
 import net from 'node:net';
 import zlib from 'node:zlib';
 
@@ -1521,6 +1522,21 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
     console.log(`[hydra] .env: ${envLoad.applied.length} variable(s) loaded`);
   }
 
+  // 0b. Architecture rules, before anything is compiled.
+  //
+  // A forbidden import is a design decision someone already made and wrote down;
+  // discovering it after a build that took a minute is the wrong order. This is
+  // also the check that no other JS meta-framework can do, because it needs the
+  // import graph the compiler itself would use.
+  const arch = checkArchitecture(cwd, config);
+  if (arch.violations.length > 0) {
+    const lines = arch.violations.map((v) => `  ${v.from}\n    imports ${v.to}\n    which the rule "${v.rule}" forbids`);
+    throw new Error(
+      `[hydra] architecture rule violated (${arch.violations.length}):\n${lines.join('\n')}\n` +
+        '  Move the code, or change "architecture.rules" in hydraconfig.json if the dependency is intended.',
+    );
+  }
+
   // 0b. The build target. Two, and the list is closed.
   //
   //   node   — the client bundle plus a runnable server (`hydra serve`): SSR,
@@ -2792,6 +2808,69 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
             if (count > 0) {
               console.log(`[hydra] sitemap: ${count} URL(s) from ${writtenUrls.length} written page(s)`);
             }
+          }
+
+          // Source-level checks, once the artifact exists: what the HTML points
+          // at, which strings are translatable, and which component nothing can
+          // reach. All three are warnings — a build that refuses to finish over
+          // an unused file is a build people learn to bypass — except a missing
+          // translation key, which is a rendered key in front of a visitor and
+          // therefore an error when a catalog is declared.
+          try {
+            const links = checkLinks(outDir, normalizeBase(config.base || '/'));
+            if (links.broken.length > 0) {
+              console.warn(`[hydra] links: ${links.broken.length} internal link(s) point at nothing`);
+              for (const b of links.broken.slice(0, 5)) console.warn(`  ${b.page}: ${b.href}`);
+            } else if (links.checked > 0) {
+              console.log(`[hydra] links: ${links.checked} internal reference(s), all resolve`);
+            }
+          } catch (e) {
+            console.warn(`[hydra] links: check could not run: ${e.message}`);
+          }
+
+          try {
+            const i18n = extractI18n(cwd);
+            if (i18n.keys.length > 0) {
+              fs.writeFileSync(
+                path.join(outDir, '.hydra-i18n.json'),
+                JSON.stringify({ keys: i18n.keys, usedIn: i18n.usedIn }, null, 2),
+              );
+              const catalogPath = config.i18n && typeof config.i18n.catalog === 'string'
+                ? path.resolve(cwd, config.i18n.catalog)
+                : null;
+              if (catalogPath && fs.existsSync(catalogPath)) {
+                let catalog = {};
+                try {
+                  catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+                } catch (e) {
+                  throw new Error(`[hydra] i18n: ${config.i18n.catalog} is not valid JSON — ${e.message}`);
+                }
+                const missing = i18n.keys.filter((k) => !Object.prototype.hasOwnProperty.call(catalog, k));
+                if (missing.length > 0) {
+                  throw new Error(
+                    `[hydra] i18n: ${missing.length} key(s) used in source are missing from ${config.i18n.catalog}:\n  ${missing.slice(0, 10).join('\n  ')}`,
+                  );
+                }
+                console.log(`[hydra] i18n: ${i18n.keys.length} key(s), all present in the catalog`);
+              } else {
+                console.log(`[hydra] i18n: ${i18n.keys.length} key(s) extracted to dist/.hydra-i18n.json`);
+              }
+            }
+          } catch (e) {
+            if (String(e && e.message).includes('i18n:')) throw e;
+            console.warn(`[hydra] i18n: extraction could not run: ${e.message}`);
+          }
+
+          try {
+            const entryList = config.entries && typeof config.entries === 'object'
+              ? Object.values(config.entries).map(String)
+              : ['src/main.hyx'];
+            const dead = findDeadComponents(cwd, routesTable ? routesTable.routes : [], entryList);
+            if (dead.length > 0) {
+              console.warn(`[hydra] dead code: ${dead.length} component(s) nothing imports: ${dead.slice(0, 5).join(', ')}${dead.length > 5 ? ', …' : ''}`);
+            }
+          } catch (e) {
+            console.warn(`[hydra] dead code: check could not run: ${e.message}`);
           }
           if (ssrRoutes.length > 0) {
             console.log(

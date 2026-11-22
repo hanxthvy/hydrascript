@@ -471,6 +471,10 @@ A single optional `hydraconfig.json` in the project root:
     "host": "127.0.0.1",
     "proxy": { "/api": "http://127.0.0.1:8000" }
   },
+  "architecture": {
+    "layers": { "ui": "./src/pages", "data": "./src/db" },
+    "rules": ["ui -/-> data"]
+  },
   "compiler": {
     "target": "react-18",
     "strict": true
