@@ -109,9 +109,14 @@ const main = async () => {
   // ---- serve -------------------------------------------------------------
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
+  // `detached` so the whole tree can be signalled below. `bin/hydra.js` spawns the
+  // runner as a CHILD, so killing the launcher alone leaves the actual server
+  // alive — and its inherited pipes keep this process from ever exiting, which is
+  // how a passing run reported 28/28 and then hung until the timeout killed it.
   const server = spawn(process.execPath, [HYDRA, 'serve', '--port', String(port)], {
     cwd: projectDir,
     stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
   });
   let serverLog = '';
   server.stdout.on('data', (c) => (serverLog += c));
@@ -204,17 +209,35 @@ const main = async () => {
     const onError = serverLog.includes('ON_ERROR');
     check('on_error heard about the failing handler', onError);
   } finally {
-    server.kill('SIGTERM');
-    await new Promise((r) => setTimeout(r, 300));
-    if (!server.killed) server.kill('SIGKILL');
+    // The negative pid is the process GROUP created by `detached` above, so the
+    // launcher and the runner it spawned both go. A failure here must not mask a
+    // failing check, so it is swallowed.
+    try {
+      process.kill(-server.pid, 'SIGTERM');
+    } catch {
+      try {
+        server.kill('SIGTERM');
+      } catch {
+        /* already gone */
+      }
+    }
+    await new Promise((r) => setTimeout(r, 400));
+    try {
+      process.kill(-server.pid, 'SIGKILL');
+    } catch {
+      /* already gone */
+    }
   }
 
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
   if (failed.length > 0) {
     for (const f of failed) console.log(`  failed: ${f.name}${f.detail ? ` (${f.detail})` : ''}`);
-    process.exit(1);
   }
+  // An explicit exit: the child's stdio may still be attached for a tick after
+  // the kill, and a run that printed its results and then hung is worse than one
+  // that failed loudly. This is the bug that was measured, not a precaution.
+  process.exit(failed.length > 0 ? 1 : 0);
 };
 
 main().catch((err) => {
