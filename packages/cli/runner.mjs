@@ -10,7 +10,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { migrationsFor, describeMigrations } from './migrations.mjs';
 import { runRouteTests } from './route-tests.mjs';
-import { checkArchitecture, extractI18n, findDeadComponents, checkLinks } from './static-checks.mjs';
+import { checkArchitecture, extractI18n, findDeadComponents, checkLinks, routeTypes } from './static-checks.mjs';
 import net from 'node:net';
 import zlib from 'node:zlib';
 
@@ -2803,6 +2803,21 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
           // actually produced; absent, neither is — a sitemap of
           // `http://localhost/...` is worse than nothing, because a crawler
           // believes it.
+          // Typed routes: `.hydra/types/routes.d.ts`, regenerated with the build
+          // because the route table is the build's own output.
+          try {
+            const typesDir = path.join(outDir, 'types');
+            fs.mkdirSync(typesDir, { recursive: true });
+            fs.writeFileSync(
+              path.join(typesDir, 'routes.d.ts'),
+              routeTypes(routesTable ? routesTable.routes : []),
+              'utf8',
+            );
+            console.log(`[hydra] types: ${path.relative(cwd, path.join(typesDir, 'routes.d.ts'))}`);
+          } catch (e) {
+            console.warn(`[hydra] types: could not write route declarations: ${e.message}`);
+          }
+
           if (config.site) {
             const count = writeSitemapAndRobots(outDir, config.site, writtenUrls);
             if (count > 0) {
