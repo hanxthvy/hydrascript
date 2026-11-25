@@ -91,3 +91,6 @@ mod util;
 pub use doctor::doctor;
 pub use init::init;
 pub use stats::stats;
+
+// tools.rs asserts this template stays parseable.
+pub(crate) use templates::PACKAGE_JSON_TEMPLATE;

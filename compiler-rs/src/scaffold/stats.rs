@@ -217,7 +217,7 @@ pub fn stats(args: &[String]) -> ExitCode {
 
 #[cfg(test)]
 mod route_tests {
-    use super::collect_routes;
+    use crate::scaffold::doctor::collect_routes;
     use std::fs;
     use std::path::Path;
 
@@ -773,7 +773,7 @@ export component Badge(label: str):
 
 #[cfg(test)]
 mod html_tests {
-    use super::{render_html, INDEX_HTML_TEMPLATE};
+    use crate::scaffold::templates::{render_html, INDEX_HTML_TEMPLATE};
 
     #[test]
     pub(super) fn a_name_never_becomes_markup() {
