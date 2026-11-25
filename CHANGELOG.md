@@ -22,9 +22,12 @@ language syntax changed.
 ### Added
 
 - **`veil("...")`** — a string literal the build encodes so it is not greppable
-  in `dist/`. Base64 over an XOR against a key that ships with the runtime, which
-  is exactly why this is obfuscation and not encryption: anyone with a console can
-  undo it in one line. It exists to defeat the bot that greps a directory for `@`
+  in `dist/`. Three layers, each aimed at a scraper rather than a person: a key
+  PER VALUE derived from the value itself (no constant to grep, and one recovery
+  does not open the next value), a byte reversal after the XOR, and the payload
+  split into three base64 fragments so the longest encoded run stays short. All
+  of it is exactly why this is obfuscation and not encryption: the runtime helper
+  is one console call away. It exists to defeat the bot that greps a directory for `@`
   and the person who copies a promo code out of a built file, not a person who
   runs the app. The compiler REFUSES veiling anything credential-shaped (AWS key
   ids, JWTs, private-key headers, 40-hex keys) and says to move it to a

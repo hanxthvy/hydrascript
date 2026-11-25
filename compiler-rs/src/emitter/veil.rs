@@ -13,9 +13,18 @@
 //! rather than an encrypted string: see `looks_like_secret`. The mistake this
 //! guards against is not using veil, it is using veil for the wrong thing.
 
-/// Shared with `runtime/hydra.ts`. Changing one without the other breaks every
-/// veiled string, so both sides say so in a comment.
-pub const KEY: &[u8] = b"hydra-veil-key/2026";
+// Three layers, each chosen because it defeats a specific automated attack:
+//
+//   1. a key PER VALUE, derived from the value itself — no constant to grep, and
+//      one recovered key does not open the next value;
+//   2. a byte REVERSAL after the XOR — base64-decoding a payload yields noise,
+//      not the tail of the plaintext sitting there in order;
+//   3. the payload SPLIT into pieces — the longest encoded run in the bundle is
+//      short, and a scraper looking for one string finds three.
+//
+// None of this is encryption, and the code is written so it cannot be mistaken
+// for it: there is no key constant left to find, and the runtime helper the
+// compiler emits is reachable from a console in one line.
 
 /// Standard base64, no dependencies. Padding is kept because the runtime uses
 /// `atob`, which insists on it.
@@ -33,15 +42,52 @@ fn b64(bytes: &[u8]) -> String {
     out
 }
 
-/// XOR then base64. Symmetric, so the runtime is the same operation in reverse.
-pub fn encode(plain: &str) -> String {
-    let keyed: Vec<u8> = plain
+/// A per-value key.
+///
+/// Derived, not random: the same source must produce the same bundle, or builds
+/// stop being reproducible and a compile cache keyed on the output is worthless.
+/// The seed mixes the value, its length and a per-call salt, so two identical
+/// strings in one file still get different keys.
+pub fn key_for(plain: &str, salt: u32) -> Vec<u8> {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ salt as u64;
+    for b in plain.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h ^= (plain.len() as u64) << 32;
+    let mut x = h | 1;
+    let mut out = Vec::with_capacity(16);
+    for _ in 0..16 {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        out.push((x & 0xff) as u8);
+    }
+    out
+}
+
+/// Encode `plain` into (parts, key).
+///
+/// The runtime joins the parts, base64-decodes, XORs with the key, then reverses
+/// the bytes: the same three layers, undone in the opposite order.
+pub fn encode(plain: &str, salt: u32) -> (Vec<String>, Vec<u8>) {
+    let key = key_for(plain, salt);
+    let mut bytes: Vec<u8> = plain
         .as_bytes()
         .iter()
         .enumerate()
-        .map(|(i, b)| b ^ KEY[i % KEY.len()])
+        .map(|(i, b)| b ^ key[i % key.len()])
         .collect();
-    b64(&keyed)
+    bytes.reverse();
+    let encoded = b64(&bytes);
+    let pieces = if encoded.len() <= 6 { 1 } else { 3 };
+    let size = (encoded.len() + pieces - 1) / pieces;
+    let parts: Vec<String> = encoded
+        .as_bytes()
+        .chunks(size.max(1))
+        .map(|c| String::from_utf8_lossy(c).to_string())
+        .collect();
+    (parts, key)
 }
 
 /// Strip the surrounding quotes of a `Kind::Str` value.
@@ -82,14 +128,13 @@ pub fn looks_like_secret(s: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn encode_is_symmetric_with_the_runtime_recipe() {
-        let plain = "kontak@contoh.id";
-        let enc = encode(plain);
-        // decode exactly the way the runtime does: base64, then XOR
+    /// The runtime's recipe, written out in Rust, so the two halves are checked
+    /// against each other rather than against themselves.
+    fn decode(parts: &[String], key: &[u8]) -> String {
         const A: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let joined: String = parts.concat();
         let mut bits = Vec::new();
-        for c in enc.chars().filter(|c| *c != '=') {
+        for c in joined.chars().filter(|c| *c != '=') {
             bits.push(A.find(c).expect("b64 alphabet") as u8);
         }
         let mut bytes = Vec::new();
@@ -106,13 +151,42 @@ mod tests {
                 bytes.push(n as u8);
             }
         }
-        let out: String = bytes
+        bytes.reverse();
+        let out: Vec<u8> = bytes
             .iter()
             .enumerate()
-            .map(|(i, b)| (b ^ KEY[i % KEY.len()]) as char)
+            .map(|(i, b)| b ^ key[i % key.len()])
             .collect();
-        assert_eq!(out, plain);
-        assert!(!enc.contains('@'), "the veiled form must not contain the grep bait");
+        String::from_utf8(out).expect("utf8")
+    }
+
+    #[test]
+    fn round_trips_ascii_and_utf8() {
+        for (i, s) in ["kontak@contoh.id", "ünïcode ✓", "a", ""].iter().enumerate() {
+            let (parts, key) = encode(s, i as u32);
+            assert_eq!(decode(&parts, &key), *s, "round trip for {s:?}");
+        }
+    }
+
+    #[test]
+    fn the_plaintext_does_not_survive_inside_one_part() {
+        let plain = "promo-SECRET-2026";
+        let (parts, _) = encode(plain, 0);
+        for p in &parts {
+            assert!(!p.contains("promo"), "a part carried the prefix: {p}");
+            assert!(!p.contains("SECRET"), "a part carried the secret: {p}");
+        }
+        assert!(parts.len() > 1, "a payload this size must be split");
+    }
+
+    #[test]
+    fn a_different_salt_or_value_gets_a_different_key() {
+        let (_, k1) = encode("same", 0);
+        let (_, k2) = encode("same", 1);
+        assert_ne!(k1, k2, "the salt must move the key");
+        let (_, k3) = encode("different", 0);
+        assert_ne!(k1, k3, "the value must move the key");
+        assert_eq!(encode("x", 7), encode("x", 7), "a build must be reproducible");
     }
 
     #[test]

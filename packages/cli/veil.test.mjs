@@ -18,28 +18,44 @@ import path from 'node:path';
 
 const { veilSourcesIn } = await import('./runner.mjs');
 
-const KEY = 'hydra-veil-key/2026';
-
-/** The runtime's recipe, spelled out: base64, then XOR with the shared key. */
-function decode(encoded) {
-  const bytes = Buffer.from(encoded, 'base64');
-  const plain = Buffer.from(bytes.map((b, i) => b ^ KEY.charCodeAt(i % KEY.length)));
+/** The runtime's recipe: join the parts, base64, reverse, XOR, decode UTF-8. */
+function decode(parts, key) {
+  const raw = Buffer.from(parts.join(''), 'base64');
+  const plain = Buffer.alloc(raw.length);
+  for (let i = 0; i < raw.length; i++) {
+    plain[i] = raw[raw.length - 1 - i] ^ key[i % key.length];
+  }
   return new TextDecoder('utf-8').decode(plain);
 }
 
-test('the runtime recipe decodes what the compiler emits', () => {
-  // Produced by `hydra` from veil("kontak@contoh.id"). Hard-coded on purpose:
+test('the runtime recipe decodes what the compiler emits, for plain ASCII', () => {
+  // Emitted by `hydra` from veil("kontak@contoh.id"). Hard-coded on purpose:
   // this is the contract between two languages, and a round trip computed here
   // would agree with itself even if both sides were wrong together.
-  assert.equal(decode('AxYKBgBGNgYGAlkEDVdGVg=='), 'kontak@contoh.id');
+  assert.equal(
+    decode(['FvLwyb3Z', 'QzjhaB1f', 'JgBtOw=='], [
+      80, 2, 110, 82, 62, 118, 40, 130, 87, 45, 173, 210, 161, 222, 155, 114,
+    ]),
+    'kontak@contoh.id',
+  );
 });
 
-test('a veiled value survives characters that break base64 and URIs', () => {
-  const sample = 'a@b.c?x=1&y=2 ünïcode ✓';
-  const bytes = Buffer.from(sample, 'utf8');
-  const keyed = Buffer.from(bytes.map((b, i) => b ^ KEY.charCodeAt(i % KEY.length)));
-  const encoded = keyed.toString('base64');
-  assert.equal(decode(encoded), sample, 'utf8 must survive the round trip');
+test('the runtime recipe decodes a value with an accent, byte for byte', () => {
+  // Emitted by `hydra` from veil("ünïcode ✓"). The first version of the decoder
+  // XORed a binary string and returned it, which was right for ASCII and turned
+  // this into latin-1 mojibake.
+  assert.equal(
+    decode(['fA5JNbV', 'wrDDYmM', 'Zdzg=='], [
+      13, 225, 168, 91, 119, 83, 195, 20, 208, 21, 171, 146, 239, 210, 145, 104,
+    ]),
+    'ünïcode ✓',
+  );
+});
+
+test('the payload is split, so no part carries the whole value', () => {
+  const parts = ['FvLwyb3Z', 'QzjhaB1f', 'JgBtOw=='];
+  assert.equal(parts.length, 3);
+  for (const p of parts) assert.ok(p.length < 12, `part too long to be a fragment: ${p}`);
 });
 
 test('the source-map rule finds veil() in client sources, not in server ones', () => {

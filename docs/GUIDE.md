@@ -656,9 +656,19 @@ from hydra import veil
 SUPPORT = veil("kontak@contoh.id")     # not in the bundle as text
 ```
 
-The compiler replaces the literal with `__veil("<base64>")`; the runtime decodes
-it on first use and caches the result. What is on disk is base64, so `grep -r '@'`
-finds nothing and `curl`-ing the assets gets no value.
+The compiler replaces the literal with three base64 fragments and a key that
+belongs to that one value:
+
+```js
+__veil(["FvLwyb3Z", "QzjhaB1f", "JgBtOw=="], [80,2,110,82, /* … */])
+```
+
+Three layers, each aimed at one automated attack rather than at a person: a key
+PER VALUE (nothing constant to grep, and one recovery does not open the next
+value), a byte reversal after the XOR (base64-decoding a fragment yields noise,
+not the tail of the plaintext in order), and a payload split into three pieces
+(the longest encoded run stays short). The runtime undoes them in reverse and
+caches the result, so a value in a render path is decoded once.
 
 Three things to hold onto, because two of them are surprises:
 

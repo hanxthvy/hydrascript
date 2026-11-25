@@ -451,9 +451,10 @@ tries otherwise fails and names the variable.
 dropped. `--target node` keeps it.
 
 For a value that is public but should not be greppable in `dist/`, `veil("...")`
-encodes the literal at build time and the runtime decodes it on first use. It is
-obfuscation, not encryption — the key ships with the code, and a credential-shaped
-literal is a build error that points at `.server.hys` instead.
+encodes the literal at build time — a per-value key, a byte reversal, and three
+fragments instead of one string — and the runtime decodes it on first use. It is
+obfuscation, not encryption: the decoder is one console call away, and a
+credential-shaped literal is a build error that points at `.server.hys` instead.
 
 **[Read the guide](docs/GUIDE.md)** for the full behaviour: routing rules,
 pre-rendering per route, metadata, actions and redirects, API route shapes,

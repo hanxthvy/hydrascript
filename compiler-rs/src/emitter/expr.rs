@@ -313,7 +313,21 @@ impl Emitter {
                                 ));
                             }
                             self.used_helpers.borrow_mut().insert("__veil".into());
-                            return Ok(format!("__veil({:?})", super::veil::encode(&body)));
+                            // The salt is the call's position, so two identical
+                            // literals in one file do not share a key.
+                            let salt = ((n.line as u32) << 16) ^ (n.col as u32);
+                            let (parts, key) = super::veil::encode(&body, salt);
+                            let parts_js = parts
+                                .iter()
+                                .map(|p| format!("{:?}", p))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            let key_js = key
+                                .iter()
+                                .map(|b| b.to_string())
+                                .collect::<Vec<_>>()
+                                .join(",");
+                            return Ok(format!("__veil([{}], [{}])", parts_js, key_js));
                         }
                     }
                 }

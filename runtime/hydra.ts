@@ -2560,8 +2560,6 @@ export const storage = {
  * encryption, and anyone with a console can undo it. That is the deal, and it is
  * why the compiler refuses to veil anything that looks like a real credential.
  */
-const VEIL_KEY = 'hydra-veil-key/2026'
-
 const veil_cache = new Map<string, string>()
 
 /**
@@ -2571,29 +2569,39 @@ const veil_cache = new Map<string, string>()
  * base64-decoded on every frame, which is the kind of cost that only shows up on
  * a slow phone.
  */
-export function __veil(encoded: string): string {
-  const hit = veil_cache.get(encoded)
+export function __veil(parts: string[], key: number[]): string {
+  const joined = parts.join('')
+  const hit = veil_cache.get(joined)
   if (hit !== undefined) return hit
   let out = ''
   try {
-    const raw = typeof atob === 'function'
-      ? atob(encoded)
-      : Buffer.from(encoded, 'base64').toString('binary')
-    // XOR over BYTES, then decode as UTF-8. Doing the XOR on a binary string and
-    // handing it back was fine for ASCII and mangled everything else — a value
-    // with an accent came out as two latin-1 characters.
+    // `atob` is in every browser and in Node 16+. The Buffer path exists for an
+    // exotic runtime that has neither, and is looked up off globalThis so this
+    // module does not need Node's types.
+    const NodeBuffer = (globalThis as any).Buffer
+    const raw =
+      typeof atob === 'function'
+        ? atob(joined)
+        : NodeBuffer.from(joined, 'base64').toString('binary')
+    // The three layers, undone in reverse: base64 first, then the XOR with this
+    // value's own key, then the byte reversal. Doing the XOR on a binary string
+    // and returning it was right for ASCII and turned "ünïcode" into latin-1
+    // mojibake, so this works on bytes and decodes UTF-8 at the end.
+    // Reverse FIRST, then XOR: the compiler XORs and then reverses, so undoing
+    // it has to happen in the opposite order. Getting this backwards decrypts to
+    // noise rather than to a wrong string, which is at least loud.
     const bytes = new Uint8Array(raw.length)
     for (let i = 0; i < raw.length; i++) {
-      bytes[i] = raw.charCodeAt(i) ^ VEIL_KEY.charCodeAt(i % VEIL_KEY.length)
+      bytes[i] = raw.charCodeAt(raw.length - 1 - i) ^ key[i % key.length]
     }
     out = new TextDecoder('utf-8').decode(bytes)
   } catch {
     // A value that cannot be decoded is a build that disagrees with the runtime.
-    // Returning the encoded form is wrong in a way someone can see and report,
-    // which beats throwing inside a render.
-    out = encoded
+    // Returning the pieces is wrong in a way someone can see and report, which
+    // beats throwing inside a render.
+    out = joined
   }
-  veil_cache.set(encoded, out)
+  veil_cache.set(joined, out)
   return out
 }
 
