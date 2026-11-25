@@ -268,7 +268,7 @@ pub fn emit_with_loader(
                 let mut children = false;
                 for p in params {
                     let m_loader_or_param = param_member(p);
-                    if let Some(m) = m_loader_or_param.clone() {
+                    if let Some(_m) = m_loader_or_param.clone() {
                         // A loader-sourced prop keeps the loader's TYPE and
                         // loses its default: the loader always supplies it, so
                         // `?` would be a lie that lets a page be used without
