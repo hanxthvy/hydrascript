@@ -305,6 +305,7 @@ mod names;
 mod scope;
 mod sourcemap;
 mod stmt;
+mod veil;
 
 #[cfg(test)]
 mod tests;

@@ -291,6 +291,32 @@ impl Emitter {
                 Ok(res)
             }
             Kind::Call { func, args, kwargs } => {
+                // `veil("...")`: a literal that must not be greppable in the
+                // bundle. Encoded here so the value never appears in the output;
+                // a credential-shaped literal is a build error instead, because
+                // veiling it would imply it is safe to ship.
+                if let Kind::Name(id) = &func.kind {
+                    if id == "veil" && args.len() == 1 && kwargs.is_empty() {
+                        if let Kind::Str { value, is_f: false } = &args[0].kind {
+                            let body = super::veil::literal_body(value);
+                            if let Some(kind) = super::veil::looks_like_secret(&body) {
+                                return Err(CompileError::new(
+                                    format!(
+                                        "veil() refuses to wrap {kind}: veil is obfuscation, not encryption"
+                                    ),
+                                    n.line,
+                                    n.col,
+                                    Vec::new(),
+                                )
+                                .with_hint(
+                                    "keep the value in a .server.hys and read it there, so it never reaches the bundle",
+                                ));
+                            }
+                            self.used_helpers.borrow_mut().insert("__veil".into());
+                            return Ok(format!("__veil({:?})", super::veil::encode(&body)));
+                        }
+                    }
+                }
                 // A Python exception class: `new ValueError(...)`, imported.
                 // Without the import the emitted code named a global that does
                 // not exist, and the module threw on load.

@@ -2550,4 +2550,59 @@ export const storage = {
   },
 }
 
+/* -------------------------------------------------------------------- veil */
 
+/**
+ * The key `veil()` encodes with at build time.
+ *
+ * It must stay byte-identical to `KEY` in `compiler-rs/src/emitter/veil.rs`.
+ * It is also, by construction, IN THE BUNDLE: veil is obfuscation, not
+ * encryption, and anyone with a console can undo it. That is the deal, and it is
+ * why the compiler refuses to veil anything that looks like a real credential.
+ */
+const VEIL_KEY = 'hydra-veil-key/2026'
+
+const veil_cache = new Map<string, string>()
+
+/**
+ * Decode a string the compiler veiled. Called from generated code, not by hand.
+ *
+ * Cached per encoded value: a veiled string in a render path would otherwise be
+ * base64-decoded on every frame, which is the kind of cost that only shows up on
+ * a slow phone.
+ */
+export function __veil(encoded: string): string {
+  const hit = veil_cache.get(encoded)
+  if (hit !== undefined) return hit
+  let out = ''
+  try {
+    const raw = typeof atob === 'function'
+      ? atob(encoded)
+      : Buffer.from(encoded, 'base64').toString('binary')
+    // XOR over BYTES, then decode as UTF-8. Doing the XOR on a binary string and
+    // handing it back was fine for ASCII and mangled everything else — a value
+    // with an accent came out as two latin-1 characters.
+    const bytes = new Uint8Array(raw.length)
+    for (let i = 0; i < raw.length; i++) {
+      bytes[i] = raw.charCodeAt(i) ^ VEIL_KEY.charCodeAt(i % VEIL_KEY.length)
+    }
+    out = new TextDecoder('utf-8').decode(bytes)
+  } catch {
+    // A value that cannot be decoded is a build that disagrees with the runtime.
+    // Returning the encoded form is wrong in a way someone can see and report,
+    // which beats throwing inside a render.
+    out = encoded
+  }
+  veil_cache.set(encoded, out)
+  return out
+}
+
+/**
+ * `veil("...")` in source. The compiler replaces this call with `__veil("...")`
+ * when the argument is a literal; this identity function exists for everything
+ * else — a non-literal argument, an editor, a type check — so the name is always
+ * callable and always means "do not touch this value at build time".
+ */
+export function veil(value: string): string {
+  return value
+}

@@ -645,6 +645,48 @@ At runtime the catalog is `globalThis.__hydra_i18n`, or whatever `set_i18n()`
 was given. A missing key renders the `default` argument, then the key itself —
 never a thrown error in the middle of a render.
 
+## Obfuscating a literal: `veil()`
+
+A value that is public but should not be greppable — an internal endpoint, an
+email address on a contact page, a promo code, a flag name:
+
+```python
+from hydra import veil
+
+SUPPORT = veil("kontak@contoh.id")     # not in the bundle as text
+```
+
+The compiler replaces the literal with `__veil("<base64>")`; the runtime decodes
+it on first use and caches the result. What is on disk is base64, so `grep -r '@'`
+finds nothing and `curl`-ing the assets gets no value.
+
+Three things to hold onto, because two of them are surprises:
+
+**It is obfuscation, not encryption.** The key ships in the bundle, so
+`__veil("...")` in a console returns the value. Anyone who runs the app can read
+it. That is the deal, and the compiler enforces the other half of it: a
+credential-shaped literal is a build error, not a veiled string.
+
+```
+error: veil() refuses to wrap an AWS access key id: veil is obfuscation, not encryption
+   = hint: keep the value in a .server.hys and read it there, so it never reaches the bundle
+```
+
+**A value the page prints is in that page's HTML.** Pre-rendering runs the
+component at build time, so `p(): veil("a@b.c")` produces `<p>a@b.c</p>`. Veil
+helps when the value is used by client-side code — a handler, an effect, a URL
+built after mount — not when the server writes it into the document.
+
+**Source maps and `veil()` are mutually exclusive.** A map carries the original
+text, so a build with `build.sourcemap: true` and a `veil()` in client sources is
+refused rather than shipped:
+
+```
+[hydra] these files use veil() but the build ships source maps:
+  src/pages/contact.hyx
+A source map carries the original text, so the veiled values would be readable in it.
+```
+
 ## Dead code and links
 
 Two more build-time checks, both warnings:

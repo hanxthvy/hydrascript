@@ -21,9 +21,18 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 // `export *` carries no names, so scanning only hydra.ts reported every helper
 // that moved to core as missing (35 of them) while the build was green.
 const RUNTIME = [path.join(ROOT, 'runtime', 'hydra.ts'), path.join(ROOT, 'runtime', 'core.ts')];
-const RUST = ['emitter.rs', 'hx_target.rs', 'fstr.rs'].map((f) =>
-  path.join(ROOT, 'compiler-rs', 'src', f),
-);
+// The emitter and the .hx target are directories of modules, not single files:
+// a list of paths names the files a helper can be recorded from TODAY, and the
+// scan below is what notices when a new module starts emitting a helper.
+const SRC = path.join(ROOT, 'compiler-rs', 'src');
+const dirRs = (dir) =>
+  fs
+    .readdirSync(path.join(SRC, dir))
+    .filter((f) => f.endsWith('.rs'))
+    .sort()
+    .map((f) => path.join(SRC, dir, f));
+
+const RUST = [...dirRs('emitter'), ...dirRs('hx_target'), path.join(SRC, 'fstr.rs')];
 
 /** Every name the runtime exports. */
 function runtimeExports() {

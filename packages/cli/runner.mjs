@@ -2252,6 +2252,31 @@ export async function runBuild(cwd = process.cwd(), opts = {}) {
   // remembers to run a second command is a budget that drifts. An exceeded
   // budget fails the build with the number and the limit, because "the bundle
   // got bigger" without a figure is not actionable.
+  // 4a-bis. veil() and source maps cancel each other out.
+  //
+  // `veil()` exists so a literal is not greppable in the bundle. A source map
+  // carries the original text back, so shipping both is not "slightly weaker",
+  // it is the whole feature undone by a file next to it. This refuses rather
+  // than warns: a warning in a build log is a warning nobody reads, and the
+  // person who turned on sourcemaps for a crash report has no way to know it
+  // un-veiled their values.
+  //
+  // Checked here, against what was actually emitted, rather than by scanning
+  // sources: a `.hys` compiled to the server half may veil values that never
+  // reach the client, and those are not at risk.
+  if (config.build?.sourcemap === true) {
+    const veiled = veilSourcesIn(config, cwd);
+    if (veiled.length > 0) {
+      throw new Error(
+        `[hydra] these files use veil() but the build ships source maps:\n  ${veiled.join(
+          '\n  ',
+        )}\n` +
+          'A source map carries the original text, so the veiled values would be readable in it.\n' +
+          'Turn off "build.sourcemap" for this build, or take the value out of veil().',
+      );
+    }
+  }
+
   const budget = config.budget && typeof config.budget === 'object' ? config.budget : null;
   if (budget) {
     const jsOutputs = Object.entries(metafile.outputs).filter(([k]) => k.endsWith('.js'));
@@ -3143,6 +3168,49 @@ function cacheHeaders(ext, hasHash) {
   }
   if (ext === '.html') return { 'Cache-Control': 'no-cache' };
   return { 'Cache-Control': 'public, max-age=3600' };
+}
+
+/**
+ * Client source files that call `veil()`, when the build also ships maps.
+ *
+ * Scanned in the SOURCES rather than in the emitted chunks, and that is not a
+ * shortcut: a production bundle is minified, so both `__veil` and the helper's
+ * own name come out mangled, while a string literal does not. Looking for the
+ * marker in the output found nothing and the rule quietly never fired.
+ *
+ * `.server.hys` files are skipped: their values never reach the browser, so a
+ * map of them is not a leak.
+ */
+export function veilSourcesIn(config, cwd) {
+  const roots = [path.join(cwd, 'src')];
+  const hits = [];
+  const walk = (dir) => {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!e.name.endsWith('.hyx') && !e.name.endsWith('.hys')) continue;
+      if (/\.server\.hys$/.test(e.name)) continue; // server-only: not in the bundle
+      let text = '';
+      try {
+        text = fs.readFileSync(full, 'utf8');
+      } catch {
+        continue;
+      }
+      // `veil(` with a quoted argument is what the compiler acts on.
+      if (/\bveil\(\s*["']/.test(text)) hits.push(path.relative(cwd, full));
+    }
+  };
+  for (const r of roots) walk(r);
+  return hits;
 }
 
 /**

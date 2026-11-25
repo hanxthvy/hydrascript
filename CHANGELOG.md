@@ -21,6 +21,18 @@ language syntax changed.
 
 ### Added
 
+- **`veil("...")`** — a string literal the build encodes so it is not greppable
+  in `dist/`. Base64 over an XOR against a key that ships with the runtime, which
+  is exactly why this is obfuscation and not encryption: anyone with a console can
+  undo it in one line. It exists to defeat the bot that greps a directory for `@`
+  and the person who copies a promo code out of a built file, not a person who
+  runs the app. The compiler REFUSES veiling anything credential-shaped (AWS key
+  ids, JWTs, private-key headers, 40-hex keys) and says to move it to a
+  `.server.hys` instead. Two limits are worth knowing before using it: a value
+  that a pre-rendered page PRINTS is in that page's HTML, and a build that turns
+  on `build.sourcemap` with `veil()` in client sources is refused, because the map
+  carries the original text back. The runtime decodes as UTF-8 bytes, so an accent
+  survives.
 - **`cookies(event)`, `session(event, secret)`, `set_header(event, name, value)`**
   in `hydra/server` — usable from a loader, an action, an API route and
   middleware. The session is a signed (HMAC-SHA256), `HttpOnly`, `SameSite=Lax`
