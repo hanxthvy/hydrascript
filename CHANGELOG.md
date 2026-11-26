@@ -12,16 +12,17 @@ pass, say so plainly and link the way out in [MIGRATING.md](MIGRATING.md).
 
 ---
 
-## 0.16.0 — 2026-11-22
+## 0.16.1 — 2026-11-26
 
-The request layer gains an identity. Until now a project could not write a login:
-`Set-Cookie` appeared nowhere in the package, middleware saw `/api` only, and a
-guarded page was pre-rendered into a static file that anyone could read. No
-language syntax changed.
+`veil()` needs a compiler that knows it, and 0.16.0's native binaries were built
+before it existed — a 0.16.0 root package would install a compiler that cannot
+recognise the call, so a veiled value would ship as plaintext and nothing would
+say so. The number moves so the binaries do. Runtime and CLI code are unchanged
+apart from the decoder.
 
 ### Added
 
-- **`veil("...")`** — a string literal the build encodes so it is not greppable
+- **`veil(\"...\")`** — a string literal the build encodes so it is not greppable
   in `dist/`. Three layers, each aimed at a scraper rather than a person: a key
   PER VALUE derived from the value itself (no constant to grep, and one recovery
   does not open the next value), a byte reversal after the XOR, and the payload
@@ -36,6 +37,27 @@ language syntax changed.
   on `build.sourcemap` with `veil()` in client sources is refused, because the map
   carries the original text back. The runtime decodes as UTF-8 bytes, so an accent
   survives.
+
+### Fixed
+
+- The `veil()` decoder reversed the bytes AFTER the XOR, which is the wrong
+  order and decrypts to noise. Caught by the accent vector, not the ASCII one.
+- The source-map refusal scanned emitted chunks, where minification has already
+  renamed `__veil` — so it never fired. It now scans client sources.
+- `packages/cli/helper-contract.test.mjs` read `emitter.rs` and `hx_target.rs` as
+  single files after they became module directories; it now reads the directory.
+
+---
+
+## 0.16.0 — 2026-11-22
+
+The request layer gains an identity. Until now a project could not write a login:
+`Set-Cookie` appeared nowhere in the package, middleware saw `/api` only, and a
+guarded page was pre-rendered into a static file that anyone could read. No
+language syntax changed.
+
+### Added
+
 - **`cookies(event)`, `session(event, secret)`, `set_header(event, name, value)`**
   in `hydra/server` — usable from a loader, an action, an API route and
   middleware. The session is a signed (HMAC-SHA256), `HttpOnly`, `SameSite=Lax`
