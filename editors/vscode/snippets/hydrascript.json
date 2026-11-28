@@ -1,0 +1,163 @@
+{
+  "_comment": "Snippets are written in the syntax the compiler accepts, not in the syntax a Python editor would guess: `from \"hydra\" import x` is a STRING specifier, `slot` is a bare name, and loader data arrives as props. test/snippets.test.mjs checks every body against the compiler so a snippet cannot drift into an error.",
+  "Component (.hyx)": {
+    "scope": "hyx",
+    "prefix": ["comp", "hyx-component"],
+    "body": [
+      "component ${1:Card}(${2:title}: str = \"${3:card}\"):",
+      "    ${4:section}(className=\"rounded-xl bg-white p-4 ring-1 ring-slate-200\"):",
+      "        ${5:slot}",
+      ""
+    ],
+    "description": "A component: `slot` is where children land"
+  },
+  "Page (.hyx)": {
+    "scope": "hyx",
+    "prefix": ["page", "hyx-page"],
+    "body": [
+      "# src/pages/${1:about}.hyx — this file IS the `${2:/about}` route.",
+      "",
+      "component ${3:About}(params = {}, path: str = \"${2:/about}\"):",
+      "    div(className=\"space-y-4\"):",
+      "        h1(className=\"text-2xl font-bold text-slate-900\"): \"${4:About}\"",
+      "        p(className=\"text-sm text-slate-500\"): f\"you are on {path}\"",
+      ""
+    ],
+    "description": "A page: the filename is the URL, and the router passes params/path/route"
+  },
+  "Page with loader prop": {
+    "scope": "hyx",
+    "prefix": ["hyx-page-loader"],
+    "body": [
+      "component ${1:About}(build_host: str = \"\"):",
+      "    div(className=\"space-y-4\"):",
+      "        p(className=\"text-sm text-slate-500\"): f\"built on {build_host}\"",
+      ""
+    ],
+    "description": "A page whose props come from a .server.hys loader — the keys are props, not a props dict"
+  },
+  "for loop": {
+    "scope": "hyx",
+    "prefix": ["for", "hyx-for"],
+    "body": ["for ${1:item} in ${2:items}:", "    ${3:li(key=${1:item}):} ${1:item}", ""],
+    "description": "A for loop in the tree; pass `key=` on the element it emits"
+  },
+  "if / elif / else": {
+    "scope": "hyx",
+    "prefix": ["if", "hyx-if"],
+    "body": [
+      "if ${1:condition}:",
+      "    ${2:span(className=\"\")}: \"${3:yes}\"",
+      "else:",
+      "    ${4:span(className=\"\")}: \"${5:no}\""
+    ],
+    "description": "Branching inside the tree"
+  },
+  "state hook": {
+    "scope": "hyx",
+    "prefix": ["state", "hyx-state"],
+    "body": ["${1:value}, set_${1:value} = state(${2:0})"],
+    "description": "Local state: `state(initial)` returns the value and its setter"
+  },
+  "effect hook": {
+    "scope": "hyx",
+    "prefix": ["effect", "hyx-effect"],
+    "body": ["effect(lambda: {", "    ${1:# runs after render}", "}, [${2:}])"],
+    "description": "`effect(fn, deps)`"
+  },
+  "Link": {
+    "scope": "hyx",
+    "prefix": ["link", "hyx-link"],
+    "body": ["Link(to=\"${1:/}\"): \"${2:Home}\""],
+    "description": "Client-side link that still renders a real href"
+  },
+  "Button": {
+    "scope": "hyx",
+    "prefix": ["hyx-button"],
+    "body": ["button(on_click=${1:on_press}, className=\"rounded-lg px-4 py-2 text-sm font-semibold bg-indigo-600 text-white hover:bg-indigo-700\"): ${2:label}"],
+    "description": "A button that works with a handler prop"
+  },
+  "f-string": {
+    "scope": "hyx",
+    "prefix": ["fstr", "hyx-fstring"],
+    "body": ["f\"${1:label}: {${2:value}}\""],
+    "description": "Interpolated string"
+  },
+  "import from a package": {
+    "scope": "hyx,hys",
+    "prefix": ["imp", "hydra-import"],
+    "body": ["from \"${1:hydra}\" import ${2:state}"],
+    "description": "Specifiers are STRINGS: `from hydra import x` is a parse error"
+  },
+  "export function (.hys)": {
+    "scope": "hys",
+    "prefix": ["defx", "hys-export"],
+    "body": ["export def ${1:name}(${2:value}):", "    return ${3:value}", ""],
+    "description": "Every name another module imports needs `export`"
+  },
+  "loader (.server.hys)": {
+    "scope": "hys",
+    "prefix": ["loader", "hys-loader"],
+    "body": [
+      "from \"hydra/server\" import env",
+      "",
+      "",
+      "export async def loader(event):",
+      "    # event.params, event.url, event.query, event.request",
+      "    return {",
+      "        \"${1:key}\": ${2:env(\"NAME\", \"default\")},",
+      "    }",
+      ""
+    ],
+    "description": "A page's server half: `hydra/server` may only be imported from a .server.hys"
+  },
+  "action (.server.hys)": {
+    "scope": "hys",
+    "prefix": ["action", "hys-action"],
+    "body": [
+      "from \"hydra/server\" import redirect",
+      "",
+      "",
+      "export async def action(event):",
+      "    body = await event.request.json()",
+      "    return redirect(\"/${1:thanks}\")",
+      ""
+    ],
+    "description": "A form/mutation handler beside a loader"
+  },
+  "API route GET (.hys)": {
+    "scope": "hys",
+    "prefix": ["apiget", "hys-api-get"],
+    "body": [
+      "# src/api/${1:hello}.hys — answers /api/${1:hello}",
+      "export def get(req):",
+      "    return {\"ok\": True}",
+      ""
+    ],
+    "description": "One export per HTTP method; a dict is JSON"
+  },
+  "API route POST (.hys)": {
+    "scope": "hys",
+    "prefix": ["apipost", "hys-api-post"],
+    "body": ["export def post(req, body):", "    return {\"created\": body}, 201", ""],
+    "description": "`(body, status)` sets the status code"
+  },
+  "API middleware (.hys)": {
+    "scope": "hys",
+    "prefix": ["middleware", "hys-middleware"],
+    "body": [
+      "export def handle(req):",
+      "    if req.path.startswith(\"/api/${1:admin}\"):",
+      "        return {\"error\": \"forbidden\"}, 403",
+      "    return None",
+      ""
+    ],
+    "description": "src/middleware.hys: None passes through, anything else replies"
+  },
+  "dict comprehension": {
+    "scope": "hyx,hys",
+    "prefix": ["dictc"],
+    "body": ["{${1:k}: ${2:v} for ${1:k}, ${2:v} in ${3:items}.items()}"],
+    "description": "Comprehensions are lowered, not a library"
+  }
+}

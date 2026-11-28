@@ -1,29 +1,40 @@
 {
   "name": "hydrascript",
-  "displayName": "HydraScript (HYX / HYS)",
-  "description": "Syntax highlighting and inline compiler diagnostics for HydraScript (.hyx, .hys, .hsx, and .hs)",
-  "version": "0.1.0",
+  "displayName": "HydraScript",
+  "description": "Language support for HydraScript (.hyx, .hys): the compiler's own diagnostics, hover, go-to-definition, cross-file rename, completion, signature help, snippets and the project's commands.",
+  "version": "0.2.0",
   "publisher": "hydrascript",
   "license": "MIT",
   "engines": {
     "vscode": "^1.80.0"
   },
-  "categories": ["Programming Languages", "Linters"],
-  "keywords": ["react", "python", "hydrascript", "hyx", "hys", "hsx", "hs", "jsx"],
+  "categories": ["Programming Languages", "Linters", "Snippets", "Formatters"],
+  "keywords": ["hydrascript", "hydra", "hyx", "hys", "hsx", "python", "react", "lsp"],
+  "icon": "icon.png",
   "main": "./extension.js",
-  "activationEvents": ["onLanguage:hyx", "onLanguage:hys", "onLanguage:hsx", "onLanguage:hs"],
+  "activationEvents": ["onLanguage:hyx", "onLanguage:hys"],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "The language server runs the workspace's own compiler and reads its files. Everything except `hydra.format` and the terminal commands still works in a restricted workspace."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "The compiler needs real files on disk."
+    }
+  },
   "contributes": {
     "languages": [
       {
         "id": "hyx",
-        "aliases": ["Hydra JSX", "HydraScript (React)", "hyx", "hsx"],
-        "extensions": [".hyx", ".hsx"],
+        "aliases": ["Hydra XML"],
+        "extensions": [".hyx"],
         "configuration": "./language-configuration.json"
       },
       {
         "id": "hys",
-        "aliases": ["Hydra Script", "HydraScript (Script)", "hys", "hs", "hx"],
-        "extensions": [".hys", ".hs", ".hx"],
+        "aliases": ["Hydra Script"],
+        "extensions": [".hys"],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -37,18 +48,147 @@
         "language": "hys",
         "scopeName": "source.hsx",
         "path": "./syntaxes/hsx.tmLanguage.json"
-      },
-      {
-        "language": "hsx",
-        "scopeName": "source.hsx",
-        "path": "./syntaxes/hsx.tmLanguage.json"
-      },
-      {
-        "language": "hs",
-        "scopeName": "source.hsx",
-        "path": "./syntaxes/hsx.tmLanguage.json"
       }
-    ]
+    ],
+    "snippets": [
+      { "language": "hyx", "path": "./snippets/hydrascript.json" },
+      { "language": "hys", "path": "./snippets/hydrascript.json" }
+    ],
+    "configurationDefaults": {
+      "[hyx]": {
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true,
+        "editor.detectIndentation": false
+      },
+      "[hys]": {
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true,
+        "editor.detectIndentation": false
+      }
+    },
+    "jsonValidation": [
+      {
+        "fileMatch": "hydraconfig.json",
+        "url": "./schema.json"
+      }
+    ],
+    "commands": [
+      { "command": "hydra.dev", "title": "Dev Server", "category": "Hydra", "icon": "$(play)" },
+      { "command": "hydra.build", "title": "Build", "category": "Hydra", "icon": "$(package)" },
+      { "command": "hydra.serve", "title": "Serve Build", "category": "Hydra" },
+      { "command": "hydra.preview", "title": "Preview Build", "category": "Hydra" },
+      { "command": "hydra.routes", "title": "Show Route Table", "category": "Hydra" },
+      { "command": "hydra.check", "title": "Check Current File", "category": "Hydra", "icon": "$(check)" },
+      { "command": "hydra.format", "title": "Format Document", "category": "Hydra", "icon": "$(wand)" },
+      { "command": "hydra.doctor", "title": "Doctor (toolchain check)", "category": "Hydra" },
+      { "command": "hydra.stats", "title": "Code Statistics", "category": "Hydra" },
+      { "command": "hydra.list", "title": "Show Declared vs Installed Dependencies", "category": "Hydra" },
+      { "command": "hydra.test", "title": "Run Tests", "category": "Hydra" },
+      { "command": "hydra.explain", "title": "Explain a URL", "category": "Hydra" },
+      { "command": "hydra.newPage", "title": "New Page", "category": "Hydra" },
+      { "command": "hydra.newComponent", "title": "New Component", "category": "Hydra" },
+      { "command": "hydra.newLoader", "title": "New Page Server Half (loader)", "category": "Hydra" },
+      { "command": "hydra.newApiRoute", "title": "New API Route", "category": "Hydra" },
+      { "command": "hydra.newMiddleware", "title": "New API Middleware", "category": "Hydra" },
+      { "command": "hydra.restartServer", "title": "Restart Language Server", "category": "Hydra" },
+      { "command": "hydra.showLog", "title": "Show Language Server Log", "category": "Hydra" },
+      { "command": "hydra.openDocs", "title": "Open Documentation", "category": "Hydra" }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "hydra.check",
+          "when": "editorLangId == hyx || editorLangId == hys",
+          "group": "navigation@10"
+        },
+        {
+          "command": "hydra.format",
+          "when": "editorLangId == hyx || editorLangId == hys",
+          "group": "navigation@11"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "hydra.check",
+          "when": "editorLangId == hyx || editorLangId == hys",
+          "group": "hydra@1"
+        },
+        {
+          "command": "hydra.format",
+          "when": "editorLangId == hyx || editorLangId == hys",
+          "group": "hydra@2"
+        },
+        {
+          "command": "hydra.newLoader",
+          "when": "editorLangId == hyx",
+          "group": "hydra@3"
+        },
+        {
+          "command": "hydra.explain",
+          "when": "editorLangId == hyx",
+          "group": "hydra@4"
+        }
+      ],
+      "explorer/context": [
+        { "command": "hydra.newPage", "when": "explorerResourceIsFolder", "group": "hydra@1" },
+        { "command": "hydra.newComponent", "when": "explorerResourceIsFolder", "group": "hydra@2" },
+        { "command": "hydra.newApiRoute", "when": "explorerResourceIsFolder", "group": "hydra@3" }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "hydra.build",
+        "key": "ctrl+alt+b",
+        "mac": "cmd+alt+b",
+        "when": "editorLangId == hyx || editorLangId == hys"
+      },
+      {
+        "command": "hydra.check",
+        "key": "ctrl+alt+k",
+        "mac": "cmd+alt+k",
+        "when": "editorLangId == hyx || editorLangId == hys"
+      }
+    ],
+    "configuration": {
+      "title": "HydraScript",
+      "properties": {
+        "hydra.compilerPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the `hydra` CLI. Empty means: find it in `node_modules/hydrascript`, the workspace's own `bin/`, a `cargo build` output, or `PATH` — in that order. Set it when the project uses a compiler nobody else has."
+        },
+        "hydra.languageServer.enable": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Start `hydra lsp` and use it for diagnostics, hover, definition, rename, completion and signature help. When it is off — or when the resolved binary has no language server — diagnostics fall back to running `hydra check --json` on save."
+        },
+        "hydra.languageServer.trace": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Log every LSP message to the *HydraScript* output channel. For debugging the server itself, not for everyday use."
+        },
+        "hydra.checkOnSave": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Run `hydra check` on save **when the language server is not running**. With the server up this does nothing, because the server already re-checks as you type."
+        }
+      }
+    }
   },
-  "files": ["extension.js", "language-configuration.json", "syntaxes/", "bin/"]
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "package": "node scripts/package-vsix.mjs"
+  },
+  "files": [
+    "extension.js",
+    "src/",
+    "snippets/",
+    "syntaxes/",
+    "language-configuration.json",
+    "schema.json",
+    "icon.png",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ]
 }

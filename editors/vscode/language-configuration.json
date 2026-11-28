@@ -1,8 +1,14 @@
 {
   "comments": {
-    "lineComment": "#"
+    "lineComment": "#",
+    "blockComment": ["\"\"\"", "\"\"\""]
   },
   "brackets": [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"]
+  ],
+  "colorizedBracketPairs": [
     ["{", "}"],
     ["[", "]"],
     ["(", ")"]
@@ -11,7 +17,7 @@
     { "open": "{", "close": "}" },
     { "open": "[", "close": "]" },
     { "open": "(", "close": ")" },
-    { "open": "\"", "close": "\"", "notIn": ["string"] },
+    { "open": "\"", "close": "\"", "notIn": ["string", "comment"] },
     { "open": "'", "close": "'", "notIn": ["string", "comment"] }
   ],
   "surroundingPairs": [
@@ -21,17 +27,28 @@
     ["\"", "\""],
     ["'", "'"]
   ],
+  "folding": {
+    "markers": {
+      "start": "^\\s*#\\s*region\\b",
+      "end": "^\\s*#\\s*endregion\\b"
+    }
+  },
   "indentationRules": {
-    "increaseIndentPattern": "^\\s*(component|def|if|elif|else|for|while|try|except|finally)\\b.*:\\s*$|^\\s*[a-z][a-zA-Z0-9]*(\\s*\\(.*\\))?\\s*:\\s*$",
-    "decreaseIndentPattern": "^\\s*(elif|else|except|finally)\\b"
+    "increaseIndentPattern": "^\\s*(component|async\\s+def|def|class|if|elif|else|for|while|try|except|finally|with|match|case)\\b.*:\\s*$|^\\s*[A-Za-z_][A-Za-z0-9_]*\\s*(\\(.*\\))?\\s*:\\s*$|^\\s*[a-z][A-Za-z0-9]*\\([^)]*$",
+    "decreaseIndentPattern": "^\\s*(elif|else|except|finally|case)\\b|^\\s*[\\)\\]\\}]"
   },
   "onEnterRules": [
     {
-      "beforeText": "^\\s*(component|def|if|elif|else|for|while)\\b.*:\\s*$",
+      "beforeText": "^\\s*(component|async\\s+def|def|class|if|elif|else|for|while|try|except|finally|with|match|case)\\b.*:\\s*$",
       "action": { "indent": "indent" }
     },
     {
-      "beforeText": "^\\s*[a-z][a-zA-Z0-9]*(\\s*\\(.*\\))?\\s*:\\s*$",
+      "beforeText": "^\\s*[A-Za-z_][A-Za-z0-9_]*\\s*(\\(.*\\))?\\s*:\\s*$",
+      "action": { "indent": "indent" }
+    },
+    {
+      "comment": "Still inside a call's attribute list: the closing paren has not arrived yet.",
+      "beforeText": "[,(]\\s*$",
       "action": { "indent": "indent" }
     }
   ],
