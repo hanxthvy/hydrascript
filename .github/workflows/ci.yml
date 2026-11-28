@@ -281,3 +281,32 @@ jobs:
       - run: chmod +x bin/hydra
       - name: Pack, install, build
         run: bash scripts/pack-install-check.sh
+
+  # The editor extension is the only consumer of `hydra lsp` that ships, so it is
+  # also the only end-to-end test of the protocol: the suite spawns the real
+  # server, asks it to hover/rename/complete, and parses every scaffold and
+  # snippet with the compiler. It is cheap (a few seconds) and it fails when the
+  # server's capabilities drift away from what the extension advertises.
+  extension:
+    name: vscode extension (lsp + scaffolds)
+    runs-on: ubuntu-latest
+    needs: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          name: hydra-binaries
+          path: bin/
+      - run: chmod +x bin/hydra
+      - name: Extension tests
+        run: node --test --test-concurrency=1 editors/vscode/test/*.test.mjs
+      - name: Package the .vsix
+        run: node editors/vscode/scripts/package-vsix.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hydrascript-vsix
+          path: dist/*.vsix
+          retention-days: 7

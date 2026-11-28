@@ -758,24 +758,39 @@ that quietly came out of a framework dependency.
 
 ## Editor support
 
-Two ways to get editing support, and they are different things:
+`editors/vscode` is the editor half of the project, and it talks to the same
+server as everything else: it starts `hydra lsp` and maps the replies onto VS
+Code. Diagnostics are the compiler's own parser and semantic checker, not a
+second implementation that can disagree with the build.
 
-- **`editors/vscode`** — syntax highlighting plus inline diagnostics. It runs
-  `hydra check --json -` and turns the JSON into squiggles, so it reports every
-  finding, not only the first. Copy or symlink it into
-  `~/.vscode/extensions/hydrascript` and reload.
-- **`hydra lsp`** — a real language server, for an editor that speaks LSP:
-  diagnostics, hover, go-to-definition, and rename within one file.
+```bash
+node editors/vscode/scripts/package-vsix.mjs      # -> dist/hydrascript-0.2.0.vsix
+code --install-extension dist/hydrascript-0.2.0.vsix
+```
 
-Configure the LSP in VS Code with the `vscode-languageclient` extension of your
-choice, or in any editor that accepts an LSP command:
+What it gives you: colour for Hydra XML tags and specifier strings, diagnostics
+as you type, hover, go-to-definition, rename across files, completion, signature
+help, snippets for the syntax that is easy to get wrong, `hydraconfig.json`
+validation from this repository's `schema.json`, the project's commands (`dev`,
+`build`, `routes`, `fmt`, `check`, `doctor`, `stats`, `test`, `explain`) and
+scaffolds for `src/pages`, `src/components`, `src/api` and `.server.hys`.
+
+No dependencies: the LSP framing is `editors/vscode/src/lsp-client.js`, so the
+.vsix is ~35 KB and installs on an air-gapped machine. Its tests drive the real
+language server and parse every scaffold and snippet with the compiler:
+
+```bash
+node --test editors/vscode/test/*.test.mjs
+```
+
+Any other editor that speaks LSP can use the server directly:
 
 ```json
 { "command": "hydra", "args": ["lsp"] }
 ```
 
-The extension does NOT start the server for you: the two overlap on diagnostics
-and wiring both would double every squiggle.
+`hydra lsp` is answered by the node runner (`bin/hydra.js`), not by the native
+binary: `check`/`fmt`/`types` belong to the binary, the runner owns the commands.
 
 ---
 
@@ -784,6 +799,7 @@ and wiring both would double every squiggle.
 ```bash
 cd compiler-rs && cargo test          # 428 tests: 291 unit + 137 integration
 node --test packages/cli/*.test.mjs   # 271 CLI/runtime tests, some against a real browser
+node --test editors/vscode/test/*.test.mjs  # the extension: LSP, scaffolds, snippets
 node benchmarks/measure.mjs           # the numbers quoted above
 node benchmarks/compile.mjs           # what the compile cache and the pool buy
 bash scripts/hx-examples-check.sh     # builds every example/ project

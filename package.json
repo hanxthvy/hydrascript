@@ -45,6 +45,8 @@
     "types": "hydra types",
     "prepublishOnly": "node scripts/prepublish-guard.mjs && npm run test:node && bash scripts/pack-install-check.sh",
     "test:files": "bash scripts/test-per-file.sh",
+    "test:ext": "node --test --test-concurrency=1 editors/vscode/test/*.test.mjs",
+    "ext:package": "node editors/vscode/scripts/package-vsix.mjs",
     "bench:dev": "node benchmarks/dev-reload.mjs examples/blog 3"
   },
   "engines": {
